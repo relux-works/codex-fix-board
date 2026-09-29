@@ -1,0 +1,460 @@
+# tekacs/codex commit 9ffcf8db9078eae43d4111ff94259795c1e962c9 ("wake model when background exec commands complete")
+# Source: https://github.com/tekacs/codex/commit/9ffcf8db9078eae43d4111ff94259795c1e962c9
+# Parent in fork: ba573b4. The fork base is NOT current upstream main; e.g. Session::inject_or_start and
+# handle_resource_update exist in the fork but not in upstream 33a0f766a6.
+#
+# NOTE: the codex-rs/models-manager/models.json hunk is omitted here (single-line JSON, ~50KB). Its only change:
+# in gpt-5.5 base_instructions / instructions_template the sentence
+#   "Do not end your turn while `exec_command` sessions needed for the user's request are still running."
+# was replaced by
+#   "If `exec_command` yields a live background process, treat it as background work: do not poll it, and end
+#    your turn when there is no independent work left; the runtime completion notification will wake you."
+# The rest of the patch follows verbatim.
+#
+From 9ffcf8db9078eae43d4111ff94259795c1e962c9 Mon Sep 17 00:00:00 2001
+From: "Amar Sood (tekacs)" <pkg@tekacs.com>
+Date: Thu, 18 Jun 2026 22:51:49 -0400
+Subject: [PATCH] wake model when background exec commands complete
+
+- emit a pushed model input when a unified exec process completes after the original exec_command call yielded a live background process
+- route completion input through the same active-or-idle pushed-input path used by RMCP resource updates, so active turns receive it and idle sessions wake
+- suppress duplicate pushed completions when the original exec_command call already returned the terminal result inline
+- update exec_command/write_stdin tool descriptions to tell the model to wait for runtime completion notifications instead of empty-polling unless it needs intermediate output or interaction
+- cover active-turn pushed input delivery and unified exec process-state wake gating
+
+Maintenance note: if upstream ever fixes this, this custom patch may be elided while rebasing onto upstream, but only after strict verification that upstream behavior is fully equivalent to this patch. Equivalence means background unified exec completions wake idle sessions, are delivered to active turns via the pushed-input path, do not duplicate inline exec_command results, and keep model-facing tool guidance aligned with that behavior.
+---
+ codex-rs/core/src/context/exec_completion.rs  | 52 +++++++++++++++++++
+ codex-rs/core/src/context/mod.rs              |  2 +
+ .../core/src/tools/handlers/shell_spec.rs     | 27 ++++++----
+ .../src/tools/handlers/shell_spec_tests.rs    | 26 ++++++----
+ .../core/src/unified_exec/async_watcher.rs    | 32 ++++++++++--
+ .../src/unified_exec/async_watcher_tests.rs   |  2 +
+ codex-rs/core/src/unified_exec/mod.rs         |  1 +
+ codex-rs/core/src/unified_exec/mod_tests.rs   |  6 +++
+ .../core/src/unified_exec/process_manager.rs  |  4 ++
+ .../src/unified_exec/process_manager_tests.rs |  1 +
+ codex-rs/models-manager/models.json           |  2 +-
+ codex-rs/models-manager/src/manager_tests.rs  | 36 +++++++++++++
+ 12 files changed, 168 insertions(+), 23 deletions(-)
+ create mode 100644 codex-rs/core/src/context/exec_completion.rs
+
+diff --git a/codex-rs/core/src/context/exec_completion.rs b/codex-rs/core/src/context/exec_completion.rs
+new file mode 100644
+index 000000000000..f5e159525f2e
+--- /dev/null
++++ b/codex-rs/core/src/context/exec_completion.rs
+@@ -0,0 +1,52 @@
++use codex_protocol::models::ContentItemKind;
++use codex_utils_output_truncation::TruncationPolicy;
++use codex_utils_output_truncation::truncate_text;
++
++use super::ContextualUserFragment;
++
++const EXEC_OUTPUT_TOKENS: usize = 8_000;
++
++/// Model-visible completion of a unified exec process that previously yielded.
++pub(crate) struct ExecCompletion {
++    body: String,
++}
++
++impl ExecCompletion {
++    pub(crate) fn new(
++        call_id: &str,
++        process_id: i32,
++        command: &[String],
++        exit_code: i32,
++        output: &str,
++    ) -> Self {
++        let command = command.join(" ");
++        let output = truncate_text(output, TruncationPolicy::Tokens(EXEC_OUTPUT_TOKENS));
++        Self {
++            body: format!(
++                "<exec-command-completed call-id=\"{call_id}\" process-id=\"{process_id}\" exit-code=\"{exit_code}\">\n<command>{command}</command>\n<output>\n{output}\n</output>\n</exec-command-completed>"
++            ),
++        }
++    }
++}
++
++impl ContextualUserFragment for ExecCompletion {
++    fn role(&self) -> &'static str {
++        "user"
++    }
++
++    fn content_kind(&self) -> ContentItemKind {
++        ContentItemKind("exec.completion".to_string())
++    }
++
++    fn markers(&self) -> (&'static str, &'static str) {
++        Self::type_markers()
++    }
++
++    fn body(&self) -> String {
++        self.body.clone()
++    }
++
++    fn type_markers() -> (&'static str, &'static str) {
++        ("", "")
++    }
++}
+diff --git a/codex-rs/core/src/context/mod.rs b/codex-rs/core/src/context/mod.rs
+index 2c8e9323d416..1e890418d53d 100644
+--- a/codex-rs/core/src/context/mod.rs
++++ b/codex-rs/core/src/context/mod.rs
+@@ -10,6 +10,7 @@ mod current_time_reminder;
+ mod developer_instructions;
+ mod environment_context;
+ mod environments_instructions;
++mod exec_completion;
+ mod guardian_approved_action;
+ mod guardian_followup_review_reminder;
+ mod guardian_node_repl_policy;
+@@ -63,6 +64,7 @@ pub(crate) use contextual_user_message::parse_visible_hook_prompt_message;
+ pub(crate) use current_time_reminder::CurrentTimeReminder;
+ pub(crate) use developer_instructions::DeveloperInstructions;
+ pub(crate) use environments_instructions::EnvironmentsInstructions;
++pub(crate) use exec_completion::ExecCompletion;
+ pub(crate) use guardian_approved_action::GuardianApprovedAction;
+ pub(crate) use guardian_followup_review_reminder::GuardianFollowupReviewReminder;
+ pub(crate) use guardian_node_repl_policy::GuardianNodeReplPolicy;
+diff --git a/codex-rs/core/src/tools/handlers/shell_spec.rs b/codex-rs/core/src/tools/handlers/shell_spec.rs
+index b39408a37507..a75ff4af4377 100644
+--- a/codex-rs/core/src/tools/handlers/shell_spec.rs
++++ b/codex-rs/core/src/tools/handlers/shell_spec.rs
+@@ -92,16 +92,21 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
+         options.exec_permission_approvals_enabled,
+     ));
+ 
++    let description = concat!(
++        "Runs a command in a PTY, returning output or a session ID for ongoing interaction. ",
++        "If the command is still running after yielding, treat it as background work. ",
++        "Do not poll for completion with write_stdin, ps, pgrep, or similar liveness checks just to see whether it finished. ",
++        "Wait for the runtime completion notification instead. ",
++        "Only check again if you need intermediate output for the next step, must interact with the process, or are diagnosing a problem. ",
++        "If there is no other independent work to do, end your turn."
++    );
++
+     ToolSpec::Function(ResponsesApiTool {
+         name: "exec_command".to_string(),
+         description: if include_windows_shell_guidance {
+-            format!(
+-                "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
+-                windows_shell_guidance()
+-            )
++            format!("{description}\n\n{}", windows_shell_guidance())
+         } else {
+-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+-                .to_string()
++            description.to_string()
+         },
+         strict: false,
+         defer_loading: None,
+@@ -144,9 +149,13 @@ pub fn create_write_stdin_tool() -> ToolSpec {
+ 
+     ToolSpec::Function(ResponsesApiTool {
+         name: "write_stdin".to_string(),
+-        description:
+-            "Writes characters to an existing unified exec session and returns recent output."
+-                .to_string(),
++        description: concat!(
++            "Writes characters to an existing unified exec session and returns recent output. ",
++            "Do not use empty polls to check whether a background command has finished. ",
++            "Use this only when you need intermediate output for the next step or must interact with the running process. ",
++            "Background exec completions arrive through a separate runtime completion notification."
++        )
++        .to_string(),
+         strict: false,
+         defer_loading: None,
+         parameters: JsonSchema::object(
+diff --git a/codex-rs/core/src/tools/handlers/shell_spec_tests.rs b/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
+index 000add0bbd11..f5dfdd5ed99b 100644
+--- a/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
++++ b/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
+@@ -20,14 +20,18 @@ fn exec_command_tool_matches_expected_spec() {
+         exec_permission_approvals_enabled: false,
+     });
+ 
++    let base_description = concat!(
++        "Runs a command in a PTY, returning output or a session ID for ongoing interaction. ",
++        "If the command is still running after yielding, treat it as background work. ",
++        "Do not poll for completion with write_stdin, ps, pgrep, or similar liveness checks just to see whether it finished. ",
++        "Wait for the runtime completion notification instead. ",
++        "Only check again if you need intermediate output for the next step, must interact with the process, or are diagnosing a problem. ",
++        "If there is no other independent work to do, end your turn."
++    );
+     let description = if cfg!(windows) {
+-        format!(
+-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction.{}",
+-            windows_shell_guidance_description()
+-        )
++        format!("{base_description}{}", windows_shell_guidance_description())
+     } else {
+-        "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+-            .to_string()
++        base_description.to_string()
+     };
+     let yield_time_ms_description = if cfg!(windows) {
+         "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."
+@@ -149,9 +153,13 @@ fn write_stdin_tool_matches_expected_spec() {
+         tool,
+         ToolSpec::Function(ResponsesApiTool {
+             name: "write_stdin".to_string(),
+-            description:
+-                "Writes characters to an existing unified exec session and returns recent output."
+-                    .to_string(),
++            description: concat!(
++                "Writes characters to an existing unified exec session and returns recent output. ",
++                "Do not use empty polls to check whether a background command has finished. ",
++                "Use this only when you need intermediate output for the next step or must interact with the running process. ",
++                "Background exec completions arrive through a separate runtime completion notification."
++            )
++            .to_string(),
+             strict: false,
+             defer_loading: None,
+             parameters: JsonSchema::object(
+diff --git a/codex-rs/core/src/unified_exec/async_watcher.rs b/codex-rs/core/src/unified_exec/async_watcher.rs
+index 366f6310523b..bbe6e67fad9f 100644
+--- a/codex-rs/core/src/unified_exec/async_watcher.rs
++++ b/codex-rs/core/src/unified_exec/async_watcher.rs
+@@ -1,5 +1,6 @@
+ use std::pin::Pin;
+ use std::sync::Arc;
++use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::Ordering;
+ 
+ use tokio::sync::Mutex;
+@@ -12,6 +13,8 @@ use super::UnifiedExecContext;
+ use super::process::OutputHandles;
+ use super::process::UnifiedExecProcess;
+ use super::take_plugin_metrics_sidecar;
++use crate::context::ContextualUserFragment;
++use crate::context::ExecCompletion;
+ use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
+ use crate::plugins::metrics::finish_and_track_measurements;
+ use crate::session::session::Session;
+@@ -175,6 +178,7 @@ pub(crate) fn spawn_exit_watcher(
+     started_at: Instant,
+     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
+     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
++    wake_on_exit: Arc<AtomicBool>,
+ ) {
+     let exit_token = process.cancellation_token();
+     let output_drained = process.output_drained_notify();
+@@ -195,10 +199,27 @@ pub(crate) fn spawn_exit_watcher(
+         let plugin_metrics_sidecar = plugin_metrics_sidecar
+             .as_ref()
+             .and_then(take_plugin_metrics_sidecar);
+-        if let Some(message) = process.failure_message() {
++        let failure = process.failure_message();
++        let exit_code = failure
++            .as_ref()
++            .map_or_else(|| process.exit_code().unwrap_or(-1), |_| -1);
++        let completion = if wake_on_exit.load(Ordering::Acquire) {
++            let output = resolve_aggregated_output(&transcript, String::new()).await;
++            Some(ContextualUserFragment::into(ExecCompletion::new(
++                &call_id,
++                process_id,
++                &command,
++                exit_code,
++                &output,
++            )))
++        } else {
++            None
++        };
++
++        if let Some(message) = failure {
+             drop(plugin_metrics_sidecar);
+             emit_failed_exec_end_for_unified_exec(
+-                session_ref,
++                Arc::clone(&session_ref),
+                 turn_ref,
+                 call_id,
+                 command,
+@@ -212,7 +233,6 @@ pub(crate) fn spawn_exit_watcher(
+             )
+             .await;
+         } else {
+-            let exit_code = process.exit_code().unwrap_or(-1);
+             let timed_out = process.timed_out();
+             finish_and_track_measurements(
+                 plugin_metrics_sidecar,
+@@ -223,7 +243,7 @@ pub(crate) fn spawn_exit_watcher(
+             )
+             .await;
+             emit_exec_end_for_unified_exec(
+-                session_ref,
++                Arc::clone(&session_ref),
+                 turn_ref,
+                 call_id,
+                 command,
+@@ -238,6 +258,10 @@ pub(crate) fn spawn_exit_watcher(
+             )
+             .await;
+         }
++
++        if let Some(completion) = completion {
++            session_ref.inject_or_start(vec![completion]).await;
++        }
+     });
+ }
+ 
+diff --git a/codex-rs/core/src/unified_exec/async_watcher_tests.rs b/codex-rs/core/src/unified_exec/async_watcher_tests.rs
+index bffc5cf9f80e..5b59ecd6c33f 100644
+--- a/codex-rs/core/src/unified_exec/async_watcher_tests.rs
++++ b/codex-rs/core/src/unified_exec/async_watcher_tests.rs
+@@ -1,4 +1,5 @@
+ use std::sync::Arc;
++use std::sync::atomic::AtomicBool;
+ 
+ use super::Buffer;
+ use super::Emitter;
+@@ -239,6 +240,7 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() ->
+         Instant::now(),
+         Some(network_denial_monitor),
+         /*plugin_metrics_sidecar*/ None,
++        Arc::new(AtomicBool::new(false)),
+     );
+ 
+     let exited_at = Instant::now();
+diff --git a/codex-rs/core/src/unified_exec/mod.rs b/codex-rs/core/src/unified_exec/mod.rs
+index 8dc8f359d4e0..bef5eac183b0 100644
+--- a/codex-rs/core/src/unified_exec/mod.rs
++++ b/codex-rs/core/src/unified_exec/mod.rs
+@@ -187,6 +187,7 @@ struct ProcessEntry {
+     process_id: i32,
+     cwd: PathUri,
+     initial_exec_command_active: Arc<std::sync::atomic::AtomicBool>,
++    wake_on_exit: Arc<std::sync::atomic::AtomicBool>,
+     hook_command: String,
+     tty: bool,
+     environment_id: String,
+diff --git a/codex-rs/core/src/unified_exec/mod_tests.rs b/codex-rs/core/src/unified_exec/mod_tests.rs
+index d090847a15ea..c654325892de 100644
+--- a/codex-rs/core/src/unified_exec/mod_tests.rs
++++ b/codex-rs/core/src/unified_exec/mod_tests.rs
+@@ -140,6 +140,7 @@ async fn exec_command_with_tty(
+             process_id,
+             cwd: cwd.clone().into(),
+             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
++            wake_on_exit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+             hook_command: cmd.to_string(),
+             tty,
+             environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
+@@ -196,6 +197,9 @@ async fn exec_command_with_tty(
+         entry
+             .initial_exec_command_active
+             .store(false, std::sync::atomic::Ordering::Release);
++        entry
++            .wake_on_exit
++            .store(true, std::sync::atomic::Ordering::Release);
+     }
+ 
+     Ok(ExecCommandToolOutput {
+@@ -614,6 +618,7 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
+             process_id,
+             cwd: cwd.into(),
+             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
++            wake_on_exit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+             hook_command: "sleep 60".to_string(),
+             tty: true,
+             environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
+@@ -697,6 +702,7 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
+             process_id,
+             cwd: cwd.into(),
+             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
++            wake_on_exit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+             hook_command: "sleep 60".to_string(),
+             tty: true,
+             environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+index a224b5f64628..03b671023caa 100644
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -1080,6 +1080,7 @@ impl UnifiedExecProcessManager {
+                 entry: Box::new(entry),
+             }
+         } else {
++            entry.wake_on_exit.store(true, Ordering::Release);
+             ProcessStatus::Alive {
+                 exit_code,
+                 call_id: entry.call_id.clone(),
+@@ -1144,6 +1145,7 @@ impl UnifiedExecProcessManager {
+     ) {
+         let plugin_metrics_sidecar =
+             metrics_sidecar.map(|sidecar| Arc::new(std::sync::Mutex::new(Some(sidecar))));
++        let wake_on_exit = Arc::new(AtomicBool::new(false));
+         let entry = ProcessEntry {
+             process: Arc::clone(&process),
+             plugin_metrics_sidecar: plugin_metrics_sidecar.clone(),
+@@ -1151,6 +1153,7 @@ impl UnifiedExecProcessManager {
+             process_id,
+             cwd: cwd.clone(),
+             initial_exec_command_active,
++            wake_on_exit: Arc::clone(&wake_on_exit),
+             hook_command,
+             tty,
+             environment_id,
+@@ -1185,6 +1188,7 @@ impl UnifiedExecProcessManager {
+             started_at,
+             network_denial_monitor,
+             plugin_metrics_sidecar,
++            wake_on_exit,
+         );
+     }
+ 
+diff --git a/codex-rs/core/src/unified_exec/process_manager_tests.rs b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+index 29f9e8839cd1..c897c6a690f0 100644
+--- a/codex-rs/core/src/unified_exec/process_manager_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+@@ -614,6 +614,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
+                 process_id,
+                 cwd: cwd.clone(),
+                 initial_exec_command_active: Arc::new(AtomicBool::new(false)),
++                wake_on_exit: Arc::new(AtomicBool::new(false)),
+                 hook_command: format!("command-{process_id}"),
+                 tty: false,
+                 environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
+diff --git a/codex-rs/models-manager/src/manager_tests.rs b/codex-rs/models-manager/src/manager_tests.rs
+index 113ed7562902..51fedb46bc62 100644
+--- a/codex-rs/models-manager/src/manager_tests.rs
++++ b/codex-rs/models-manager/src/manager_tests.rs
+@@ -1542,3 +1542,39 @@ fn bundled_models_json_roundtrips() {
+         "bundled models.json should contain at least one model"
+     );
+ }
++
++#[test]
++fn bundled_model_prompts_allow_background_exec_turns_to_yield() {
++    let response = crate::bundled_models_response()
++        .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
++    let stale_guidance = "Do not end your turn while `exec_command`";
++    let expected_guidance = "If `exec_command` yields a live background process";
++    let mut gpt_5_5_has_expected_guidance = false;
++
++    for model in &response.models {
++        assert!(
++            !model.base_instructions.contains(stale_guidance),
++            "{} base instructions should not tell agents to keep waiting on background exec sessions",
++            model.slug
++        );
++        gpt_5_5_has_expected_guidance |= model.slug == "gpt-5.5"
++            && model.base_instructions.contains(expected_guidance);
++
++        if let Some(model_messages) = &model.model_messages
++            && let Some(instructions_template) = &model_messages.instructions_template
++        {
++            assert!(
++                !instructions_template.contains(stale_guidance),
++                "{} instructions template should not tell agents to keep waiting on background exec sessions",
++                model.slug
++            );
++            gpt_5_5_has_expected_guidance |= model.slug == "gpt-5.5"
++                && instructions_template.contains(expected_guidance);
++        }
++    }
++
++    assert!(
++        gpt_5_5_has_expected_guidance,
++        "gpt-5.5 should preserve fire-and-yield background exec guidance"
++    );
++}

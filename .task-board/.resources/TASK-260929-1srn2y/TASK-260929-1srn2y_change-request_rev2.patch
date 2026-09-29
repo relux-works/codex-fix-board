@@ -1,0 +1,3274 @@
+diff --git a/MODULE.bazel.lock b/MODULE.bazel.lock
+index 8e1990f965..ea12d29eea 100644
+--- a/MODULE.bazel.lock
++++ b/MODULE.bazel.lock
+@@ -1161,7 +1161,7 @@
+       "gstreamer_0.25.3": "{\"dependencies\":[{\"name\":\"cfg-if\",\"req\":\"^1.0\"},{\"name\":\"futures-channel\",\"req\":\"^0.3\"},{\"name\":\"futures-core\",\"req\":\"^0.3\"},{\"kind\":\"dev\",\"name\":\"futures-executor\",\"req\":\"^0.3.1\"},{\"default_features\":false,\"name\":\"futures-util\",\"req\":\"^0.3\"},{\"kind\":\"dev\",\"name\":\"gir-format-check\",\"req\":\"^0.1\"},{\"name\":\"glib\",\"req\":\"^0.22.0\"},{\"name\":\"gstreamer-sys\",\"req\":\"^0.25.0\"},{\"name\":\"itertools\",\"req\":\"^0.15\"},{\"name\":\"kstring\",\"req\":\"^2.0\"},{\"name\":\"libc\",\"req\":\"^0.2\"},{\"name\":\"log\",\"optional\":true,\"req\":\"^0.4\"},{\"name\":\"muldiv\",\"req\":\"^1\"},{\"default_features\":false,\"name\":\"num-integer\",\"req\":\"^0.1\"},{\"default_features\":false,\"name\":\"num-rational\",\"req\":\"^0.4\"},{\"name\":\"opt-ops\",\"package\":\"option-operations\",\"req\":\"^0.6\"},{\"name\":\"pastey\",\"req\":\"^0.2\"},{\"name\":\"pin-project-lite\",\"req\":\"^0.2\"},{\"kind\":\"dev\",\"name\":\"ron\",\"req\":\"^0.12\"},{\"features\":[\"derive\"],\"name\":\"serde\",\"optional\":true,\"req\":\"^1.0\"},{\"name\":\"serde_bytes\",\"optional\":true,\"req\":\"^0.11\"},{\"kind\":\"dev\",\"name\":\"serde_json\",\"req\":\"^1.0\"},{\"features\":[\"write\"],\"name\":\"smallvec\",\"req\":\"^1.0\"},{\"name\":\"thiserror\",\"req\":\"^2\"}],\"features\":{\"default\":[],\"log\":[\"dep:log\"],\"serde\":[\"num-rational/serde\",\"dep:serde\",\"serde_bytes\"],\"v1_16\":[\"gstreamer-sys/v1_16\"],\"v1_18\":[\"gstreamer-sys/v1_18\",\"v1_16\"],\"v1_20\":[\"gstreamer-sys/v1_20\",\"v1_18\"],\"v1_22\":[\"gstreamer-sys/v1_22\",\"v1_20\"],\"v1_24\":[\"gstreamer-sys/v1_24\",\"v1_22\"],\"v1_26\":[\"gstreamer-sys/v1_26\",\"v1_24\"],\"v1_28\":[\"gstreamer-sys/v1_28\",\"v1_26\"],\"v1_30\":[\"gstreamer-sys/v1_30\",\"v1_28\"]}}",
+       "gzip-header_1.0.0": "{\"dependencies\":[{\"name\":\"crc32fast\",\"req\":\"^1.2.1\"}],\"features\":{}}",
+       "h2_0.4.13": "{\"dependencies\":[{\"name\":\"atomic-waker\",\"req\":\"^1.0.0\"},{\"name\":\"bytes\",\"req\":\"^1\"},{\"default_features\":false,\"kind\":\"dev\",\"name\":\"env_logger\",\"req\":\"^0.10\"},{\"name\":\"fnv\",\"req\":\"^1.0.5\"},{\"default_features\":false,\"name\":\"futures-core\",\"req\":\"^0.3\"},{\"default_features\":false,\"name\":\"futures-sink\",\"req\":\"^0.3\"},{\"kind\":\"dev\",\"name\":\"hex\",\"req\":\"^0.4.3\"},{\"name\":\"http\",\"req\":\"^1\"},{\"features\":[\"std\"],\"name\":\"indexmap\",\"req\":\"^2\"},{\"default_features\":false,\"kind\":\"dev\",\"name\":\"quickcheck\",\"req\":\"^1.0.3\"},{\"kind\":\"dev\",\"name\":\"rand\",\"req\":\"^0.8.4\"},{\"kind\":\"dev\",\"name\":\"serde\",\"req\":\"^1.0.0\"},{\"kind\":\"dev\",\"name\":\"serde_json\",\"req\":\"^1.0.0\"},{\"name\":\"slab\",\"req\":\"^0.4.2\"},{\"features\":[\"io-util\"],\"name\":\"tokio\",\"req\":\"^1\"},{\"features\":[\"rt-multi-thread\",\"macros\",\"sync\",\"net\"],\"kind\":\"dev\",\"name\":\"tokio\",\"req\":\"^1\"},{\"kind\":\"dev\",\"name\":\"tokio-rustls\",\"req\":\"^0.26\"},{\"features\":[\"codec\",\"io\"],\"name\":\"tokio-util\",\"req\":\"^0.7.1\"},{\"default_features\":false,\"features\":[\"std\"],\"name\":\"tracing\",\"req\":\"^0.1.35\"},{\"kind\":\"dev\",\"name\":\"walkdir\",\"req\":\"^2.3.2\"},{\"kind\":\"dev\",\"name\":\"webpki-roots\",\"req\":\"^1\"}],\"features\":{\"stream\":[],\"unstable\":[]}}",
+-      "h2_0.4.16": "{\"dependencies\":[{\"name\":\"atomic-waker\",\"req\":\"^1.0.0\"},{\"name\":\"bytes\",\"req\":\"^1\"},{\"default_features\":false,\"kind\":\"dev\",\"name\":\"env_logger\",\"req\":\"^0.10\"},{\"name\":\"fnv\",\"req\":\"^1.0.5\"},{\"default_features\":false,\"name\":\"futures-core\",\"req\":\"^0.3\"},{\"default_features\":false,\"name\":\"futures-sink\",\"req\":\"^0.3\"},{\"kind\":\"dev\",\"name\":\"hex\",\"req\":\"^0.4.3\"},{\"name\":\"http\",\"req\":\"^1.1\"},{\"features\":[\"std\"],\"name\":\"indexmap\",\"req\":\"^2\"},{\"default_features\":false,\"kind\":\"dev\",\"name\":\"quickcheck\",\"req\":\"^1.0.3\"},{\"kind\":\"dev\",\"name\":\"rand\",\"req\":\"^0.8.4\"},{\"kind\":\"dev\",\"name\":\"serde\",\"req\":\"^1.0.0\"},{\"kind\":\"dev\",\"name\":\"serde_json\",\"req\":\"^1.0.0\"},{\"name\":\"slab\",\"req\":\"^0.4.2\"},{\"features\":[\"io-util\"],\"name\":\"tokio\",\"req\":\"^1\"},{\"features\":[\"rt-multi-thread\",\"macros\",\"sync\",\"net\"],\"kind\":\"dev\",\"name\":\"tokio\",\"req\":\"^1\"},{\"kind\":\"dev\",\"name\":\"tokio-rustls\",\"req\":\"^0.26\"},{\"features\":[\"codec\",\"io\"],\"name\":\"tokio-util\",\"req\":\"^0.7.1\"},{\"default_features\":false,\"features\":[\"std\"],\"name\":\"tracing\",\"req\":\"^0.1.35\"},{\"kind\":\"dev\",\"name\":\"walkdir\",\"req\":\"^2.3.2\"},{\"kind\":\"dev\",\"name\":\"webpki-roots\",\"req\":\"^1\"}],\"features\":{\"stream\":[],\"unstable\":[]}}",
++      "h2_0.4.19": "{\"dependencies\":[{\"name\":\"atomic-waker\",\"req\":\"^1.0.0\"},{\"name\":\"bytes\",\"req\":\"^1\"},{\"default_features\":false,\"kind\":\"dev\",\"name\":\"env_logger\",\"req\":\"^0.10\"},{\"name\":\"fnv\",\"req\":\"^1.0.5\"},{\"default_features\":false,\"name\":\"futures-core\",\"req\":\"^0.3\"},{\"default_features\":false,\"name\":\"futures-sink\",\"req\":\"^0.3\"},{\"kind\":\"dev\",\"name\":\"hex\",\"req\":\"^0.4.3\"},{\"name\":\"http\",\"req\":\"^1.1\"},{\"features\":[\"std\"],\"name\":\"indexmap\",\"req\":\"^2\"},{\"default_features\":false,\"kind\":\"dev\",\"name\":\"quickcheck\",\"req\":\"^1.0.3\"},{\"kind\":\"dev\",\"name\":\"rand\",\"req\":\"^0.8.4\"},{\"kind\":\"dev\",\"name\":\"serde\",\"req\":\"^1.0.0\"},{\"kind\":\"dev\",\"name\":\"serde_json\",\"req\":\"^1.0.0\"},{\"name\":\"slab\",\"req\":\"^0.4.2\"},{\"features\":[\"io-util\"],\"name\":\"tokio\",\"req\":\"^1\"},{\"features\":[\"rt-multi-thread\",\"macros\",\"sync\",\"net\"],\"kind\":\"dev\",\"name\":\"tokio\",\"req\":\"^1\"},{\"kind\":\"dev\",\"name\":\"tokio-rustls\",\"req\":\"^0.26\"},{\"features\":[\"codec\",\"io\"],\"name\":\"tokio-util\",\"req\":\"^0.7.1\"},{\"default_features\":false,\"features\":[\"std\"],\"name\":\"tracing\",\"req\":\"^0.1.35\"},{\"kind\":\"dev\",\"name\":\"walkdir\",\"req\":\"^2.3.2\"},{\"kind\":\"dev\",\"name\":\"webpki-roots\",\"req\":\"^1\"}],\"features\":{\"stream\":[],\"unstable\":[]}}",
+       "half_2.7.1": "{\"dependencies\":[{\"features\":[\"derive\"],\"name\":\"arbitrary\",\"optional\":true,\"req\":\"^1.4.1\"},{\"default_features\":false,\"features\":[\"derive\"],\"name\":\"bytemuck\",\"optional\":true,\"req\":\"^1.4.1\"},{\"name\":\"cfg-if\",\"req\":\"^1.0.0\"},{\"kind\":\"dev\",\"name\":\"criterion\",\"req\":\"^0.5\"},{\"name\":\"crunchy\",\"req\":\"^0.2.2\",\"target\":\"cfg(target_arch = \\\"spirv\\\")\"},{\"kind\":\"dev\",\"name\":\"crunchy\",\"req\":\"^0.2.2\"},{\"default_features\":false,\"features\":[\"libm\"],\"name\":\"num-traits\",\"optional\":true,\"req\":\"^0.2.16\"},{\"kind\":\"dev\",\"name\":\"quickcheck\",\"req\":\"^1.0\"},{\"kind\":\"dev\",\"name\":\"quickcheck_macros\",\"req\":\"^1.0\"},{\"default_features\":false,\"features\":[\"thread_rng\"],\"name\":\"rand\",\"optional\":true,\"req\":\"^0.9.0\"},{\"kind\":\"dev\",\"name\":\"rand\",\"req\":\"^0.9.0\"},{\"default_features\":false,\"name\":\"rand_distr\",\"optional\":true,\"req\":\"^0.5.0\"},{\"name\":\"rkyv\",\"optional\":true,\"req\":\"^0.8.0\"},{\"default_features\":false,\"features\":[\"derive\"],\"name\":\"serde\",\"optional\":true,\"req\":\"^1.0\"},{\"default_features\":false,\"features\":[\"derive\",\"simd\"],\"name\":\"zerocopy\",\"req\":\"^0.8.26\"}],\"features\":{\"alloc\":[],\"default\":[\"std\"],\"nightly\":[],\"rand_distr\":[\"dep:rand\",\"dep:rand_distr\"],\"std\":[\"alloc\"],\"use-intrinsics\":[],\"zerocopy\":[]}}",
+       "hash32_0.2.1": "{\"dependencies\":[{\"default_features\":false,\"name\":\"byteorder\",\"req\":\"^1.2.2\"},{\"kind\":\"dev\",\"name\":\"hash32-derive\",\"req\":\"^0.1.0\"}],\"features\":{}}",
+       "hash32_0.3.1": "{\"dependencies\":[{\"default_features\":false,\"name\":\"byteorder\",\"req\":\"^1.2.2\"}],\"features\":{}}",
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index 01a121bf78..e0242af21d 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -8478,9 +8478,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "h2"
+-version = "0.4.16"
++version = "0.4.19"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
++checksum = "ef8e5e5a340588f4452631496976cf8636d4a7ecf600239fdc27615d2530bc16"
+ dependencies = [
+  "atomic-waker",
+  "bytes",
+diff --git a/codex-rs/app-server/tests/suite/v2/mod.rs b/codex-rs/app-server/tests/suite/v2/mod.rs
+index 51f3e06b9a..d248969036 100644
+--- a/codex-rs/app-server/tests/suite/v2/mod.rs
++++ b/codex-rs/app-server/tests/suite/v2/mod.rs
+@@ -89,6 +89,7 @@ mod permission_profile_list;
+ mod plan_item;
+ mod plugin_install;
+ mod plugin_list;
++mod plugin_manifest_cache;
+ mod plugin_read;
+ mod plugin_reconcile;
+ mod plugin_search;
+diff --git a/codex-rs/app-server/tests/suite/v2/plugin_manifest_cache.rs b/codex-rs/app-server/tests/suite/v2/plugin_manifest_cache.rs
+new file mode 100644
+index 0000000000..854e8a533c
+--- /dev/null
++++ b/codex-rs/app-server/tests/suite/v2/plugin_manifest_cache.rs
+@@ -0,0 +1,95 @@
++//! Exercise manifest and overlay invalidation across RPCs in one running app-server.
++
++use anyhow::Result;
++use app_test_support::TestAppServer;
++use codex_app_server_protocol::PluginListMarketplaceKind;
++use codex_app_server_protocol::PluginListParams;
++use codex_app_server_protocol::PluginListResponse;
++use codex_utils_absolute_path::AbsolutePathBuf;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++use std::time::Duration;
++use tempfile::TempDir;
++use tokio::time::timeout;
++
++#[tokio::test]
++async fn plugin_list_observes_manifest_and_overlay_revisions_in_one_server() -> Result<()> {
++    let codex_home = TempDir::new()?;
++    let repository = TempDir::new()?;
++    let root = repository.path();
++    for directory in [".git", ".agents/plugins", "sample/.codex-plugin"] {
++        std::fs::create_dir_all(root.join(directory))?;
++    }
++    std::fs::write(
++        codex_home.path().join("config.toml"),
++        "[features]\nplugins = true\nremote_plugin = false\n",
++    )?;
++    std::fs::write(
++        root.join(".agents/plugins/marketplace.json"),
++        serde_json::to_vec(&json!({
++            "name": "cache-test", "plugins": [{"name": "sample", "source": {"source": "local", "path": "./sample"}}]
++        }))?,
++    )?;
++    let mut server = TestAppServer::builder()
++        .with_codex_home(codex_home.path())
++        .build_initialized_with_timeout(Duration::from_secs(30))
++        .await?;
++    let overlay_path = root.join("sample/.codex-plugin/plugin.json");
++    for (version, overlay_name, expected_name) in [
++        ("1.0.0", Some("First"), "First"),
++        ("2.0.0", Some("First"), "First"),
++        ("2.0.0", Some("Changed"), "Changed"),
++        ("2.0.0", None, "sample"),
++    ] {
++        std::fs::write(
++            root.join("sample/plugin.json"),
++            serde_json::to_vec(&json!({
++                "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
++                "name": "sample", "version": version
++            }))?,
++        )?;
++        if let Some(display_name) = overlay_name {
++            std::fs::write(
++                &overlay_path,
++                serde_json::to_vec(&json!({"interface": {"displayName": display_name}}))?,
++            )?;
++        } else {
++            std::fs::remove_file(&overlay_path)?;
++        }
++        let mut previous = None;
++        for _ in 0..2 {
++            let id = server
++                .send_plugin_list_request(PluginListParams {
++                    cwds: Some(vec![AbsolutePathBuf::try_from(root)?]),
++                    marketplace_kinds: Some(vec![PluginListMarketplaceKind::Local]),
++                    force_refetch: false,
++                })
++                .await?;
++            let response: PluginListResponse =
++                timeout(Duration::from_secs(30), server.read_response(id)).await??;
++            assert_eq!(response.marketplace_load_errors, Vec::new());
++            let marketplace = response
++                .marketplaces
++                .iter()
++                .find(|entry| entry.name == "cache-test")
++                .expect("local marketplace");
++            let plugin = &marketplace.plugins[0];
++            assert_eq!(
++                (
++                    plugin.id.as_str(),
++                    plugin.local_version.as_deref(),
++                    plugin
++                        .interface
++                        .as_ref()
++                        .and_then(|value| value.display_name.as_deref())
++                ),
++                ("sample@cache-test", Some(version), Some(expected_name))
++            );
++            if let Some(previous) = previous {
++                assert_eq!(marketplace, &previous);
++            }
++            previous = Some(marketplace.clone());
++        }
++    }
++    Ok(())
++}
+diff --git a/codex-rs/core-plugins/src/discoverable_tests.rs b/codex-rs/core-plugins/src/discoverable_tests.rs
+index 3c2085c9e1..df227071fd 100644
+--- a/codex-rs/core-plugins/src/discoverable_tests.rs
++++ b/codex-rs/core-plugins/src/discoverable_tests.rs
+@@ -640,7 +640,7 @@ async fn omits_not_available_curated_plugins() {
+ }
+ 
+ #[tokio::test]
+-async fn does_not_reload_marketplace_per_plugin() {
++async fn discovery_warns_once_per_invalid_manifest() {
+     let codex_home = tempdir().expect("tempdir should succeed");
+     let curated_root = curated_plugins_repo_path(codex_home.path());
+     write_openai_curated_marketplace(&curated_root, &["slack", "gmail", "openai-developers"]);
+@@ -697,12 +697,12 @@ async fn does_not_reload_marketplace_per_plugin() {
+     let logs = String::from_utf8(buffer.lock().expect("buffer lock").clone())
+         .expect("utf8 logs")
+         .replace('\\', "/");
+-    assert_eq!(logs.matches("ignoring interface.defaultPrompt").count(), 8);
+-    assert_eq!(logs.matches("gmail/.codex-plugin/plugin.json").count(), 4);
++    assert_eq!(logs.matches("ignoring interface.defaultPrompt").count(), 2);
++    assert_eq!(logs.matches("gmail/.codex-plugin/plugin.json").count(), 1);
+     assert_eq!(
+         logs.matches("openai-developers/.codex-plugin/plugin.json")
+             .count(),
+-        4
++        1
+     );
+ }
+ 
+diff --git a/codex-rs/core-plugins/src/loader.rs b/codex-rs/core-plugins/src/loader.rs
+index d9f49eec4b..92500be8cc 100644
+--- a/codex-rs/core-plugins/src/loader.rs
++++ b/codex-rs/core-plugins/src/loader.rs
+@@ -2,6 +2,7 @@ use crate::PluginGitMode;
+ use crate::app_mcp_routing::apply_app_mcp_routing_policy;
+ use crate::app_mcp_routing::apps_route_available;
+ use crate::is_openai_curated_marketplace_name;
++use crate::manifest::ManifestCache;
+ use crate::manifest::PluginManifest;
+ use crate::manifest::PluginManifestFormat;
+ use crate::manifest::PluginManifestHooks;
+@@ -889,7 +890,7 @@ async fn load_plugin(
+         return loaded_plugin;
+     }
+ 
+-    let Some(loaded_manifest) = load_plugin_manifest_with_format(plugin_root.as_path()) else {
++    let Some(loaded_manifest) = store.manifest_cache.load(plugin_root.as_path()) else {
+         loaded_plugin.error = Some("missing or invalid plugin.json".to_string());
+         return loaded_plugin;
+     };
+@@ -942,7 +943,8 @@ async fn load_plugin(
+             )
+             .await;
+             if loaded_manifest.format == PluginManifestFormat::Legacy {
+-                loaded_plugin.apps = load_plugin_apps(plugin_root.as_path()).await;
++                loaded_plugin.apps =
++                    load_plugin_apps_from_manifest(plugin_root.as_path(), manifest_paths).await;
+             }
+         }
+         PluginLoadScope::HooksOnly => {}
+@@ -1328,12 +1330,13 @@ async fn load_apps_from_paths(
+     app_declarations
+ }
+ 
+-pub async fn plugin_capability_summary_from_root(
++pub(crate) async fn plugin_capability_summary_from_root(
+     plugin_id: &PluginId,
+     plugin_root: &AbsolutePathBuf,
+     skill_root_loader: &dyn SkillRootLoader<PluginSkillRoot>,
++    manifest_cache: &ManifestCache,
+ ) -> Option<PluginCapabilitySummary> {
+-    let loaded_manifest = load_plugin_manifest_with_format(plugin_root.as_path())?;
++    let loaded_manifest = manifest_cache.load(plugin_root.as_path())?;
+     let manifest_format = loaded_manifest.format;
+     let manifest = loaded_manifest.manifest;
+     let plugin_identity = PluginIdentity {
+diff --git a/codex-rs/core-plugins/src/manager.rs b/codex-rs/core-plugins/src/manager.rs
+index 3312b40120..e5614b9f55 100644
+--- a/codex-rs/core-plugins/src/manager.rs
++++ b/codex-rs/core-plugins/src/manager.rs
+@@ -14,6 +14,7 @@ use super::LoadedPlugin;
+ use super::PluginLoadOutcome;
+ use crate::PluginGitMode;
+ use crate::app_mcp_routing::apply_app_mcp_routing_policy;
++use crate::http_client_selector::HttpClientSelector;
+ use crate::installed_marketplaces::installed_marketplace_roots_from_layer_stack;
+ use crate::is_openai_curated_marketplace_name;
+ use crate::loaded_cache_metrics;
+@@ -38,8 +39,6 @@ use crate::loader::refresh_non_curated_plugin_cache_force_reinstall_detailed;
+ use crate::loader::remote_installed_plugins_to_config;
+ use crate::manifest::PluginManifestFormat;
+ use crate::manifest::PluginManifestInterface;
+-use crate::manifest::load_plugin_manifest;
+-use crate::manifest::load_plugin_manifest_with_format;
+ use crate::marketplace::MarketplaceError;
+ use crate::marketplace::MarketplaceInterface;
+ use crate::marketplace::MarketplaceListError;
+@@ -52,7 +51,7 @@ use crate::marketplace::ResolvedMarketplacePlugin;
+ use crate::marketplace::find_installable_marketplace_plugin;
+ use crate::marketplace::find_marketplace_plugin;
+ use crate::marketplace::home_dir;
+-use crate::marketplace::list_marketplaces_with_home;
++use crate::marketplace::list_marketplaces_with_cache;
+ use crate::marketplace::plugin_interface_with_marketplace_category;
+ use crate::marketplace_policy::MarketplacePolicy;
+ use crate::marketplace_policy::configured_plugins_from_stack;
+@@ -60,6 +59,7 @@ use crate::marketplace_upgrade::ConfigLayerReload;
+ use crate::marketplace_upgrade::ConfiguredMarketplaceUpgradeError;
+ use crate::marketplace_upgrade::ConfiguredMarketplaceUpgradeOutcome;
+ use crate::marketplace_upgrade::upgrade_configured_git_marketplaces_with_mode;
++use crate::remote::CODEX_PRODUCT_SKU;
+ use crate::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
+ use crate::remote::RecommendedPluginsMode;
+ use crate::remote::RemoteInstalledPlugin;
+@@ -100,7 +100,9 @@ use codex_config::types::ToolSuggestDiscoverableType;
+ use codex_connectors::ConnectorSnapshot;
+ use codex_connectors::PluginConnectorSource;
+ use codex_hooks::plugin_hook_declarations;
++use codex_http_client::ClientRouteClass;
+ use codex_http_client::HttpClientFactory;
++use codex_http_client::RouteAwareClientPool;
+ use codex_login::AuthManager;
+ use codex_login::CodexAuth;
+ use codex_plugin::AppConnectorId;
+@@ -130,6 +132,7 @@ use std::path::Path;
+ use std::path::PathBuf;
+ use std::sync::Arc;
+ use std::sync::Mutex;
++use std::sync::OnceLock;
+ use std::sync::RwLock;
+ use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::Ordering;
+@@ -159,6 +162,7 @@ pub struct PluginsConfigInput {
+     pub chatgpt_base_url: String,
+     pub product_sku: Option<String>,
+     http_client_factory: HttpClientFactory,
++    remote_http_clients: Arc<OnceLock<Arc<dyn HttpClientSelector>>>,
+ }
+ 
+ impl PluginsConfigInput {
+@@ -179,16 +183,29 @@ impl PluginsConfigInput {
+             chatgpt_base_url,
+             http_client_factory,
+             product_sku,
++            remote_http_clients: Arc::new(OnceLock::new()),
+         }
+     }
+ 
+-    /// Builds route-aware service state for remote plugin requests.
++    /// Shares a lazy route-aware connection pool across this input and its clones.
++    /// Request metadata remains current; new config inputs own a new pool.
+     pub fn remote_plugin_service_config(&self) -> RemotePluginServiceConfig {
+-        RemotePluginServiceConfig::new(
+-            self.chatgpt_base_url.clone(),
+-            self.http_client_factory.clone(),
+-            self.product_sku.clone(),
+-        )
++        let http_clients = self.remote_http_clients.get_or_init(|| {
++            Arc::new(
++                RouteAwareClientPool::with_chatgpt_cloudflare_cookies_without_request_logging(
++                    self.http_client_factory.clone(),
++                    ClientRouteClass::Api,
++                ),
++            )
++        });
++        RemotePluginServiceConfig {
++            chatgpt_base_url: self.chatgpt_base_url.clone(),
++            product_sku: self
++                .product_sku
++                .clone()
++                .unwrap_or_else(|| CODEX_PRODUCT_SKU.to_string()),
++            http_clients: Arc::clone(http_clients),
++        }
+     }
+ }
+ 
+@@ -677,9 +694,12 @@ impl PluginsManager {
+         // This assumes a single CODEX_HOME is only used by one product.
+         let remote_installed_plugin_bundle_sync_gate =
+             crate::remote::remote_installed_plugin_bundle_sync_gate(&codex_home);
++        let store = PluginStore::new(codex_home.clone());
++        let tool_suggest_metadata_cache =
++            ToolSuggestMetadataCache::new(Arc::clone(&store.manifest_cache));
+         Self {
+-            codex_home: codex_home.clone(),
+-            store: PluginStore::new(codex_home),
++            codex_home,
++            store,
+             featured_plugin_ids_cache: RwLock::new(None),
+             recommended_plugins_cache: RwLock::new(HashMap::new()),
+             recommended_plugins_refreshes: RwLock::new(HashMap::new()),
+@@ -695,7 +715,7 @@ impl PluginsManager {
+             loaded_plugins_cache: Mutex::new(LoadedPluginsCache::default()),
+             loaded_plugins_load_semaphore: Semaphore::new(/*permits*/ 1),
+             skill_root_loader,
+-            tool_suggest_metadata_cache: ToolSuggestMetadataCache::new(),
++            tool_suggest_metadata_cache,
+             remote_installed_plugins_cache: RwLock::new(RemoteInstalledPluginsCache::default()),
+             remote_installed_plugin_bundle_sync_gate,
+             remote_installed_plugins_cache_refresh_state: RwLock::new(
+@@ -1147,6 +1167,7 @@ impl PluginsManager {
+                     plugin_id,
+                     &plugin_root,
+                     self.skill_root_loader.as_ref(),
++                    &self.store.manifest_cache,
+                 )
+                 .await
+             }
+@@ -1168,6 +1189,7 @@ impl PluginsManager {
+                     plugin_id,
+                     &plugin_root,
+                     self.skill_root_loader.as_ref(),
++                    &self.store.manifest_cache,
+                 )
+                 .await
+             }
+@@ -2425,7 +2447,11 @@ impl PluginsManager {
+                             && plugin.source.is_install_materialized()
+                             && let Some(plugin_id) = plugin_id.as_ref()
+                             && let Some(plugin_root) = self.store.active_plugin_root(plugin_id)
+-                            && let Some(manifest) = load_plugin_manifest(plugin_root.as_path())
++                            && let Some(manifest) = self
++                                .store
++                                .manifest_cache
++                                .load(plugin_root.as_path())
++                                .map(|loaded| loaded.manifest)
+                         {
+                             local_version = manifest.version.clone();
+                             let marketplace_category = interface
+@@ -2656,7 +2682,7 @@ impl PluginsManager {
+         }
+         let loaded_manifest =
+             if codex_utils_plugins::find_plugin_manifest_path(source_path.as_path()).is_some() {
+-                load_plugin_manifest_with_format(source_path.as_path())
++                self.store.manifest_cache.load(source_path.as_path())
+             } else {
+                 plugin
+                     .manifest_fallback
+@@ -3600,7 +3626,8 @@ impl PluginsManager {
+         config: &PluginsConfigInput,
+         roots: &[AbsolutePathBuf],
+     ) -> Result<MarketplaceListOutcome, MarketplaceError> {
+-        let mut outcome = list_marketplaces_with_home(roots, home_dir().as_deref())?;
++        let mut outcome =
++            list_marketplaces_with_cache(roots, home_dir().as_deref(), &self.store.manifest_cache)?;
+         let policy = MarketplacePolicy::from_requirements(config.config_layer_stack.requirements());
+         outcome.marketplaces.retain(|marketplace| {
+             policy
+@@ -3803,3 +3830,7 @@ impl PluginUninstallError {
+ #[cfg(test)]
+ #[path = "manager_tests.rs"]
+ mod tests;
++
++#[cfg(test)]
++#[path = "plugins_config_input_tests.rs"]
++mod plugins_config_input_tests;
+diff --git a/codex-rs/core-plugins/src/manager_tests.rs b/codex-rs/core-plugins/src/manager_tests.rs
+index d331e29396..2ae390470d 100644
+--- a/codex-rs/core-plugins/src/manager_tests.rs
++++ b/codex-rs/core-plugins/src/manager_tests.rs
+@@ -8,6 +8,7 @@ use crate::ToolSuggestPluginDiscoveryInput;
+ use crate::installed_marketplaces::marketplace_install_root;
+ use crate::loader::load_plugin_skill_inventory;
+ use crate::loader::load_plugins_from_layer_stack;
++use crate::loader::plugin_capability_summary_from_root;
+ use crate::loader::refresh_non_curated_plugin_cache;
+ use crate::loader::refresh_non_curated_plugin_cache_force_reinstall;
+ use crate::marketplace::MarketplacePluginInstallPolicy;
+@@ -1925,6 +1926,7 @@ async fn plugin_telemetry_metadata_uses_default_mcp_config_path() {
+         &PluginId::parse("sample@test").expect("plugin id should parse"),
+         &plugin_root.abs(),
+         test_skill_root_loader().as_ref(),
++        &crate::manifest::ManifestCache::disabled(),
+     )
+     .await;
+ 
+@@ -1968,6 +1970,7 @@ async fn plugin_capability_summary_uses_manifest_mcp_server_objects() {
+         &PluginId::parse("counter-sample@test").expect("plugin id should parse"),
+         &plugin_root.abs(),
+         test_skill_root_loader().as_ref(),
++        &crate::manifest::ManifestCache::disabled(),
+     )
+     .await;
+ 
+diff --git a/codex-rs/core-plugins/src/manifest.rs b/codex-rs/core-plugins/src/manifest.rs
+index 9991031f60..a532660dde 100644
+--- a/codex-rs/core-plugins/src/manifest.rs
++++ b/codex-rs/core-plugins/src/manifest.rs
+@@ -10,6 +10,9 @@ use std::fs;
+ use std::io;
+ use std::path::Path;
+ use std::path::PathBuf;
++
++mod manifest_cache;
++pub(crate) use manifest_cache::ManifestCache;
+ const MAX_DEFAULT_PROMPT_COUNT: usize = 3;
+ const MAX_DEFAULT_PROMPT_LEN: usize = 128;
+ 
+@@ -165,41 +168,8 @@ pub fn is_agent_plugin_manifest(plugin_root: &Path) -> bool {
+ }
+ 
+ pub(crate) fn load_plugin_manifest_with_format(plugin_root: &Path) -> Option<LoadedPluginManifest> {
+-    let manifest_path = find_plugin_manifest_path(plugin_root)?;
+-    let contents = fs::read_to_string(&manifest_path).ok()?;
+-    let is_agent_plugin = manifest_path == plugin_root.join(AGENT_PLUGIN_MANIFEST_RELATIVE_PATH);
+-    let overlay = if is_agent_plugin {
+-        let overlay_path = plugin_root.join(".codex-plugin/plugin.json");
+-        fs::read_to_string(&overlay_path)
+-            .ok()
+-            .map(|contents| (overlay_path, contents))
+-    } else {
+-        None
+-    };
+-    match parse_resolved_plugin_manifest(
+-        plugin_root,
+-        &manifest_path,
+-        &contents,
+-        overlay
+-            .as_ref()
+-            .map(|(path, contents)| (path.as_path(), contents.as_str())),
+-    ) {
+-        Ok(manifest) => Some(LoadedPluginManifest {
+-            manifest,
+-            format: if is_agent_plugin {
+-                PluginManifestFormat::AgentPlugin
+-            } else {
+-                PluginManifestFormat::Legacy
+-            },
+-        }),
+-        Err(err) => {
+-            tracing::warn!(
+-                path = %manifest_path.display(),
+-                "failed to parse plugin manifest: {err}"
+-            );
+-            None
+-        }
+-    }
++    // TODO: accept an owner-provided cache when these standalone loaders join a repeated workflow.
++    ManifestCache::disabled().load(plugin_root)
+ }
+ 
+ pub(crate) fn load_plugin_command_paths(plugin_root: &Path) -> io::Result<Option<Vec<PathBuf>>> {
+@@ -220,15 +190,23 @@ pub(crate) fn load_plugin_command_paths(plugin_root: &Path) -> io::Result<Option
+         .map(Some)
+ }
+ 
++// TODO: share an owner-provided cache if inline fallback manifests are parsed repeatedly.
+ pub(crate) fn parse_plugin_manifest(
+     plugin_root: &Path,
+     manifest_path: &Path,
+     contents: &str,
+ ) -> Result<PluginManifest, serde_json::Error> {
+-    parse_resolved_plugin_manifest(plugin_root, manifest_path, contents, /*overlay*/ None)
++    parse_resolved_plugin_manifest(
++        &ManifestCache::disabled(),
++        plugin_root,
++        manifest_path,
++        contents,
++        /*overlay*/ None,
++    )
+ }
+ 
+ fn parse_resolved_plugin_manifest(
++    cache: &ManifestCache,
+     plugin_root: &Path,
+     manifest_path: &Path,
+     contents: &str,
+@@ -245,13 +223,22 @@ fn parse_resolved_plugin_manifest(
+                 .map_err(serde_json::Error::io)
+         })
+         .transpose()?;
+-    parse_resolved_plugin_manifest_uri(
+-        &plugin_root_uri,
+-        &manifest_path_uri,
+-        contents,
+-        overlay.as_ref().map(|(path, contents)| (path, *contents)),
+-    )?
+-    .try_map_resources(|path| path.to_abs_path().map_err(serde_json::Error::io))
++    cache
++        .parse(
++            &plugin_root_uri,
++            &manifest_path_uri,
++            contents,
++            overlay.as_ref().map(|(path, contents)| (path, *contents)),
++            || {
++                parse_resolved_plugin_manifest_uri(
++                    &plugin_root_uri,
++                    &manifest_path_uri,
++                    contents,
++                    overlay.as_ref().map(|(path, contents)| (path, *contents)),
++                )
++            },
++        )?
++        .try_map_resources(|path| path.to_abs_path().map_err(serde_json::Error::io))
+ }
+ 
+ pub fn parse_plugin_manifest_uri(
+diff --git a/codex-rs/core-plugins/src/manifest/manifest_cache.rs b/codex-rs/core-plugins/src/manifest/manifest_cache.rs
+new file mode 100644
+index 0000000000..fec23ce91a
+--- /dev/null
++++ b/codex-rs/core-plugins/src/manifest/manifest_cache.rs
+@@ -0,0 +1,181 @@
++//! Reuse parsed manifest revisions within an explicitly owned plugin store.
++//! Store clones share the cache; independently created stores do not share entries or warnings.
++
++use super::LoadedPluginManifest;
++use super::PluginManifestFormat;
++use super::UriPluginManifest;
++use super::parse_resolved_plugin_manifest;
++use codex_utils_path_uri::PathUri;
++use codex_utils_plugins::AGENT_PLUGIN_MANIFEST_RELATIVE_PATH;
++use codex_utils_plugins::find_plugin_manifest_path;
++use sha2::Digest;
++use sha2::Sha256;
++use std::collections::HashMap;
++use std::collections::VecDeque;
++use std::fs;
++use std::path::Path;
++use std::sync::Mutex;
++
++const CAPACITY: usize = 128;
++const MAX_CACHABLE_INPUT_LEN: usize = 64 * 1024;
++
++pub(crate) struct ManifestCache {
++    state: Option<Mutex<ManifestCacheState>>,
++}
++
++#[derive(Default)]
++struct ManifestCacheState {
++    entries: HashMap<(PathUri, PathUri), Entry>,
++    recency: VecDeque<(PathUri, PathUri)>,
++}
++
++struct Entry {
++    contents_digest: [u8; 32],
++    overlay: Option<(PathUri, [u8; 32])>,
++    manifest: UriPluginManifest,
++}
++
++impl std::fmt::Debug for ManifestCache {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter
++            .debug_struct("ManifestCache")
++            .finish_non_exhaustive()
++    }
++}
++
++impl Default for ManifestCache {
++    fn default() -> Self {
++        Self {
++            state: Some(Mutex::default()),
++        }
++    }
++}
++
++impl ManifestCache {
++    pub(crate) fn disabled() -> Self {
++        Self { state: None }
++    }
++
++    pub(crate) fn load(&self, plugin_root: &Path) -> Option<LoadedPluginManifest> {
++        let manifest_path = find_plugin_manifest_path(plugin_root)?;
++        let contents = fs::read_to_string(&manifest_path).ok()?;
++        let is_agent_plugin =
++            manifest_path == plugin_root.join(AGENT_PLUGIN_MANIFEST_RELATIVE_PATH);
++        let overlay = if is_agent_plugin {
++            let overlay_path = plugin_root.join(".codex-plugin/plugin.json");
++            fs::read_to_string(&overlay_path)
++                .ok()
++                .map(|contents| (overlay_path, contents))
++        } else {
++            None
++        };
++        match parse_resolved_plugin_manifest(
++            self,
++            plugin_root,
++            &manifest_path,
++            &contents,
++            overlay
++                .as_ref()
++                .map(|(path, contents)| (path.as_path(), contents.as_str())),
++        ) {
++            Ok(manifest) => Some(LoadedPluginManifest {
++                manifest,
++                format: if is_agent_plugin {
++                    PluginManifestFormat::AgentPlugin
++                } else {
++                    PluginManifestFormat::Legacy
++                },
++            }),
++            Err(err) => {
++                tracing::warn!(
++                    path = %manifest_path.display(),
++                    "failed to parse plugin manifest: {err}"
++                );
++                None
++            }
++        }
++    }
++
++    pub(crate) fn parse(
++        &self,
++        root: &PathUri,
++        path: &PathUri,
++        contents: &str,
++        overlay: Option<(&PathUri, &str)>,
++        parse: impl FnOnce() -> Result<UriPluginManifest, serde_json::Error>,
++    ) -> Result<UriPluginManifest, serde_json::Error> {
++        let Some(state) = &self.state else {
++            return parse();
++        };
++        if contents
++            .len()
++            .saturating_add(overlay.map_or(0, |(_, value)| value.len()))
++            > MAX_CACHABLE_INPUT_LEN
++        {
++            state
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner)
++                .remove(&(root.clone(), path.clone()));
++            // Unbounded inputs must not serialize unrelated parses behind the cache lock.
++            return parse();
++        }
++        // Parsing is synchronous and does no filesystem I/O. Serializing cache misses also
++        // prevents concurrent capability loaders from validating the same revision twice.
++        state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .parse(root, path, contents, overlay, parse)
++    }
++}
++
++impl ManifestCacheState {
++    fn remove(&mut self, key: &(PathUri, PathUri)) -> Option<Entry> {
++        let entry = self.entries.remove(key)?;
++        self.recency.retain(|existing| existing != key);
++        Some(entry)
++    }
++
++    fn parse(
++        &mut self,
++        root: &PathUri,
++        path: &PathUri,
++        contents: &str,
++        overlay: Option<(&PathUri, &str)>,
++        parse: impl FnOnce() -> Result<UriPluginManifest, serde_json::Error>,
++    ) -> Result<UriPluginManifest, serde_json::Error> {
++        let key = (root.clone(), path.clone());
++        let previous = self.remove(&key);
++        let contents_digest = Sha256::digest(contents.as_bytes()).into();
++        let overlay = overlay
++            .map(|(path, contents)| (path.clone(), Sha256::digest(contents.as_bytes()).into()));
++        if let Some(entry) = previous
++            && entry.contents_digest == contents_digest
++            && entry.overlay == overlay
++        {
++            let manifest = entry.manifest.clone();
++            self.recency.push_front(key.clone());
++            self.entries.insert(key, entry);
++            return Ok(manifest);
++        }
++        let manifest = parse()?;
++        if self.entries.len() == CAPACITY
++            && let Some(oldest) = self.recency.pop_back()
++        {
++            self.entries.remove(&oldest);
++        }
++        self.recency.push_front(key.clone());
++        self.entries.insert(
++            key,
++            Entry {
++                contents_digest,
++                overlay,
++                manifest: manifest.clone(),
++            },
++        );
++        Ok(manifest)
++    }
++}
++
++#[cfg(test)]
++#[path = "manifest_cache_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core-plugins/src/manifest/manifest_cache_tests.rs b/codex-rs/core-plugins/src/manifest/manifest_cache_tests.rs
+new file mode 100644
+index 0000000000..74d120c5e5
+--- /dev/null
++++ b/codex-rs/core-plugins/src/manifest/manifest_cache_tests.rs
+@@ -0,0 +1,303 @@
++//! Verify parse reuse, revision invalidation, and diagnostic preservation.
++
++use super::super::parse_legacy_plugin_manifest_uri;
++use super::super::parse_resolved_plugin_manifest;
++use super::ManifestCache;
++use codex_utils_path_uri::PathUri;
++use pretty_assertions::assert_eq;
++use std::cell::Cell;
++use std::sync::Mutex;
++use tracing_test::internal::MockWriter;
++
++#[test]
++fn repeated_revision_runs_parser_once_and_changes_run_it_again() {
++    let directory = tempfile::tempdir().unwrap();
++    let root = PathUri::from_host_native_path(directory.path()).unwrap();
++    let path = root.join(".codex-plugin/plugin.json").unwrap();
++    let first = r#"{"name":"demo","description":"first"}"#;
++    let changed = r#"{"name":"demo","description":"changed"}"#;
++    let parses = Cell::new(0);
++    let cache = ManifestCache::default();
++    let mut results = Vec::new();
++    for contents in std::iter::repeat_n(first, 220).chain([changed, first]) {
++        results.push(
++            cache
++                .parse(&root, &path, contents, /*overlay*/ None, || {
++                    parses.set(parses.get() + 1);
++                    parse_legacy_plugin_manifest_uri(&root, &path, contents)
++                })
++                .unwrap(),
++        );
++    }
++    let original = results[0].clone();
++    let mut revised = original.clone();
++    revised.description = Some("changed".to_string());
++    assert_eq!(
++        results,
++        std::iter::repeat_n(original.clone(), 220)
++            .chain([revised, original])
++            .collect::<Vec<_>>()
++    );
++    assert_eq!(parses.get(), 3);
++}
++
++#[test]
++fn invalid_fields_warn_once_until_the_manifest_changes() {
++    let directory = tempfile::tempdir().unwrap();
++    let path = directory.path().join(".codex-plugin/plugin.json");
++    let buffer: &'static Mutex<Vec<u8>> = Box::leak(Box::new(Mutex::new(Vec::new())));
++    let subscriber = tracing_subscriber::fmt()
++        .without_time()
++        .with_ansi(/*ansi*/ false)
++        .with_writer(MockWriter::new(buffer))
++        .finish();
++    let _guard = tracing::subscriber::set_default(subscriber);
++    let original =
++        r#"{"name":"demo","interface":{"defaultPrompt":" ","composerIcon":"../outside.svg"}}"#;
++    let changed = r#"{"name":"demo","description":"changed","interface":{"defaultPrompt":" ","composerIcon":"../outside.svg"}}"#;
++    let cache = ManifestCache::default();
++    let parse = |contents| {
++        parse_resolved_plugin_manifest(
++            &cache,
++            directory.path(),
++            &path,
++            contents,
++            /*overlay*/ None,
++        )
++        .unwrap()
++    };
++    let first = parse(original);
++    for _ in 0..220 {
++        assert_eq!(parse(original), first);
++    }
++    let mut expected = first.clone();
++    expected.description = Some("changed".to_string());
++    assert_eq!(parse(changed), expected);
++    assert_eq!(parse(original), first);
++    let logs = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
++    assert_eq!(logs.matches("ignoring interface.defaultPrompt").count(), 3);
++    assert_eq!(logs.matches("ignoring interface.composerIcon").count(), 3);
++}
++
++#[test]
++fn overlay_revision_and_resource_root_are_part_of_cached_parse() {
++    let directory = tempfile::tempdir().unwrap();
++    let root = PathUri::from_host_native_path(directory.path()).unwrap();
++    let other_root = root.join("other").unwrap();
++    let path = root.join("plugin.json").unwrap();
++    let overlay_path = root.join(".codex-plugin/plugin.json").unwrap();
++    let contents = serde_json::json!({
++        "$schema": codex_utils_plugins::AGENT_PLUGIN_SCHEMA_URI,
++        "name": "demo"
++    })
++    .to_string();
++    let first = r#"{"interface":{"defaultPrompt":"first"}}"#;
++    let changed = r#"{"interface":{"defaultPrompt":"changed"}}"#;
++    let parses = Cell::new(0);
++    let cache = ManifestCache::default();
++    for (plugin_root, overlay) in [
++        (&root, Some((&overlay_path, first))),
++        (&root, Some((&overlay_path, first))),
++        (&root, Some((&overlay_path, changed))),
++        (&root, None),
++        (&other_root, None),
++    ] {
++        let manifest = cache
++            .parse(plugin_root, &path, &contents, overlay, || {
++                parses.set(parses.get() + 1);
++                super::super::agent_plugin_manifest::parse_agent_plugin_manifest_uri(
++                    plugin_root,
++                    &path,
++                    &contents,
++                    overlay,
++                )
++            })
++            .unwrap();
++        let expected = super::super::agent_plugin_manifest::parse_agent_plugin_manifest_uri(
++            plugin_root,
++            &path,
++            &contents,
++            overlay,
++        )
++        .unwrap();
++        assert_eq!(manifest, expected);
++    }
++    assert_eq!(parses.get(), 4);
++}
++
++#[test]
++fn failed_revision_is_retried_and_repair_is_visible() {
++    let directory = tempfile::tempdir().unwrap();
++    let root = PathUri::from_host_native_path(directory.path()).unwrap();
++    let path = root.join(".codex-plugin/plugin.json").unwrap();
++    let cache = ManifestCache::default();
++    for contents in ["{", "{"] {
++        assert!(
++            cache
++                .parse(&root, &path, contents, /*overlay*/ None, || {
++                    parse_legacy_plugin_manifest_uri(&root, &path, contents)
++                })
++                .is_err()
++        );
++    }
++    let repaired = r#"{"name":"repaired"}"#;
++    assert_eq!(
++        cache
++            .parse(&root, &path, repaired, /*overlay*/ None, || {
++                parse_legacy_plugin_manifest_uri(&root, &path, repaired)
++            })
++            .unwrap(),
++        parse_legacy_plugin_manifest_uri(&root, &path, repaired).unwrap()
++    );
++}
++
++#[test]
++fn equivalent_windows_paths_share_a_cached_revision() {
++    let cache = ManifestCache::default();
++    let parses = Cell::new(0);
++    let contents = r#"{"name":"demo"}"#;
++    let mut manifests = Vec::new();
++    for value in ["file:///C:/plugins/Demo", "file:///C:/plugins/demo"] {
++        let root = PathUri::parse(value).unwrap();
++        let path = root.join(".codex-plugin/plugin.json").unwrap();
++        manifests.push(
++            cache
++                .parse(&root, &path, contents, /*overlay*/ None, || {
++                    parses.set(parses.get() + 1);
++                    parse_legacy_plugin_manifest_uri(&root, &path, contents)
++                })
++                .unwrap(),
++        );
++    }
++    assert_eq!(manifests[0], manifests[1]);
++    assert_eq!(parses.get(), 1);
++}
++
++#[test]
++fn oversized_revision_invalidates_previous_result_without_being_cached() {
++    let directory = tempfile::tempdir().unwrap();
++    let root = PathUri::from_host_native_path(directory.path()).unwrap();
++    let path = root.join(".codex-plugin/plugin.json").unwrap();
++    let small = r#"{"name":"demo"}"#;
++    let large = format!("{}{small}", " ".repeat(super::MAX_CACHABLE_INPUT_LEN));
++    let parses = Cell::new(0);
++    let cache = ManifestCache::default();
++    for contents in [small, small, &large, &large, small] {
++        cache
++            .parse(&root, &path, contents, /*overlay*/ None, || {
++                parses.set(parses.get() + 1);
++                parse_legacy_plugin_manifest_uri(&root, &path, contents)
++            })
++            .unwrap();
++    }
++    assert_eq!(parses.get(), 4);
++}
++
++#[test]
++fn oversized_parse_does_not_block_unrelated_manifest() {
++    use std::sync::mpsc;
++    use std::time::Duration;
++
++    let directory = tempfile::tempdir().unwrap();
++    let root = PathUri::from_host_native_path(directory.path()).unwrap();
++    let large_path = root.join("large.json").unwrap();
++    let small_path = root.join("small.json").unwrap();
++    let large = format!("{}{{}}", " ".repeat(super::MAX_CACHABLE_INPUT_LEN));
++    let (started_tx, started_rx) = mpsc::channel();
++    let (release_tx, release_rx) = mpsc::channel();
++    let (completed_tx, completed_rx) = mpsc::channel();
++    let root = &root;
++    let large_path = &large_path;
++    let small_path = &small_path;
++    let large = &large;
++    let cache = &ManifestCache::default();
++    std::thread::scope(|scope| {
++        scope.spawn(move || {
++            cache
++                .parse(root, large_path, large, /*overlay*/ None, || {
++                    started_tx.send(()).unwrap();
++                    release_rx.recv().unwrap();
++                    parse_legacy_plugin_manifest_uri(root, large_path, large)
++                })
++                .unwrap();
++        });
++        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
++        scope.spawn(move || {
++            cache
++                .parse(root, small_path, "{}", /*overlay*/ None, || {
++                    parse_legacy_plugin_manifest_uri(root, small_path, "{}")
++                })
++                .unwrap();
++            completed_tx.send(()).unwrap();
++        });
++        let completed = completed_rx.recv_timeout(Duration::from_secs(10));
++        release_tx.send(()).unwrap();
++        assert_eq!(completed, Ok(()));
++    });
++}
++
++#[test]
++fn store_clones_reuse_validation_but_independent_stores_warn_again() {
++    use crate::store::PluginStore;
++
++    let directory = tempfile::tempdir().unwrap();
++    let root = directory.path().join("plugin");
++    std::fs::create_dir_all(root.join(".codex-plugin")).unwrap();
++    std::fs::write(
++        root.join(".codex-plugin/plugin.json"),
++        r#"{"name":"demo","interface":{"defaultPrompt":" "}}"#,
++    )
++    .unwrap();
++    let buffer: &'static Mutex<Vec<u8>> = Box::leak(Box::new(Mutex::new(Vec::new())));
++    let subscriber = tracing_subscriber::fmt()
++        .without_time()
++        .with_ansi(/*ansi*/ false)
++        .with_writer(MockWriter::new(buffer))
++        .finish();
++    let _guard = tracing::subscriber::set_default(subscriber);
++    let store = PluginStore::new(directory.path().to_path_buf());
++    let cloned_store = store.clone();
++    let first = store.manifest_cache.load(&root).unwrap().manifest;
++    for _ in 0..220 {
++        assert_eq!(
++            cloned_store.manifest_cache.load(&root).unwrap().manifest,
++            first
++        );
++    }
++    let independent_store = PluginStore::new(directory.path().to_path_buf());
++    assert_eq!(
++        independent_store
++            .manifest_cache
++            .load(&root)
++            .unwrap()
++            .manifest,
++        first
++    );
++    let logs = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
++    assert_eq!(
++        logs.matches("ignoring interface.defaultPrompt: prompt must not be empty")
++            .count(),
++        2
++    );
++}
++
++#[test]
++fn disabled_cache_parses_each_load() {
++    let directory = tempfile::tempdir().unwrap();
++    let root = PathUri::from_host_native_path(directory.path()).unwrap();
++    let path = root.join(".codex-plugin/plugin.json").unwrap();
++    let contents = r#"{"name":"demo"}"#;
++    let expected = parse_legacy_plugin_manifest_uri(&root, &path, contents).unwrap();
++    let cache = ManifestCache::disabled();
++    let parses = Cell::new(0);
++    for _ in 0..3 {
++        let result = cache
++            .parse(&root, &path, contents, /*overlay*/ None, || {
++                parses.set(parses.get() + 1);
++                parse_legacy_plugin_manifest_uri(&root, &path, contents)
++            })
++            .unwrap();
++        assert_eq!(result, expected);
++    }
++    assert_eq!(parses.get(), 3);
++}
+diff --git a/codex-rs/core-plugins/src/marketplace.rs b/codex-rs/core-plugins/src/marketplace.rs
+index d919e81135..2199fe4e1e 100644
+--- a/codex-rs/core-plugins/src/marketplace.rs
++++ b/codex-rs/core-plugins/src/marketplace.rs
+@@ -1,5 +1,5 @@
++use crate::manifest::ManifestCache;
+ use crate::manifest::PluginManifestInterface;
+-use crate::manifest::load_plugin_manifest;
+ use codex_app_server_protocol::PluginAuthPolicy;
+ use codex_app_server_protocol::PluginInstallPolicy;
+ use codex_git_utils::get_git_repo_root;
+@@ -244,6 +244,7 @@ impl MarketplaceError {
+     }
+ }
+ 
++// TODO: thread an owner-provided manifest cache through standalone install/read workflows.
+ pub fn find_marketplace_plugin(
+     marketplace_path: &AbsolutePathBuf,
+     plugin_name: &str,
+@@ -256,9 +257,12 @@ pub fn find_marketplace_plugin(
+             continue;
+         }
+ 
+-        if let Some(plugin) =
+-            resolve_marketplace_plugin_entry(marketplace_path, &marketplace_name, plugin)?
+-        {
++        if let Some(plugin) = resolve_marketplace_plugin_entry(
++            marketplace_path,
++            &marketplace_name,
++            plugin,
++            &ManifestCache::disabled(),
++        )? {
+             return Ok(plugin);
+         }
+     }
+@@ -368,25 +372,35 @@ fn marketplace_root_from_layout(marketplace_path: &Path, relative_path: &str) ->
+     Some(current.to_path_buf())
+ }
+ 
++// TODO: allow standalone callers to share a cache across marketplace loads.
+ pub fn load_marketplace(path: &AbsolutePathBuf) -> Result<Marketplace, MarketplaceError> {
++    load_marketplace_with_cache(path, &ManifestCache::disabled())
++}
++
++fn load_marketplace_with_cache(
++    path: &AbsolutePathBuf,
++    manifest_cache: &ManifestCache,
++) -> Result<Marketplace, MarketplaceError> {
+     let marketplace = load_raw_marketplace_manifest(path)?;
+     let mut plugins = Vec::new();
+ 
+     for plugin in marketplace.plugins {
+-        let plugin = match resolve_marketplace_plugin_entry(path, &marketplace.name, plugin) {
+-            Ok(Some(plugin)) => plugin,
+-            Ok(None) => continue,
+-            Err(MarketplaceError::InvalidPlugin(message)) => {
+-                warn!(
+-                    path = %path.display(),
+-                    marketplace = %marketplace.name,
+-                    error = %message,
+-                    "skipping invalid marketplace plugin"
+-                );
+-                continue;
+-            }
+-            Err(err) => return Err(err),
+-        };
++        let plugin =
++            match resolve_marketplace_plugin_entry(path, &marketplace.name, plugin, manifest_cache)
++            {
++                Ok(Some(plugin)) => plugin,
++                Ok(None) => continue,
++                Err(MarketplaceError::InvalidPlugin(message)) => {
++                    warn!(
++                        path = %path.display(),
++                        marketplace = %marketplace.name,
++                        error = %message,
++                        "skipping invalid marketplace plugin"
++                    );
++                    continue;
++                }
++                Err(err) => return Err(err),
++            };
+ 
+         let manifest_fallback = plugin
+             .manifest_fallback
+@@ -420,15 +434,24 @@ pub fn load_marketplace(path: &AbsolutePathBuf) -> Result<Marketplace, Marketpla
+     })
+ }
+ 
++// TODO: pass an owner-provided cache from remaining callers; the manager already does.
+ #[doc(hidden)]
+ pub fn list_marketplaces_with_home(
+     additional_roots: &[AbsolutePathBuf],
+     home_dir: Option<&Path>,
++) -> Result<MarketplaceListOutcome, MarketplaceError> {
++    list_marketplaces_with_cache(additional_roots, home_dir, &ManifestCache::disabled())
++}
++
++pub(crate) fn list_marketplaces_with_cache(
++    additional_roots: &[AbsolutePathBuf],
++    home_dir: Option<&Path>,
++    manifest_cache: &ManifestCache,
+ ) -> Result<MarketplaceListOutcome, MarketplaceError> {
+     let mut outcome = MarketplaceListOutcome::default();
+ 
+     for marketplace_path in discover_marketplace_paths_from_roots(additional_roots, home_dir) {
+-        match load_marketplace(&marketplace_path) {
++        match load_marketplace_with_cache(&marketplace_path, manifest_cache) {
+             Ok(marketplace) => outcome.marketplaces.push(marketplace),
+             Err(err) => {
+                 warn!(
+@@ -508,6 +531,7 @@ fn resolve_marketplace_plugin_entry(
+     marketplace_path: &AbsolutePathBuf,
+     marketplace_name: &str,
+     plugin: RawMarketplaceManifestPlugin,
++    manifest_cache: &ManifestCache,
+ ) -> Result<Option<ResolvedMarketplacePlugin>, MarketplaceError> {
+     let RawMarketplaceManifestPlugin {
+         name,
+@@ -525,7 +549,9 @@ fn resolve_marketplace_plugin_entry(
+     let manifest = match &source {
+         MarketplacePluginSource::Local { path } => {
+             if codex_utils_plugins::find_plugin_manifest_path(path.as_path()).is_some() {
+-                load_plugin_manifest(path.as_path())
++                manifest_cache
++                    .load(path.as_path())
++                    .map(|loaded| loaded.manifest)
+             } else if manifest_fallback.has_metadata {
+                 manifest_fallback.parse_for_plugin_root(path.as_path())
+             } else {
+diff --git a/codex-rs/core-plugins/src/plugins_config_input_tests.rs b/codex-rs/core-plugins/src/plugins_config_input_tests.rs
+new file mode 100644
+index 0000000000..58c7afb6f4
+--- /dev/null
++++ b/codex-rs/core-plugins/src/plugins_config_input_tests.rs
+@@ -0,0 +1,125 @@
++//! Verify connection reuse without retaining request metadata or crossing config lifetimes.
++
++use super::PluginsConfigInput;
++use crate::remote::fetch_recommended_plugins;
++use crate::test_support::test_http_client_factory;
++use codex_config::ConfigLayerStack;
++use codex_login::CodexAuth;
++use pretty_assertions::assert_eq;
++use std::sync::Arc;
++use wiremock::Mock;
++use wiremock::MockServer;
++use wiremock::ResponseTemplate;
++use wiremock::matchers::header;
++use wiremock::matchers::method;
++use wiremock::matchers::path;
++
++#[test]
++fn repeated_service_configs_and_early_clones_share_one_lazy_pool() {
++    let input = PluginsConfigInput::new(
++        ConfigLayerStack::default(),
++        "openai".to_string(),
++        /*plugins_enabled*/ true,
++        /*remote_plugin_enabled*/ true,
++        "https://chatgpt.com/backend-api".to_string(),
++        test_http_client_factory(),
++        /*product_sku*/ None,
++    );
++    let clone = input.clone();
++    assert!(input.remote_http_clients.get().is_none());
++    let first = input.remote_plugin_service_config();
++    let reuse: Vec<_> = (0..220)
++        .map(|_| {
++            Arc::ptr_eq(
++                &first.http_clients,
++                &clone.remote_plugin_service_config().http_clients,
++            )
++        })
++        .collect();
++    let new_input = PluginsConfigInput::new(
++        input.config_layer_stack.clone(),
++        input.model_provider_id.clone(),
++        input.plugins_enabled,
++        input.remote_plugin_enabled,
++        input.chatgpt_base_url.clone(),
++        input.http_client_factory.clone(),
++        input.product_sku,
++    );
++    assert_eq!(
++        (
++            reuse,
++            Arc::ptr_eq(
++                &first.http_clients,
++                &new_input.remote_plugin_service_config().http_clients,
++            ),
++        ),
++        (vec![true; 220], false)
++    );
++}
++
++#[tokio::test]
++async fn reused_pool_uses_current_endpoint_product_and_authentication() {
++    let first_server = MockServer::start().await;
++    let second_server = MockServer::start().await;
++    for (server, token, account, product_sku) in [
++        (&first_server, "header.e30.first", "first-account", "codex"),
++        (
++            &second_server,
++            "header.e30.second",
++            "second-account",
++            "updated",
++        ),
++    ] {
++        Mock::given(method("GET"))
++            .and(path("/backend-api/ps/plugins/suggested/codex"))
++            .and(header("authorization", format!("Bearer {token}")))
++            .and(header("chatgpt-account-id", account))
++            .and(header("oai-product-sku", product_sku))
++            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
++                "enabled": true,
++                "plugins": [],
++            })))
++            .expect(1)
++            .mount(server)
++            .await;
++    }
++    let mut input = PluginsConfigInput::new(
++        ConfigLayerStack::default(),
++        "openai".to_string(),
++        /*plugins_enabled*/ true,
++        /*remote_plugin_enabled*/ true,
++        format!("{}/backend-api", first_server.uri()),
++        test_http_client_factory(),
++        /*product_sku*/ None,
++    );
++    let first = input.remote_plugin_service_config();
++    let first_auth = CodexAuth::from_external_chatgpt_tokens(
++        "header.e30.first",
++        "first-account",
++        /*chatgpt_plan_type*/ None,
++    )
++    .unwrap();
++    let first_result = fetch_recommended_plugins(&first, Some(&first_auth))
++        .await
++        .unwrap();
++
++    input.chatgpt_base_url = format!("{}/backend-api", second_server.uri());
++    input.product_sku = Some("updated".to_string());
++    let second = input.remote_plugin_service_config();
++    let second_auth = CodexAuth::from_external_chatgpt_tokens(
++        "header.e30.second",
++        "second-account",
++        /*chatgpt_plan_type*/ None,
++    )
++    .unwrap();
++    let second_result = fetch_recommended_plugins(&second, Some(&second_auth))
++        .await
++        .unwrap();
++    assert_eq!(
++        (
++            first_result,
++            Arc::ptr_eq(&first.http_clients, &second.http_clients),
++        ),
++        (second_result, true)
++    );
++}
+diff --git a/codex-rs/core-plugins/src/remote/plugin_capabilities.rs b/codex-rs/core-plugins/src/remote/plugin_capabilities.rs
+index 4a47c0ffa6..7b5fd1b1cb 100644
+--- a/codex-rs/core-plugins/src/remote/plugin_capabilities.rs
++++ b/codex-rs/core-plugins/src/remote/plugin_capabilities.rs
+@@ -8,7 +8,6 @@ use crate::loader::load_plugin_hooks;
+ use crate::loader::load_plugin_mcp_servers_from_manifest_with_format;
+ use crate::loader::plugin_skill_roots;
+ use crate::manifest::PluginManifestFormat;
+-use crate::manifest::load_plugin_manifest_with_format;
+ use crate::store::PluginStore;
+ use codex_hooks::plugin_hook_declarations;
+ use codex_plugin::PluginId;
+@@ -31,7 +30,7 @@ impl RemotePluginCapabilities {
+         let Some(root) = store.active_plugin_root(plugin_id) else {
+             return;
+         };
+-        let Some(loaded) = load_plugin_manifest_with_format(root.as_path()) else {
++        let Some(loaded) = store.manifest_cache.load(root.as_path()) else {
+             return;
+         };
+         let paths = &loaded.manifest.paths;
+diff --git a/codex-rs/core-plugins/src/store.rs b/codex-rs/core-plugins/src/store.rs
+index 4a52d58a81..087eae6d7b 100644
+--- a/codex-rs/core-plugins/src/store.rs
++++ b/codex-rs/core-plugins/src/store.rs
+@@ -1,4 +1,5 @@
+ use crate::command_migration::migrate_plugin_commands;
++use crate::manifest::ManifestCache;
+ use crate::manifest::PluginManifest;
+ use crate::manifest::PluginManifestFormat;
+ use crate::manifest::load_plugin_manifest;
+@@ -19,6 +20,7 @@ use std::io;
+ use std::io::Write;
+ use std::path::Path;
+ use std::path::PathBuf;
++use std::sync::Arc;
+ 
+ pub use codex_core_plugin_common::installed::DEFAULT_PLUGIN_VERSION;
+ pub use codex_core_plugin_common::installed::PLUGINS_CACHE_DIR;
+@@ -39,6 +41,7 @@ pub struct PluginInstallResult {
+ 
+ #[derive(Debug, Clone)]
+ pub struct PluginStore {
++    pub(crate) manifest_cache: Arc<ManifestCache>,
+     codex_home: AbsolutePathBuf,
+     root: AbsolutePathBuf,
+     data_root: AbsolutePathBuf,
+@@ -91,6 +94,7 @@ impl PluginStore {
+             .map_err(|err| PluginStoreError::io("failed to resolve Codex home", err))?;
+ 
+         Ok(Self {
++            manifest_cache: Arc::new(ManifestCache::default()),
+             codex_home,
+             root,
+             data_root,
+diff --git a/codex-rs/core-plugins/src/tool_suggest_metadata.rs b/codex-rs/core-plugins/src/tool_suggest_metadata.rs
+index d0b367f96c..658e7219b5 100644
+--- a/codex-rs/core-plugins/src/tool_suggest_metadata.rs
++++ b/codex-rs/core-plugins/src/tool_suggest_metadata.rs
+@@ -18,13 +18,13 @@ use tokio::sync::Semaphore;
+ 
+ use crate::app_mcp_routing::apply_app_mcp_routing_policy;
+ use crate::loader::PluginSkillInventory;
+-use crate::loader::load_plugin_apps;
+-use crate::loader::load_plugin_mcp_servers;
++use crate::loader::load_plugin_apps_from_manifest;
++use crate::loader::load_plugin_mcp_servers_from_manifest_with_format;
+ use crate::loader::load_plugin_skill_inventory;
+ use crate::manager::ConfiguredMarketplacePlugin;
+ use crate::manager::remote_plugin_install_required_description;
++use crate::manifest::ManifestCache;
+ use crate::manifest::PluginManifestFormat;
+-use crate::manifest::load_plugin_manifest_with_format;
+ use crate::marketplace::MarketplaceError;
+ use crate::marketplace::MarketplacePluginSource;
+ 
+@@ -37,6 +37,7 @@ type ToolSuggestMetadataEntry = Result<Arc<ToolSuggestMetadataFragment>, String>
+ /// `PluginsManager` clears these entries alongside its loaded-plugin cache. Current skill config
+ /// and auth routing are projected after each lookup and are not part of this cache.
+ pub(crate) struct ToolSuggestMetadataCache {
++    manifest_cache: Arc<ManifestCache>,
+     state: RwLock<ToolSuggestMetadataCacheState>,
+     load_semaphore: Semaphore,
+ }
+@@ -103,8 +104,9 @@ impl ToolSuggestMetadataFragment {
+ }
+ 
+ impl ToolSuggestMetadataCache {
+-    pub(crate) fn new() -> Self {
++    pub(crate) fn new(manifest_cache: Arc<ManifestCache>) -> Self {
+         Self {
++            manifest_cache,
+             state: RwLock::new(ToolSuggestMetadataCacheState::default()),
+             load_semaphore: Semaphore::new(/*permits*/ 1),
+         }
+@@ -146,6 +148,7 @@ impl ToolSuggestMetadataCache {
+ 
+             let generation = self.generation();
+             let entry = load_plugin_metadata(
++                &self.manifest_cache,
+                 marketplace_name,
+                 plugin,
+                 restriction_product,
+@@ -196,6 +199,7 @@ impl ToolSuggestMetadataCache {
+ }
+ 
+ async fn load_plugin_metadata(
++    manifest_cache: &ManifestCache,
+     marketplace_name: &str,
+     plugin: &ConfiguredMarketplacePlugin,
+     restriction_product: Option<Product>,
+@@ -223,7 +227,8 @@ async fn load_plugin_metadata(
+     if !plugin_root.as_path().is_dir() {
+         return Err("path does not exist or is not a directory".to_string());
+     }
+-    let loaded_manifest = load_plugin_manifest_with_format(plugin_root.as_path())
++    let loaded_manifest = manifest_cache
++        .load(plugin_root.as_path())
+         .ok_or_else(|| "missing or invalid plugin.json".to_string())?;
+     let plugin_identity = PluginIdentity {
+         plugin_id: plugin_id.as_key(),
+@@ -240,17 +245,22 @@ async fn load_plugin_metadata(
+         skill_root_loader,
+     )
+     .await;
+-    let mut mcp_server_names =
+-        load_plugin_mcp_servers(plugin_root.as_path(), /*auth_mode*/ None)
+-            .await
+-            .into_keys()
+-            .collect::<Vec<_>>();
++    let mut mcp_server_names = load_plugin_mcp_servers_from_manifest_with_format(
++        plugin_root.as_path(),
++        &manifest.paths,
++        /*plugin_policy*/ None,
++        /*plugin_data_root*/ None,
++        loaded_manifest.format,
++    )
++    .await
++    .into_keys()
++    .collect::<Vec<_>>();
+     mcp_server_names.sort_unstable();
+     mcp_server_names.dedup();
+     let app_declarations = if loaded_manifest.format == PluginManifestFormat::AgentPlugin {
+         Vec::new()
+     } else {
+-        load_plugin_apps(plugin_root.as_path()).await
++        load_plugin_apps_from_manifest(plugin_root.as_path(), &manifest.paths).await
+     };
+ 
+     Ok(Arc::new(ToolSuggestMetadataFragment {
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 996cb33e73..818d44dfac 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -736,6 +736,12 @@ pub(crate) async fn run_turn(
+                         ) {
+                             return Err(err);
+                         }
++                        let error = err.to_codex_protocol_error();
++                        if matches!(error, CodexErrorInfo::UsageLimitExceeded) {
++                            // Preserve the completed answer while stopping automatic work.
++                            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error)
++                                .await;
++                        }
+                         warn!(error = %err, "Post-turn compaction failed; preserving the completed turn");
+                     }
+                     break;
+diff --git a/codex-rs/core/src/tasks/compact.rs b/codex-rs/core/src/tasks/compact.rs
+index 14913d95c8..85f1a54f91 100644
+--- a/codex-rs/core/src/tasks/compact.rs
++++ b/codex-rs/core/src/tasks/compact.rs
+@@ -10,6 +10,7 @@ use crate::state::TaskKind;
+ use codex_features::Feature;
+ use codex_model_provider::RemoteCompactionSupport;
+ use codex_protocol::error::CodexErrorDetails;
++use codex_protocol::protocol::CodexErrorInfo;
+ use codex_protocol::user_input::UserInput;
+ use tokio_util::sync::CancellationToken;
+ 
+@@ -45,7 +46,8 @@ impl SessionTask for CompactTask {
+                     "remote_v2",
+                     /*manual*/ true,
+                 );
+-                crate::compact_remote_v2::run_remote_compact_task(session.clone(), ctx).await
++                crate::compact_remote_v2::run_remote_compact_task(session.clone(), Arc::clone(&ctx))
++                    .await
+             }
+             RemoteCompactionSupport::Unsupported => {
+                 emit_compact_metric(
+@@ -63,13 +65,18 @@ impl SessionTask for CompactTask {
+                     // Compaction prompt is synthesized; no UI element ranges to preserve.
+                     text_elements: Vec::new(),
+                 }];
+-                crate::compact::run_compact_task(session.clone(), ctx, input).await
++                crate::compact::run_compact_task(session.clone(), Arc::clone(&ctx), input).await
+             }
+         };
+-        if let Err(err) = result
+-            && matches!(err.details(), CodexErrorDetails::TurnAborted)
+-        {
+-            return Err(err);
++        if let Err(err) = result {
++            if matches!(err.details(), CodexErrorDetails::TurnAborted) {
++                return Err(err);
++            }
++            let error = err.to_codex_protocol_error();
++            if matches!(error, CodexErrorInfo::UsageLimitExceeded) {
++                // Compaction already emitted the error; notify extensions without emitting it twice.
++                session.emit_turn_error_lifecycle(ctx.as_ref(), error).await;
++            }
+         }
+         Ok(None)
+     }
+diff --git a/codex-rs/exec-server/src/process_sandbox.rs b/codex-rs/exec-server/src/process_sandbox.rs
+index 0ad07b4ad0..fd2c89ee16 100644
+--- a/codex-rs/exec-server/src/process_sandbox.rs
++++ b/codex-rs/exec-server/src/process_sandbox.rs
+@@ -1,4 +1,6 @@
+ use std::collections::HashMap;
++#[cfg(windows)]
++use std::path::Path;
+ use std::sync::Arc;
+ 
+ use crate::process_telemetry::ProcessTelemetry;
+@@ -30,6 +32,8 @@ use codex_sandboxing::resolve_windows_elevated_filesystem_overrides;
+ use codex_sandboxing::resolve_windows_restricted_token_filesystem_overrides;
+ use codex_sandboxing::windows_sandbox_uses_elevated_backend;
+ use codex_sandboxing::with_managed_mitm_ca_readable_root;
++#[cfg(windows)]
++use codex_shell_command::shell_detect::fallback_powershell_shell_for_windows_sandbox;
+ use codex_utils_absolute_path::AbsolutePathBuf;
+ use codex_utils_path_uri::PathUri;
+ 
+@@ -245,6 +249,20 @@ pub(crate) async fn prepare_exec_request_with_telemetry(
+     );
+     #[cfg(not(unix))]
+     let (program, args) = (program.into(), args.to_vec());
++    #[cfg(windows)]
++    let program = if matches!(
++        sandbox_context.windows_sandbox_selection,
++        WindowsSandboxSelection::Elevated | WindowsSandboxSelection::Mxc
++    ) && Path::new(&program).file_stem().is_some_and(|name| {
++        name.eq_ignore_ascii_case("pwsh") || name.eq_ignore_ascii_case("powershell")
++    }) && let Some(fallback) =
++        fallback_powershell_shell_for_windows_sandbox(Path::new(&program))
++    {
++        // Remote controllers cannot resolve a sandbox-compatible shell on this host.
++        fallback.shell_path.into_os_string()
++    } else {
++        program
++    };
+     let transform_request = SandboxDirectSpawnTransformRequest {
+         workspace_roots,
+         windows_sandbox_proxy_settings_mode,
+diff --git a/codex-rs/exec-server/tests/exec_process/windows_sandbox.rs b/codex-rs/exec-server/tests/exec_process/windows_sandbox.rs
+index d001687a93..01f7f90abd 100644
+--- a/codex-rs/exec-server/tests/exec_process/windows_sandbox.rs
++++ b/codex-rs/exec-server/tests/exec_process/windows_sandbox.rs
+@@ -10,6 +10,73 @@ use codex_protocol::permissions::FileSystemSpecialPath;
+ use codex_protocol::permissions::NetworkSandboxPolicy;
+ use pretty_assertions::assert_eq;
+ 
++/// Windows alias casing must not prevent fallback when the primary runtime is absent from PATH.
++#[test_case::test_case("pwsh.exe"; "lowercase_pwsh")]
++#[test_case::test_case("PWSH.exe"; "uppercase_pwsh")]
++#[test_case::test_case("powershell.exe"; "lowercase_powershell")]
++#[test_case::test_case("PowerShell.exe"; "mixed_case_powershell")]
++#[cfg_attr(not(windows), ignore = "requires a native Windows sandbox")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++#[serial_test::serial(remote_exec_server)]
++async fn powershell_alias_falls_back_without_primary_runtime_over_rpc(
++    shell_name: &str,
++) -> Result<()> {
++    crate::skip_if_mxc_unavailable!(Ok(()));
++    let root = TempDir::new()?;
++    let system32 = std::path::PathBuf::from(std::env::var("SystemRoot")?).join("System32");
++    let server =
++        common::exec_server::exec_server_with_env([("PATH", system32.as_os_str())], &[]).await?;
++    let environment = Environment::create_for_tests(Some(server.websocket_url().to_owned()))?;
++    let cwd = PathUri::from_host_native_path(root.path())?;
++    let mut sandbox = FileSystemSandboxContext::from_permission_profile(
++        PermissionProfile::read_only(),
++        cwd.clone(),
++    );
++    sandbox.windows_sandbox_selection = codex_exec_server::WindowsSandboxSelection::Mxc;
++    let started = environment
++        .get_exec_backend()
++        .start(ExecParams {
++            process_id: ProcessId::from("windows-powershell-fallback"),
++            metadata: None,
++            argv: vec![
++                root.path()
++                    .join("WindowsApps")
++                    .join(shell_name)
++                    .to_string_lossy()
++                    .into_owned(),
++                "-NoProfile".to_owned(),
++                "-Command".to_owned(),
++                "Write-Output 'fallback-ok'".to_owned(),
++            ],
++            cwd,
++            env_policy: None,
++            shell_snapshot: None,
++            env: HashMap::new(),
++            tty: false,
++            pipe_stdin: false,
++            arg0: None,
++            sandbox: Some(sandbox),
++            enforce_managed_network: false,
++            managed_network: None,
++            network_proxy: None,
++        })
++        .await?;
++    assert_eq!(
++        started.sandbox_type,
++        Some(codex_sandboxing::SandboxType::WindowsMxc)
++    );
++    let (stdout, stderr, exit_code, exited) = collect_process_output_from_events_with_timeout(
++        started.process,
++        Duration::from_secs(/*secs*/ 30),
++    )
++    .await?;
++    assert_eq!(
++        (stdout.trim(), stderr, exit_code, exited),
++        ("fallback-ok", String::new(), Some(0), true)
++    );
++    Ok(())
++}
++
+ #[cfg_attr(not(windows), ignore = "requires a native Windows sandbox")]
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ #[serial_test::serial(remote_exec_server)]
+diff --git a/codex-rs/tui/src/app/tests.rs b/codex-rs/tui/src/app/tests.rs
+index a25fcabd69..16091cdb1a 100644
+--- a/codex-rs/tui/src/app/tests.rs
++++ b/codex-rs/tui/src/app/tests.rs
+@@ -5819,7 +5819,6 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
+             is_first,
+             /*tooltip_override*/ None,
+             /*auth_plan*/ None,
+-            /*show_fast_status*/ false,
+         )) as Arc<dyn HistoryCell>
+     };
+ 
+@@ -7521,7 +7520,6 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
+             is_first,
+             /*tooltip_override*/ None,
+             /*auth_plan*/ None,
+-            /*show_fast_status*/ false,
+         )) as Arc<dyn HistoryCell>
+     };
+ 
+diff --git a/codex-rs/tui/src/app/tests/session_lifecycle_requests.rs b/codex-rs/tui/src/app/tests/session_lifecycle_requests.rs
+index 352535757a..6386048506 100644
+--- a/codex-rs/tui/src/app/tests/session_lifecycle_requests.rs
++++ b/codex-rs/tui/src/app/tests/session_lifecycle_requests.rs
+@@ -2661,7 +2661,6 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
+             /*is_first_event*/ false,
+             Some("This is a test announcement".to_string()),
+             /*auth_plan*/ None,
+-            /*show_fast_status*/ false,
+         )),
+     );
+     app.enqueue_primary_thread_session(started.session, started.turns)
+diff --git a/codex-rs/tui/src/app/tests/startup_frame_tests.rs b/codex-rs/tui/src/app/tests/startup_frame_tests.rs
+index 97a99c04df..c836d543ee 100644
+--- a/codex-rs/tui/src/app/tests/startup_frame_tests.rs
++++ b/codex-rs/tui/src/app/tests/startup_frame_tests.rs
+@@ -37,7 +37,6 @@ async fn owned_startup_hides_tip_in_transcript() -> Result<()> {
+         /*is_first_event*/ false,
+         Some("Use /mcp to list configured MCP tools.".into()),
+         /*auth_plan*/ None,
+-        /*show_fast_status*/ false,
+     );
+     history_cell::set_session_greeting(&mut session_info, &greeting);
+     app.transcript_cells = vec![
+diff --git a/codex-rs/tui/src/app/tests/startup_warnings_tests.rs b/codex-rs/tui/src/app/tests/startup_warnings_tests.rs
+index db46bc0ee1..0f4c92a218 100644
+--- a/codex-rs/tui/src/app/tests/startup_warnings_tests.rs
++++ b/codex-rs/tui/src/app/tests/startup_warnings_tests.rs
+@@ -28,7 +28,6 @@ fn insert_splash(app: &mut App, tui: &mut tui::Tui) {
+             /*is_first_event*/ false,
+             /*tooltip_override*/ None,
+             /*auth_plan*/ None,
+-            /*show_fast_status*/ false,
+         )),
+     );
+ }
+diff --git a/codex-rs/tui/src/assistant_directives.rs b/codex-rs/tui/src/assistant_directives.rs
+index 9e89bf0e02..e8e9008359 100644
+--- a/codex-rs/tui/src/assistant_directives.rs
++++ b/codex-rs/tui/src/assistant_directives.rs
+@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
+ #[derive(Debug, Eq, PartialEq)]
+ pub(crate) struct AssistantDirective<'source> {
+     pub(crate) name: &'source str,
++    pub(crate) label: Option<&'source str>,
+     pub(crate) attributes: BTreeMap<&'source str, Cow<'source, str>>,
+     pub(crate) raw: &'source str,
+ }
+@@ -47,7 +48,7 @@ pub(crate) fn parse_assistant_directive_with_budget<'source>(
+ ) -> Option<AssistantDirective<'source>> {
+     spend_scan_budget(remaining, /*scanned*/ 1)?;
+     // `::git-create-pr{...}` starts with a one-to-three-colon marker and a name;
+-    // require `{` immediately after the name so `::git-create-pr prose` is not parsed.
++    // Follow-ups additionally accept a `[label]` before their attributes.
+     let rest = source.trim_start_matches(':');
+     spend_scan_budget(remaining, source.len() - rest.len())?;
+     if !(1..=3).contains(&(source.len() - rest.len())) {
+@@ -56,6 +57,63 @@ pub(crate) fn parse_assistant_directive_with_budget<'source>(
+     let name_len = rest.bytes().take_while(|byte| is_name_byte(*byte)).count();
+     spend_scan_budget(remaining, name_len + 1)?;
+     let (name, suffix) = rest.split_at(name_len);
++    let (label, suffix) = if let Some(label) = suffix.strip_prefix('[') {
++        if name != "codex-followup" {
++            return None;
++        }
++        let mut characters = label.char_indices().peekable();
++        let mut depth = 1;
++        let mut code_ticks = 0;
++        let mut code_start = None;
++        let end = loop {
++            let (index, character) = match characters.next() {
++                Some((_, '\n' | '\r')) | None => {
++                    // An unmatched backtick run is literal Markdown. Replay its contents
++                    // with the same scan budget so brackets and escapes regain their meaning.
++                    characters = code_start.take()?;
++                    code_ticks = 0;
++                    continue;
++                }
++                Some(character) => character,
++            };
++            spend_scan_budget(remaining, character.len_utf8())?;
++            match character {
++                '`' => {
++                    let mut ticks = 1;
++                    while characters.next_if(|(_, next)| *next == '`').is_some() {
++                        spend_scan_budget(remaining, /*scanned*/ 1)?;
++                        ticks += 1;
++                    }
++                    if code_ticks == 0 {
++                        code_ticks = ticks;
++                        code_start = Some(characters.clone());
++                    } else if code_ticks == ticks {
++                        code_ticks = 0;
++                        code_start = None;
++                    }
++                }
++                _ if code_ticks > 0 => {}
++                '\\' => {
++                    let (_, escaped) = characters.next()?;
++                    spend_scan_budget(remaining, escaped.len_utf8())?;
++                    if matches!(escaped, '\n' | '\r') {
++                        return None;
++                    }
++                }
++                '[' => depth += 1,
++                ']' => {
++                    depth -= 1;
++                    if depth == 0 {
++                        break index;
++                    }
++                }
++                _ => {}
++            }
++        };
++        (Some(&label[..end]), label[end..].strip_prefix(']')?)
++    } else {
++        (None, suffix)
++    };
+     let mut rest = suffix.strip_prefix('{')?;
+     if !name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) {
+         return None;
+@@ -68,6 +126,7 @@ pub(crate) fn parse_assistant_directive_with_budget<'source>(
+             // In `::git-push{cwd="/repo"} done`, retain the directive but not ` done`.
+             return Some(AssistantDirective {
+                 name,
++                label,
+                 attributes,
+                 raw: &source[..source.len() - suffix.len()],
+             });
+diff --git a/codex-rs/tui/src/assistant_directives_tests.rs b/codex-rs/tui/src/assistant_directives_tests.rs
+index 2babca6c7d..e1ad16408d 100644
+--- a/codex-rs/tui/src/assistant_directives_tests.rs
++++ b/codex-rs/tui/src/assistant_directives_tests.rs
+@@ -16,6 +16,7 @@ fn parses_git_receipts_with_unquoted_attributes() {
+         parse_assistant_directive(raw, QuoteEscaping::Literal),
+         Some(AssistantDirective {
+             name: "git-create-pr",
++            label: None,
+             attributes: BTreeMap::from([
+                 ("branch", Cow::Borrowed("feature/report")),
+                 ("cwd", Cow::Borrowed(r"/repo\")),
+@@ -35,6 +36,7 @@ fn parses_triple_colon_comments_with_escaped_quotes_and_closing_braces() {
+         parse_assistant_directive(&source, QuoteEscaping::Backslash),
+         Some(AssistantDirective {
+             name: "code-comment",
++            label: None,
+             attributes: BTreeMap::from([
+                 (
+                     "body",
+@@ -58,6 +60,7 @@ fn preserves_artifact_metadata_and_single_quoted_values() {
+         parse_assistant_directive(raw, QuoteEscaping::Backslash),
+         Some(AssistantDirective {
+             name: "artifact",
++            label: None,
+             attributes: BTreeMap::from([
+                 ("label", Cow::Owned("team's report".to_string())),
+                 ("path", Cow::Borrowed("Quarterly Report.xlsx")),
+@@ -74,6 +77,9 @@ fn rejects_ambiguous_or_incomplete_directives() {
+     for source in [
+         r#"::git-push{cwd="/repo" cwd="/other"}"#,
+         r#"::git-push{cwd="/repo" branch="feature""#,
++        "::git-push[anything]{cwd=/repo branch=main}",
++        "::code-comment[anything]{body=comment file=foo}",
++        ":codex-file-citation[caption]{path=foo}",
+         "::::code-comment{title=comment}",
+         ":artifact{path=/tmp/a path=:artifact{path=/tmp/b}}",
+         ":artifact{invalid:key=:artifact{path=/tmp/a}}",
+diff --git a/codex-rs/tui/src/chatwidget/service_tiers.rs b/codex-rs/tui/src/chatwidget/service_tiers.rs
+index 9e6857442c..d7c5a5d82d 100644
+--- a/codex-rs/tui/src/chatwidget/service_tiers.rs
++++ b/codex-rs/tui/src/chatwidget/service_tiers.rs
+@@ -7,7 +7,6 @@ use crate::bottom_pane::slash_commands::ServiceTierCommand;
+ use crate::service_tier_resolution;
+ use codex_features::Feature;
+ use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
+-use codex_protocol::config_types::ServiceTier;
+ use codex_protocol::openai_models::SPEED_TIER_FAST;
+ 
+ impl ChatWidget {
+@@ -34,13 +33,6 @@ impl ChatWidget {
+         )
+     }
+ 
+-    pub(crate) fn should_show_fast_status(&self, model: &str, service_tier: Option<&str>) -> bool {
+-        service_tier.is_some_and(|service_tier| {
+-            service_tier == ServiceTier::Fast.request_value()
+-                && self.model_supports_service_tier(model, service_tier)
+-        }) && self.has_chatgpt_account
+-    }
+-
+     pub(super) fn fast_mode_enabled(&self) -> bool {
+         self.config.features.enabled(Feature::FastMode)
+     }
+@@ -124,24 +116,6 @@ impl ChatWidget {
+             .send(AppEvent::PersistServiceTierSelection { service_tier });
+     }
+ 
+-    fn model_supports_service_tier(&self, model: &str, service_tier: &str) -> bool {
+-        self.model_catalog
+-            .try_list_models()
+-            .ok()
+-            .and_then(|models| {
+-                models
+-                    .into_iter()
+-                    .find(|preset| preset.model == model)
+-                    .map(|preset| {
+-                        preset
+-                            .service_tiers
+-                            .iter()
+-                            .any(|tier| tier.id == service_tier)
+-                    })
+-            })
+-            .unwrap_or(false)
+-    }
+-
+     fn current_model_fast_service_tier(&self) -> Option<ServiceTierCommand> {
+         self.current_model_service_tier_commands()
+             .into_iter()
+diff --git a/codex-rs/tui/src/chatwidget/session_flow.rs b/codex-rs/tui/src/chatwidget/session_flow.rs
+index 3a3a68c304..e03b2d5679 100644
+--- a/codex-rs/tui/src/chatwidget/session_flow.rs
++++ b/codex-rs/tui/src/chatwidget/session_flow.rs
+@@ -201,8 +201,6 @@ impl ChatWidget {
+         let model_for_header = self.current_model().to_string();
+         if display == SessionConfiguredDisplay::Normal {
+             let startup_tooltip_override = self.startup_tooltip_override.take();
+-            let show_fast_status = self
+-                .should_show_fast_status(&model_for_header, self.effective_service_tier.as_deref());
+             let mut session_info_cell = history_cell::new_session_info(
+                 &self.config,
+                 &self.local_settings,
+@@ -212,7 +210,6 @@ impl ChatWidget {
+                 self.show_welcome_banner,
+                 startup_tooltip_override,
+                 self.plan_type,
+-                show_fast_status,
+             );
+             history_cell::set_session_greeting(
+                 &mut session_info_cell,
+diff --git a/codex-rs/tui/src/chatwidget/tests/copy_export_picker_tests.rs b/codex-rs/tui/src/chatwidget/tests/copy_export_picker_tests.rs
+index 58e4fb6257..ad9631c072 100644
+--- a/codex-rs/tui/src/chatwidget/tests/copy_export_picker_tests.rs
++++ b/codex-rs/tui/src/chatwidget/tests/copy_export_picker_tests.rs
+@@ -5,6 +5,35 @@ use crate::app_event::TranscriptExportDestination;
+ use crate::clipboard_copy::CopyFormat;
+ use pretty_assertions::assert_eq;
+ 
++#[tokio::test]
++async fn whole_response_copy_uses_followup_labels() {
++    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
++    let directive = r#":codex-followup[**Inspect items[0]**]{prompt="private"}"#;
++    let literal =
++        format!("\n\n`{directive}`\n\n```text\n{directive}\n```\n\n:codex-followup[unfinished");
++    let source = format!("- {directive}{literal}");
++    let expected = format!("- **Inspect items[0]**{literal}");
++    replay_agent_message(
++        &mut chat,
++        "followups",
++        source.clone(),
++        ReplayKind::ThreadSnapshot,
++    );
++    let shortcut = match chat.prepare_last_response_copy() {
++        crate::chatwidget::KeyEventAction::CopyLastResponse(text) => Some(text.to_string()),
++        _ => None,
++    };
++    assert_eq!(shortcut, Some(expected.clone()));
++    chat.show_copy_picker();
++    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
++    let copied = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|event| match event {
++        AppEvent::CopySelection { text, format, .. } => Some((text.to_string(), format)),
++        _ => None,
++    });
++    assert_eq!(copied, Some((expected, CopyFormat::Markdown)));
++    assert_eq!(chat.transcript.last_agent_source, Some(source));
++}
++
+ #[tokio::test]
+ async fn completed_response_copy_preserves_markdown_line_endings() {
+     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+diff --git a/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs b/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
+index c3aa1ba65d..abe4b6667f 100644
+--- a/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
++++ b/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
+@@ -2377,47 +2377,6 @@ async fn commentary_completion_restores_status_indicator_before_exec_begin() {
+     assert_eq!(chat.bottom_pane.status_indicator_visible(), true);
+ }
+ 
+-#[tokio::test]
+-async fn fast_status_indicator_requires_chatgpt_auth() {
+-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+-    set_fast_mode_test_catalog(&mut chat);
+-    assert!(get_available_model(&chat, "gpt-5.4").supports_fast_mode());
+-    chat.set_service_tier(Some(ServiceTier::Fast.request_value().to_string()));
+-
+-    assert!(!chat.should_show_fast_status(chat.current_model(), chat.current_service_tier(),));
+-
+-    set_chatgpt_auth(&mut chat);
+-    set_fast_mode_test_catalog(&mut chat);
+-    assert!(get_available_model(&chat, "gpt-5.4").supports_fast_mode());
+-
+-    assert!(chat.should_show_fast_status(chat.current_model(), chat.current_service_tier(),));
+-}
+-
+-#[tokio::test]
+-async fn fast_status_indicator_is_hidden_for_models_without_fast_support() {
+-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+-    set_fast_mode_test_catalog(&mut chat);
+-    assert!(!get_available_model(&chat, "gpt-5.2").supports_fast_mode());
+-    chat.set_service_tier(Some(ServiceTier::Fast.request_value().to_string()));
+-    set_chatgpt_auth(&mut chat);
+-    set_fast_mode_test_catalog(&mut chat);
+-    assert!(!get_available_model(&chat, "gpt-5.2").supports_fast_mode());
+-
+-    assert!(!chat.should_show_fast_status(chat.current_model(), chat.current_service_tier(),));
+-}
+-
+-#[tokio::test]
+-async fn fast_status_indicator_is_hidden_when_fast_mode_is_off() {
+-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+-    set_fast_mode_test_catalog(&mut chat);
+-    assert!(get_available_model(&chat, "gpt-5.4").supports_fast_mode());
+-    set_chatgpt_auth(&mut chat);
+-    set_fast_mode_test_catalog(&mut chat);
+-    assert!(get_available_model(&chat, "gpt-5.4").supports_fast_mode());
+-
+-    assert!(!chat.should_show_fast_status(chat.current_model(), chat.current_service_tier(),));
+-}
+-
+ // Snapshot test: ChatWidget at very small heights (idle)
+ // Ensures overall layout behaves when terminal height is extremely constrained.
+ #[tokio::test]
+diff --git a/codex-rs/tui/src/chatwidget/transcript.rs b/codex-rs/tui/src/chatwidget/transcript.rs
+index 72489d49d5..f055cd1b7b 100644
+--- a/codex-rs/tui/src/chatwidget/transcript.rs
++++ b/codex-rs/tui/src/chatwidget/transcript.rs
+@@ -91,7 +91,8 @@ impl TranscriptState {
+ 
+     pub(super) fn record_agent_markdown(&mut self, markdown: String, source: String) {
+         self.last_status_copy_targets = None;
+-        self.last_agent_markdown = Some(markdown);
++        self.last_agent_markdown =
++            Some(crate::markdown_render::followup_labels(&markdown).into_owned());
+         self.last_agent_source = Some(source);
+         self.saw_copy_source_this_turn = true;
+     }
+diff --git a/codex-rs/tui/src/history_cell/session.rs b/codex-rs/tui/src/history_cell/session.rs
+index 32d2f0d3ff..11cce0ecf1 100644
+--- a/codex-rs/tui/src/history_cell/session.rs
++++ b/codex-rs/tui/src/history_cell/session.rs
+@@ -193,7 +193,6 @@ pub(crate) fn new_session_info(
+     is_first_event: bool,
+     tooltip_override: Option<String>,
+     auth_plan: Option<PlanType>,
+-    show_fast_status: bool,
+ ) -> SessionInfoCell {
+     // Header rendered as history (so it appears at the very top).
+     let header = SessionHeaderHistoryCell::new(
+@@ -246,9 +245,7 @@ pub(crate) fn new_session_info(
+     } else {
+         if local_settings.tui.show_tooltips
+             && let Some(tooltips) = tooltip_override
+-                .or_else(|| {
+-                    tooltips::get_tooltip(auth_plan, show_fast_status, &local_settings.tui.keymap)
+-                })
++                .or_else(|| tooltips::get_tooltip(auth_plan, &local_settings.tui.keymap))
+                 .map(|tip| TooltipHistoryCell::new(tip, &config.cwd))
+         {
+             parts.push(Box::new(tooltips));
+diff --git a/codex-rs/tui/src/history_cell/tests.rs b/codex-rs/tui/src/history_cell/tests.rs
+index 03c953fad7..9b0dc6034b 100644
+--- a/codex-rs/tui/src/history_cell/tests.rs
++++ b/codex-rs/tui/src/history_cell/tests.rs
+@@ -747,7 +747,6 @@ async fn session_info_uses_availability_nux_tooltip_override() {
+         /*is_first_event*/ false,
+         Some("Model just became available".to_string()),
+         Some(PlanType::Free),
+-        /*show_fast_status*/ false,
+     );
+ 
+     let rendered = render_transcript(&cell).join("\n");
+@@ -771,7 +770,6 @@ async fn session_info_availability_nux_tooltip_snapshot() {
+         /*is_first_event*/ false,
+         Some("Model just became available".to_string()),
+         Some(PlanType::Free),
+-        /*show_fast_status*/ false,
+     );
+ 
+     let rendered = render_transcript(&cell).join("\n");
+@@ -793,7 +791,6 @@ async fn session_info_preserves_styled_tooltip_links() {
+                 .to_string(),
+         ),
+         Some(PlanType::Free),
+-        /*show_fast_status*/ false,
+     );
+ 
+     let lines = cell.transcript_hyperlink_lines(/*width*/ 30);
+@@ -843,7 +840,6 @@ async fn session_info_first_event_suppresses_tooltips_and_nux() {
+         /*is_first_event*/ true,
+         Some("Model just became available".to_string()),
+         Some(PlanType::Free),
+-        /*show_fast_status*/ false,
+     );
+ 
+     let rendered = render_transcript(&cell).join("\n");
+@@ -864,7 +860,6 @@ async fn session_info_hides_tooltips_when_disabled() {
+         /*is_first_event*/ false,
+         Some("Model just became available".to_string()),
+         Some(PlanType::Free),
+-        /*show_fast_status*/ false,
+     );
+ 
+     let rendered = render_transcript(&cell).join("\n");
+diff --git a/codex-rs/tui/src/markdown_render.rs b/codex-rs/tui/src/markdown_render.rs
+index 09d03c38c2..6c129f3b76 100644
+--- a/codex-rs/tui/src/markdown_render.rs
++++ b/codex-rs/tui/src/markdown_render.rs
+@@ -73,7 +73,7 @@ use std::ops::Range;
+ use std::path::Path;
+ use std::path::PathBuf;
+ 
+-mod file_citations;
++mod inline_directives;
+ mod list_spacing;
+ mod local_links;
+ mod math;
+@@ -85,7 +85,8 @@ mod table_key_value;
+ mod task_lists;
+ mod web_links;
+ 
+-use file_citations::FileCitations;
++use inline_directives::InlineDirectives;
++pub(crate) use inline_directives::followup_labels;
+ pub(crate) use list_spacing::ListSpacing;
+ use list_spacing::UniformList;
+ use local_links::is_local_path_like_link;
+diff --git a/codex-rs/tui/src/markdown_render/followups_tests.rs b/codex-rs/tui/src/markdown_render/followups_tests.rs
+new file mode 100644
+index 0000000000..194b93be67
+--- /dev/null
++++ b/codex-rs/tui/src/markdown_render/followups_tests.rs
+@@ -0,0 +1,147 @@
++//! Follow-up labels keep Markdown styling and stream offsets without exposing prompts.
++
++use super::super::ListSpacing;
++use super::super::render_streaming_markdown_lines_with_width_and_cwd;
++use crate::markdown::render_markdown_agent_with_links_and_cwd;
++use crate::terminal_hyperlinks::visible_lines;
++use pretty_assertions::assert_eq;
++use ratatui::text::Text;
++
++#[test]
++fn followup_labels_render_like_ordinary_markdown_snapshot() {
++    let source = concat!(
++        "Next actions:\n\n",
++        "- :codex-followup[Add **revenue charts**]{prompt=\"Add a \\\"Q3\\\" chart with } labels\"}\n",
++        "- :codex-followup[Format `Sheet1`]{prompt=\"Format the spreadsheet\"}\n\n",
++        "Or :codex-followup[explain café totals]{prompt=\"Explain $x$ and *all* totals\"}.\n",
++    );
++    let plain =
++        "Next actions:\n\n- Add **revenue charts**\n- Format `Sheet1`\n\nOr explain café totals.\n";
++    let streamed = render_streaming_markdown_lines_with_width_and_cwd(
++        source,
++        Some(32),
++        /*cwd*/ None,
++        &|_| false,
++        ListSpacing::AfterMultiline,
++    );
++    let rendered = Text::from(visible_lines(streamed.lines));
++    assert_eq!(
++        rendered,
++        Text::from(visible_lines(render_markdown_agent_with_links_and_cwd(
++            plain,
++            Some(32),
++            /*cwd*/ None
++        )))
++    );
++    assert_eq!(streamed.last_top_level_block_start, source.find("Or "));
++    insta::assert_snapshot!(rendered.to_string(), @"
++    Next actions:
++
++    • Add revenue charts
++    • Format Sheet1
++
++    Or explain café totals.
++    ");
++}
++
++#[test]
++fn followups_preserve_literal_and_malformed_source() {
++    let directive = r#":codex-followup[Add charts]{prompt="Add charts"}"#;
++    for source in [
++        format!("`{directive}`"),
++        format!("```text\n{directive}\n```"),
++        format!(r"\{directive}"),
++        format!("<!-- {directive} -->"),
++        format!("[{directive}](https://example.com)"),
++        ":codex-followup[Add charts]{prompt=\"unfinished".to_string(),
++        ":codex-followup[Add charts".to_string(),
++        ":codex-followup[Add charts]{prompt=one prompt=two}".to_string(),
++    ] {
++        assert_eq!(
++            super::InlineDirectives::new(&source, pulldown_cmark::Options::empty()).markdown,
++            source
++        );
++    }
++}
++
++#[test]
++fn followups_do_not_consume_neighbors_or_nested_directives() {
++    let source = concat!(
++        "&amp; :codex-followup[**First**]{prompt=\"Use :codex-file-citation{path=\\\"/tmp/private\\\"}\"} ",
++        ":codex-followup[*Second*]{prompt=\"Then continue\"} &copy;\n",
++    );
++    assert_eq!(
++        render_markdown_agent_with_links_and_cwd(source, /*width*/ None, /*cwd*/ None),
++        render_markdown_agent_with_links_and_cwd(
++            "&amp; **First** *Second* &copy;\n",
++            /*width*/ None,
++            /*cwd*/ None
++        ),
++    );
++    let source = format!("{source}\n:codex-file-citation{{path=\"/tmp/report.pdf\"}}\n");
++    let rendered = crate::markdown::render_markdown_agent_with_links_and_cwd(
++        &source, /*width*/ None, /*cwd*/ None,
++    );
++    assert_eq!(
++        Text::from(visible_lines(rendered)).to_string(),
++        "& First Second ©\n\n/tmp/report.pdf"
++    );
++}
++
++#[test]
++fn followup_labels_cannot_introduce_blocks() {
++    for label in [
++        "# Heading",
++        "- List item",
++        "---",
++        "    Indented",
++        "~~Old~~ new",
++        "Inspect `items[0]`",
++        "Inspect ``items[`key`]``",
++        "Type a ` character",
++        "Type a ` character and ``items]``",
++        r"Type a \` character",
++        "Inspect [nested [labels]]",
++        r"Inspect \] and \[ brackets",
++    ] {
++        let source = format!("Before :codex-followup[{label}]{{prompt=action}} after.");
++        let plain = format!("Before {label} after.");
++        assert_eq!(
++            render_markdown_agent_with_links_and_cwd(
++                &source, /*width*/ None, /*cwd*/ None
++            ),
++            render_markdown_agent_with_links_and_cwd(
++                &plain, /*width*/ None, /*cwd*/ None
++            ),
++        );
++    }
++}
++
++#[test]
++fn unmatched_label_backticks_render_and_copy_as_literal_text() {
++    let source = ":codex-followup[Type a ` character]{prompt=action}\n";
++    insta::assert_snapshot!(
++        Text::from(visible_lines(render_markdown_agent_with_links_and_cwd(
++            source, /*width*/ None, /*cwd*/ None
++        ))).to_string(),
++        @"Type a ` character"
++    );
++    assert_eq!(super::followup_labels(source), "Type a ` character\n");
++}
++
++#[test]
++fn malformed_directives_leave_budget_for_followups() {
++    for prefix in [":x0[:x1[", ":codex-followup[` "] {
++        let source = format!("{prefix}:codex-followup[Open]{{prompt=secret}}");
++        let expected = format!("{prefix}Open");
++        assert_eq!(super::followup_labels(&source), expected);
++        assert_eq!(
++            render_markdown_agent_with_links_and_cwd(
++                &source, /*width*/ None, /*cwd*/ None
++            ),
++            render_markdown_agent_with_links_and_cwd(
++                &expected, /*width*/ None, /*cwd*/ None
++            ),
++        );
++    }
++}
+diff --git a/codex-rs/tui/src/markdown_render/file_citations.rs b/codex-rs/tui/src/markdown_render/inline_directives.rs
+similarity index 61%
+rename from codex-rs/tui/src/markdown_render/file_citations.rs
+rename to codex-rs/tui/src/markdown_render/inline_directives.rs
+index afac14f9b8..ea757f183d 100644
+--- a/codex-rs/tui/src/markdown_render/file_citations.rs
++++ b/codex-rs/tui/src/markdown_render/inline_directives.rs
+@@ -1,4 +1,6 @@
+-//! Prepare file citations once, then feed them to the ordinary Markdown link renderer.
++//! Render file citations as links and follow-up directives as labels.
++//!
++//! Preserve source offsets and literal Markdown boundaries for streaming and completed messages.
+ 
+ use super::local_links::extract_colon_location_suffix;
+ use super::local_links::is_local_path_like_link;
+@@ -16,21 +18,48 @@ use std::borrow::Cow;
+ use std::ops::Range;
+ use std::path::Path;
+ 
+-/// Offset-preserving Markdown plus the original, fully parsed citation metadata.
+-pub(super) struct FileCitations<'a> {
++/// Preserve source Markdown when copying, replacing only recognized follow-up directives.
++pub(crate) fn followup_labels(input: &str) -> Cow<'_, str> {
++    if !input.contains(":codex-followup[") {
++        return Cow::Borrowed(input);
++    }
++    let prepared = InlineDirectives::new(
++        input,
++        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS,
++    );
++    let mut copied = String::new();
++    let mut offset = 0;
++    for (range, directive) in prepared.directives {
++        if directive.name == "codex-followup"
++            && let Some(label) = directive.label
++        {
++            copied.push_str(&input[offset..range.start]);
++            copied.push_str(label);
++            offset = range.end;
++        }
++    }
++    if offset == 0 {
++        return Cow::Borrowed(input);
++    }
++    copied.push_str(&input[offset..]);
++    Cow::Owned(copied)
++}
++
++/// Offset-preserving Markdown plus the original, fully parsed directive metadata.
++pub(super) struct InlineDirectives<'a> {
+     input: &'a str,
+     pub(super) markdown: Cow<'a, str>,
+-    citations: Vec<(Range<usize>, AssistantDirective<'a>)>,
++    directives: Vec<(Range<usize>, AssistantDirective<'a>)>,
+ }
+ 
+-impl<'a> FileCitations<'a> {
++impl<'a> InlineDirectives<'a> {
+     pub(super) fn new(input: &'a str, options: Options) -> Self {
+         let mut prepared = Self {
+             input,
+             markdown: Cow::Borrowed(input),
+-            citations: Vec::new(),
++            directives: Vec::new(),
+         };
+-        if !input.contains("codex-file-citation") {
++        if !input.contains("codex-file-citation") && !input.contains(":codex-followup[") {
+             return prepared;
+         }
+ 
+@@ -55,8 +84,9 @@ impl<'a> FileCitations<'a> {
+         let mut literal_ranges = literal_ranges.into_iter().peekable();
+ 
+         let mut directive_end = 0;
+-        // Share the allowance across offsets and quote modes: malformed retries must stay linear.
+-        let mut scan_budget = input.len().saturating_mul(/*rhs*/ 4);
++        // Share separate preferred/fallback allowances across offsets, so fallback retries
++        // cannot starve later preferred parses. Both allowances stay proportional to input size.
++        let mut scan_budget = [input.len().saturating_mul(/*rhs*/ 4); 2];
+         for (start, _) in input.match_indices(':') {
+             while literal_ranges.next_if(|range| range.end <= start).is_some() {}
+             if start < directive_end
+@@ -77,9 +107,14 @@ impl<'a> FileCitations<'a> {
+             } else {
+                 [QuoteEscaping::Backslash, QuoteEscaping::Literal]
+             };
+-            let Some(directive) = escaping.into_iter().find_map(|escaping| {
+-                parse_assistant_directive_with_budget(source, escaping, &mut scan_budget)
+-            }) else {
++            let Some(directive) =
++                escaping
++                    .into_iter()
++                    .zip(&mut scan_budget)
++                    .find_map(|(escaping, remaining)| {
++                        parse_assistant_directive_with_budget(source, escaping, remaining)
++                    })
++            else {
+                 continue;
+             };
+             let end = start + directive.raw.len();
+@@ -91,18 +126,24 @@ impl<'a> FileCitations<'a> {
+                 .count()
+                 % 2
+                 != 0
+-                || directive.name != "codex-file-citation"
+-                || directive
+-                    .attributes
+-                    .get("path")
+-                    .is_none_or(|path| path.is_empty())
++                || match directive.name {
++                    "codex-file-citation" => directive
++                        .attributes
++                        .get("path")
++                        .is_none_or(|path| path.is_empty()),
++                    "codex-followup" => {
++                        !directive.raw.starts_with(":codex-followup[")
++                            || directive.label.is_none_or(|label| label.trim().is_empty())
++                    }
++                    _ => true,
++                }
+             {
+                 continue;
+             }
+             // Mask the interior without moving offsets or changing Markdown delimiter flanking.
+             let markdown = prepared.markdown.to_mut();
+             markdown.replace_range(start + 1..end - 1, &"x".repeat(end - start - 2));
+-            prepared.citations.push((start..end, directive));
++            prepared.directives.push((start..end, directive));
+         }
+         prepared
+     }
+@@ -113,24 +154,24 @@ impl<'a> FileCitations<'a> {
+         events: impl Iterator<Item = (Event<'s>, Range<usize>)>,
+         cwd: Option<&'s Path>,
+     ) -> impl Iterator<Item = (Event<'s>, Range<usize>)> {
+-        let mut citations = self.citations.iter().peekable();
++        let mut directives = self.directives.iter().peekable();
+         events.flat_map(move |(event, range)| {
+-            while citations
++            while directives
+                 .next_if(|(span, _)| span.end <= range.start)
+                 .is_some()
+             {}
+             let Event::Text(text) = event else {
+                 return Either::Left(std::iter::once((event, range)));
+             };
+-            if citations
++            if directives
+                 .peek()
+                 .is_none_or(|(span, _)| span.start >= range.end)
+             {
+                 return Either::Left(std::iter::once((Event::Text(text), range)));
+             }
+-            // Never apply source offsets to entity-decoded text or a partial citation.
++            // Never apply source offsets to entity-decoded text or a partial directive.
+             if text.as_ref() != &self.markdown[range.clone()]
+-                || citations
++                || directives
+                     .peek()
+                     .is_some_and(|(span, _)| span.start < range.start || span.end > range.end)
+             {
+@@ -140,7 +181,8 @@ impl<'a> FileCitations<'a> {
+ 
+             let mut events = Vec::new();
+             let mut offset = range.start;
+-            while let Some((span, directive)) = citations.next_if(|(span, _)| span.end <= range.end)
++            while let Some((span, directive)) =
++                directives.next_if(|(span, _)| span.end <= range.end)
+             {
+                 if offset < span.start {
+                     events.push((
+@@ -148,6 +190,31 @@ impl<'a> FileCitations<'a> {
+                         offset..span.start,
+                     ));
+                 }
++                offset = span.end;
++                if let Some(label) = directive
++                    .label
++                    .filter(|_| directive.name == "codex-followup")
++                {
++                    // Keep the unmatched `[` as a sentinel so labels cannot introduce blocks.
++                    let inline = &directive.raw
++                        [":codex-followup".len()..":codex-followup[".len() + label.len()];
++                    events.extend(
++                        Parser::new_ext(inline, Options::ENABLE_STRIKETHROUGH)
++                            .into_offset_iter()
++                            .filter_map(|(event, range)| {
++                                let event = match event {
++                                    Event::Start(Tag::Paragraph)
++                                    | Event::End(TagEnd::Paragraph) => return None,
++                                    Event::Text(text) if range.start == 0 => {
++                                        Event::Text(text[1..].to_owned().into())
++                                    }
++                                    event => event,
++                                };
++                                Some((event, span.clone()))
++                            }),
++                    );
++                    continue;
++                }
+                 let path = directive.attributes["path"].as_ref();
+                 let destination = if is_local_path_like_link(path) {
+                     path.to_string()
+@@ -180,7 +247,6 @@ impl<'a> FileCitations<'a> {
+                     (Event::Text(destination.into()), span.clone()),
+                     (Event::End(TagEnd::Link), span.clone()),
+                 ]);
+-                offset = span.end;
+             }
+             if offset < range.end {
+                 events.push((
+@@ -196,3 +262,7 @@ impl<'a> FileCitations<'a> {
+ #[cfg(test)]
+ #[path = "file_citations_tests.rs"]
+ mod tests;
++
++#[cfg(test)]
++#[path = "followups_tests.rs"]
++mod followups_tests;
+diff --git a/codex-rs/tui/src/markdown_render/streaming.rs b/codex-rs/tui/src/markdown_render/streaming.rs
+index e306fa3d40..9a5641a784 100644
+--- a/codex-rs/tui/src/markdown_render/streaming.rs
++++ b/codex-rs/tui/src/markdown_render/streaming.rs
+@@ -5,8 +5,8 @@
+ 
+ use super::DecodedTextMerge;
+ use super::Event;
+-use super::FileCitations;
+ use super::HyperlinkLine;
++use super::InlineDirectives;
+ use super::ListSpacing;
+ use super::Options;
+ use super::Parser;
+@@ -50,14 +50,14 @@ pub(crate) fn render_streaming_markdown_lines_with_width_and_cwd(
+         Options::ENABLE_TASKLISTS,
+         super::preferences::current().lists,
+     );
+-    let citations = FileCitations::new(input, options);
+-    let math = MathMarkdown::new(&citations.markdown, options, width);
++    let directives = InlineDirectives::new(input, options);
++    let math = MathMarkdown::new(&directives.markdown, options, width);
+     let parser = Parser::new_ext(&math.markdown, options);
+     let has_reference_link_definition = parser.reference_definitions().iter().next().is_some();
+     let parser = TopLevelBlockTracker {
+         iter: DecodedTextMerge::new(super::source_tables::preserve(
+             input,
+-            citations.events(math.events(parser.into_offset_iter()), cwd),
++            directives.events(math.events(parser.into_offset_iter()), cwd),
+         )),
+         depth: 0,
+         block_count: 0,
+diff --git a/codex-rs/tui/src/snapshots/codex_tui__tooltips__tests__desktop_app_tip_linux.snap b/codex-rs/tui/src/snapshots/codex_tui__tooltips__tests__desktop_app_tip_linux.snap
+new file mode 100644
+index 0000000000..2a904cd13d
+--- /dev/null
++++ b/codex-rs/tui/src/snapshots/codex_tui__tooltips__tests__desktop_app_tip_linux.snap
+@@ -0,0 +1,8 @@
++---
++source: tui/src/tooltips.rs
++expression: rendered
++---
++Line::from_iter([Span::from("Tip:").bold(), Span::from(" Use the "), Span::from("desktop app").bold(), Span::from(". Install it")]) []
++Line::from("from") []
++Line::from(Span::from("https://learn.chatgpt.com/docs/linux/linux-app").fg(Color::Reset).underlined()) [TerminalHyperlink { columns: 0..46, destination: "https://learn.chatgpt.com/docs/linux/linux-app", destination_kind: Web }]
++Line::from_iter([Span::from("and run "), Span::from("chatgpt").fg(Color::Rgb(166, 227, 161)), Span::from(".")]) []
+diff --git a/codex-rs/tui/src/snapshots/codex_tui__tooltips__tests__desktop_app_tip_macos.snap b/codex-rs/tui/src/snapshots/codex_tui__tooltips__tests__desktop_app_tip_macos.snap
+new file mode 100644
+index 0000000000..2a5ac3cff4
+--- /dev/null
++++ b/codex-rs/tui/src/snapshots/codex_tui__tooltips__tests__desktop_app_tip_macos.snap
+@@ -0,0 +1,7 @@
++---
++source: tui/src/tooltips.rs
++expression: rendered
++---
++Line::from_iter([Span::from("Tip:").bold(), Span::from(" Use the "), Span::from("desktop app").bold(), Span::from(". Run "), Span::from("codex app").fg(Color::Rgb(166, 227, 161))]) []
++Line::from("to open it. It installs automatically if") []
++Line::from("needed.") []
+diff --git a/codex-rs/tui/src/snapshots/codex_tui__tooltips__tests__desktop_app_tip_windows.snap b/codex-rs/tui/src/snapshots/codex_tui__tooltips__tests__desktop_app_tip_windows.snap
+new file mode 100644
+index 0000000000..ed749405d8
+--- /dev/null
++++ b/codex-rs/tui/src/snapshots/codex_tui__tooltips__tests__desktop_app_tip_windows.snap
+@@ -0,0 +1,8 @@
++---
++source: tui/src/tooltips.rs
++expression: rendered
++---
++Line::from_iter([Span::from("Tip:").bold(), Span::from(" Use the "), Span::from("desktop app").bold(), Span::from(". Install it")]) []
++Line::from("from") []
++Line::from(Span::from("https://chatgpt.com/codex?app-landing-page=true").fg(Color::Reset).underlined()) [TerminalHyperlink { columns: 0..47, destination: "https://chatgpt.com/codex?app-landing-page=true", destination_kind: Web }]
++Line::from_iter([Span::from("and run "), Span::from("codex app").fg(Color::Rgb(166, 227, 161)), Span::from(".")]) []
+diff --git a/codex-rs/tui/src/streaming/controller_preview_tests.rs b/codex-rs/tui/src/streaming/controller_preview_tests.rs
+index bad0220331..45268f6fe5 100644
+--- a/codex-rs/tui/src/streaming/controller_preview_tests.rs
++++ b/codex-rs/tui/src/streaming/controller_preview_tests.rs
+@@ -2,6 +2,180 @@ use super::*;
+ use crate::terminal_hyperlinks::visible_lines;
+ use pretty_assertions::assert_eq;
+ 
++#[test]
++fn followup_preview_hides_prompts_until_complete() {
++    let cwd = std::env::temp_dir();
++    let mut controller = StreamController::new(Some(40), &cwd, HistoryRenderMode::Rich);
++    controller.push("Before ");
++    let prefix = controller.current_tail_lines();
++    controller.push(":codex-followup[");
++    for character in r#"Inspect `items[0]`]{prompt="Use \\"}\" and `ticks`""#.chars() {
++        controller.push(&character.to_string());
++        assert_eq!(controller.current_tail_lines(), prefix);
++    }
++    insta::assert_debug_snapshot!(visible_lines(controller.current_tail_lines()), @r#"
++    [
++        Line::from("Before"),
++    ]
++    "#);
++    controller.push("} after.");
++    assert_eq!(
++        controller.current_tail_lines(),
++        render_source(
++            "Before Inspect `items[0]` after.",
++            Some(40),
++            &cwd,
++            HistoryRenderMode::Rich,
++            /*inline_visualization_context*/ None
++        ),
++    );
++    let mut controller = StreamController::new(Some(40), &cwd, HistoryRenderMode::Rich);
++    controller.push("Before ");
++    let prefix = controller.current_tail_lines();
++    controller.push(&format!(
++        ":codex-followup[Long]{{prompt=\"{}",
++        "界".repeat(3000)
++    ));
++    controller.push("more prompt");
++    assert_eq!(controller.current_tail_lines(), prefix);
++    controller.push("\"}");
++    insta::assert_debug_snapshot!(visible_lines(controller.current_tail_lines()), @r#"
++    [
++        Line::from("…"),
++    ]
++    "#);
++    controller.push(" after.");
++    assert_eq!(
++        visible_lines(controller.current_tail_lines()),
++        vec![Line::from("…"), Line::from("after.")]
++    );
++}
++
++#[test]
++fn followup_preview_resumes_after_the_directive_leaves_the_window() {
++    let cwd = std::env::temp_dir();
++    let mut controller = StreamController::new(Some(40), &cwd, HistoryRenderMode::Rich);
++    controller.push(":codex-followup[First]{prompt=secret}");
++    let prose = "ordinary prose ".repeat(700);
++    controller.push(&prose);
++    controller.push(":codex-followup[Second]{prompt=hidden} after.");
++    let rendered = visible_lines(controller.current_tail_lines());
++    let text = rendered
++        .iter()
++        .map(Line::to_string)
++        .collect::<Vec<_>>()
++        .join(" ");
++    assert!(text.ends_with("Second after."), "{text}");
++    assert!(!text.contains("prompt="), "{text}");
++    assert_eq!(rendered.first(), Some(&Line::from("…")));
++}
++
++#[test]
++fn followup_preview_only_opens_quotes_at_value_boundaries() {
++    let cwd = std::env::temp_dir();
++    for attributes in [
++        "prompt=don't",
++        "prompt=foo='bar",
++        "prompt=don't other = \"quote } here\"",
++        "prompt = 'quote } here'other=don't",
++    ] {
++        let mut controller = StreamController::new(Some(40), &cwd, HistoryRenderMode::Rich);
++        controller.push("Before ");
++        let prefix = controller.current_tail_lines();
++        controller.push(":codex-followup[");
++        for character in format!("Open]{{{attributes}").chars() {
++            controller.push(&character.to_string());
++            assert_eq!(controller.current_tail_lines(), prefix);
++        }
++        controller.push("} after.");
++        assert_eq!(
++            visible_lines(controller.current_tail_lines()),
++            vec![Line::from("Before Open after.")],
++            "{attributes}",
++        );
++    }
++}
++
++#[test]
++fn followup_preview_handles_surrounding_unfinished_markdown() {
++    let cwd = std::env::temp_dir();
++    let mut controller = StreamController::new(Some(40), &cwd, HistoryRenderMode::Rich);
++    controller.push("[unfinished ");
++    let prefix = controller.current_tail_lines();
++    controller.push(":codex-followup[Inspect]{prompt=\"secret\"");
++    assert_eq!(controller.current_tail_lines(), prefix);
++    controller.push("}");
++    assert_eq!(
++        visible_lines(controller.current_tail_lines()),
++        vec![Line::from("[unfinished Inspect")]
++    );
++
++    for source in [
++        ":codex-followup[not a directive] continuing text",
++        ":codex-followup[not a directive] `code`",
++    ] {
++        let mut controller = StreamController::new(Some(80), &cwd, HistoryRenderMode::Rich);
++        for character in source.chars() {
++            controller.push(&character.to_string());
++        }
++        assert_eq!(
++            controller.current_tail_lines(),
++            render_source(
++                source,
++                Some(80),
++                &cwd,
++                HistoryRenderMode::Rich,
++                /*inline_visualization_context*/ None
++            )
++        );
++    }
++}
++
++#[test]
++fn unmatched_code_openers_do_not_expose_followup_prompts() {
++    let cwd = std::env::temp_dir();
++    let mut controller = StreamController::new(Some(80), &cwd, HistoryRenderMode::Rich);
++    controller.push("Type ` then ");
++    let prefix = controller.current_tail_lines();
++    controller.push(":codex-followup[");
++    for character in "Open]{prompt=secret}".chars() {
++        controller.push(&character.to_string());
++        assert_eq!(controller.current_tail_lines(), prefix);
++    }
++    insta::assert_debug_snapshot!(visible_lines(controller.current_tail_lines()), @r#"
++    [
++        Line::from("Type ` then"),
++    ]
++    "#);
++    // A matching closer establishes literal code; its full contents can then be previewed.
++    controller.push("`");
++    assert_eq!(
++        controller.current_tail_lines(),
++        render_source(
++            "Type ` then :codex-followup[Open]{prompt=secret}`",
++            Some(80),
++            &cwd,
++            HistoryRenderMode::Rich,
++            /*inline_visualization_context*/ None,
++        ),
++    );
++
++    // Extending a tentative closing run must restore the old, safely cropped preview.
++    let mut controller = StreamController::new(Some(80), &cwd, HistoryRenderMode::Rich);
++    controller.push(&format!(
++        ":codex-followup[Long]{{prompt={}}} ` then ",
++        "x".repeat(9000)
++    ));
++    let prefix = controller.current_tail_lines();
++    controller.push(&format!(
++        ":codex-followup[Open]{{prompt={}}}",
++        "y".repeat(9000)
++    ));
++    controller.push("`");
++    controller.push("`");
++    assert_eq!(controller.current_tail_lines(), prefix);
++}
++
+ #[test]
+ fn unfinished_link_destinations_do_not_expand_the_preview() {
+     let cwd = std::env::temp_dir();
+@@ -46,39 +220,46 @@ fn unfinished_link_destinations_do_not_expand_the_preview() {
+ #[test]
+ fn unfinished_links_flush_on_newline_or_completion() {
+     let cwd = std::env::temp_dir();
+-    let source = "See [documentation](https://example.com/a/very/long/path";
+-    for ending in ["", "\n"] {
+-        let mut controller = StreamController::new(Some(24), &cwd, HistoryRenderMode::Rich);
+-        controller.push(source);
+-        insta::assert_debug_snapshot!(
+-            "unfinished_link_preview",
+-            visible_lines(controller.current_tail_lines()),
+-        );
+-        controller.set_width(Some(32));
+-        assert_eq!(
+-            visible_lines(controller.current_tail_lines()),
+-            vec![Line::from("See [documentation]")],
+-        );
+-        controller.push(ending);
+-        let (queued, _) = controller.on_commit_tick_batch(usize::MAX);
+-        let (remaining, finalized_source) = controller.finalize();
+-        let displayed = queued
+-            .into_iter()
+-            .chain(remaining)
+-            .flat_map(|cell| cell.display_lines(/*width*/ 34))
+-            .collect::<Vec<_>>();
+-        let expected = history_cell::AgentMessageCell::new_hyperlink_lines(
+-            render_source(
+-                source,
+-                Some(32),
+-                &cwd,
+-                HistoryRenderMode::Rich,
+-                /*inline_visualization_context*/ None,
+-            ),
+-            /*is_first_line*/ true,
+-        );
+-        assert_eq!(displayed, expected.display_lines(/*width*/ 34));
+-        assert_eq!(finalized_source, Some(format!("{source}\n")));
++    for (source, prefix) in [
++        (
++            "See [documentation](https://example.com/a/very/long/path",
++            "See [documentation]",
++        ),
++        ("See :codex-followup[Inspect]{prompt=\"unfinished", "See"),
++    ] {
++        for ending in ["", "\n"] {
++            let mut controller = StreamController::new(Some(24), &cwd, HistoryRenderMode::Rich);
++            controller.push(source);
++            assert_eq!(
++                visible_lines(controller.current_tail_lines()),
++                vec![Line::from(prefix)]
++            );
++            controller.set_width(Some(32));
++            assert_eq!(
++                visible_lines(controller.current_tail_lines()),
++                vec![Line::from(prefix)],
++            );
++            controller.push(ending);
++            let (queued, _) = controller.on_commit_tick_batch(usize::MAX);
++            let (remaining, finalized_source) = controller.finalize();
++            let displayed = queued
++                .into_iter()
++                .chain(remaining)
++                .flat_map(|cell| cell.display_lines(/*width*/ 34))
++                .collect::<Vec<_>>();
++            let expected = history_cell::AgentMessageCell::new_hyperlink_lines(
++                render_source(
++                    source,
++                    Some(32),
++                    &cwd,
++                    HistoryRenderMode::Rich,
++                    /*inline_visualization_context*/ None,
++                ),
++                /*is_first_line*/ true,
++            );
++            assert_eq!(displayed, expected.display_lines(/*width*/ 34));
++            assert_eq!(finalized_source, Some(format!("{source}\n")));
++        }
+     }
+ }
+ 
+@@ -91,6 +272,8 @@ fn link_preview_respects_code_escapes_and_raw_mode() {
+         "See `[label](https://example.com/unfinished`",
+         "See ``[la`bel](https://example.com/unfinished``",
+         "See [label](https://example.com/complete) and prose",
++        r"See \:codex-followup[label]{prompt=unfinished",
++        "See `:codex-followup[label]{prompt=unfinished`",
+     ] {
+         let mut controller = StreamController::new(Some(24), &cwd, HistoryRenderMode::Rich);
+         for character in source.chars() {
+diff --git a/codex-rs/tui/src/streaming/prose_preview.rs b/codex-rs/tui/src/streaming/prose_preview.rs
+index ba464101ab..19ee271f23 100644
+--- a/codex-rs/tui/src/streaming/prose_preview.rs
++++ b/codex-rs/tui/src/streaming/prose_preview.rs
+@@ -1,7 +1,8 @@
+ //! Bounded, disposable previews of unterminated prose. Preview lines never enter scrollback;
+ //! newline commitment and finalization render the original source independently. Math previews
+ //! show wrapped source until closure, without interpreting TeX punctuation as Markdown.
+-//! Rich prose withholds unfinished link destinations so closing a link cannot collapse URL rows.
++//! Rich prose withholds unfinished link destinations and follow-up directives until closure.
++//! Cropped previews skip completed directives atomically so their prompt text stays hidden.
+ 
+ use super::render::render_source;
+ use crate::history_cell::HistoryRenderMode;
+@@ -9,6 +10,8 @@ use crate::inline_visualization::InlineVisualizationContext;
+ use crate::terminal_hyperlinks::HyperlinkLine;
+ use crate::terminal_hyperlinks::lines_with_sources_eq;
+ use ratatui::text::Line;
++use std::collections::VecDeque;
++use std::ops::Range;
+ use std::path::Path;
+ 
+ const MAX_PREVIEW_BYTES: usize = 8192;
+@@ -40,31 +43,64 @@ impl ProsePreview {
+     ) -> bool {
+         // Only scan newly arrived bytes, including on very long single-line responses.
+         self.has_pipe |= source[self.scanned_len..].contains('|');
+-        self.link.scan(source, self.scanned_len);
+-        self.scanned_len = source.len();
+         // Indented and quoted lines may belong to nested code blocks. Keep their
+         // existing newline holdback instead of guessing at the missing block context.
+-        if matches!(mode, PreviewMode::Math)
++        let advances = matches!(mode, PreviewMode::Math)
+             || !(self.has_pipe
+                 || source.starts_with([' ', '\t', '>'])
+                 || source.starts_with("```")
+                 || source.starts_with("~~~")
+-                || matches!(source, "`" | "``" | "~" | "~~"))
+-        {
++                || matches!(source, "`" | "``" | "~" | "~~"));
++        // Keep tentative fence delimiters in the scanner, but stop collecting ranges once
++        // block structure freezes this tail until newline commitment.
++        if advances || source.len() <= 2 {
++            self.link.scan(source, self.scanned_len);
++        }
++        if advances {
+             self.safe_len = source.len();
+             self.rich_safe_len = source.len();
+         }
++        self.scanned_len = source.len();
+         // Keep Raw/Math's structural bound independent of Rich-only link holdback.
+         if let Some((start, _)) = self.link.destination {
+             self.rich_safe_len = self.rich_safe_len.min(start);
+         }
++        if let Some(start) = self.link.followup_start {
++            self.rich_safe_len = self.rich_safe_len.min(start);
++        }
++        if let Some(start) = self.link.code_followup_start
++            && self.link.pending_ticks != self.link.code_ticks
++        {
++            self.rich_safe_len = self.rich_safe_len.min(start);
++        }
+         // Retain the last safe text when tokens reveal structure, but still reflow it.
+         let source = &source[..if matches!(mode, PreviewMode::Prose(HistoryRenderMode::Rich)) {
+             self.rich_safe_len
+         } else {
+             self.safe_len
+         }];
+-        let start = source.ceil_char_boundary(source.len().saturating_sub(MAX_PREVIEW_BYTES));
++        let mut start = source.ceil_char_boundary(source.len().saturating_sub(MAX_PREVIEW_BYTES));
++        // A tentative closing backtick run can grow on the next update. Retain the old
++        // window's directive boundaries until a non-backtick confirms that the span closed.
++        let retained_len = self
++            .link
++            .code_followup_start
++            .map_or(self.rich_safe_len, |start| start.min(self.rich_safe_len));
++        while self
++            .link
++            .followups
++            .front()
++            .is_some_and(|range| range.end <= retained_len.saturating_sub(MAX_PREVIEW_BYTES))
++        {
++            self.link.followups.pop_front();
++        }
++        // A rolling preview may skip a completed directive, but must never start in its prompt.
++        if matches!(mode, PreviewMode::Prose(HistoryRenderMode::Rich))
++            && let Some(range) = self.link.followups.iter().find(|range| range.end > start)
++            && range.start < start
++        {
++            start = range.end;
++        }
+         let mut lines = match mode {
+             PreviewMode::Prose(render_mode) => render_source(
+                 &source[start..],
+@@ -101,11 +137,57 @@ struct LinkPreview {
+     escaped: bool,
+     code_ticks: usize,
+     pending_ticks: usize,
++    code_followup_start: Option<usize>,
++    followup_start: Option<usize>,
++    followup_brackets: usize,
++    followups: VecDeque<Range<usize>>,
++    followup_attributes: Option<AttributeState>,
++}
++
++enum AttributeState {
++    Key,
++    ValueStart,
++    Unquoted,
++    Quoted(u8),
+ }
+ 
+ impl LinkPreview {
+     fn scan(&mut self, source: &str, start: usize) {
+         for (index, byte) in source.bytes().enumerate().skip(start) {
++            if self.followup_start.is_some()
++                && self.closed_label
++                && self.brackets == self.followup_brackets
++                && byte != b'{'
++            {
++                self.followup_start = None;
++            }
++            if let Some(state) = self.followup_attributes.as_mut() {
++                if let AttributeState::Quoted(quote) = state {
++                    if byte == *quote && !self.escaped {
++                        *state = AttributeState::Key;
++                    }
++                    // Match the directive parser: only a backslash before the quote escapes it.
++                    self.escaped = byte == b'\\';
++                } else if byte == b'}' {
++                    if let Some(start) = self.followup_start.take() {
++                        self.followups.push_back(start..index + 1);
++                    }
++                    self.followup_attributes = None;
++                } else {
++                    *state = match (&*state, byte) {
++                        (AttributeState::Key, b'=') => AttributeState::ValueStart,
++                        (AttributeState::ValueStart, b'\'' | b'"') => AttributeState::Quoted(byte),
++                        (AttributeState::ValueStart, b' ' | b'\t') => AttributeState::ValueStart,
++                        (AttributeState::ValueStart, _) => AttributeState::Unquoted,
++                        (AttributeState::Unquoted, b' ' | b'\t') => AttributeState::Key,
++                        (AttributeState::Unquoted, _) => AttributeState::Unquoted,
++                        (AttributeState::Key, _) | (AttributeState::Quoted(_), _) => {
++                            AttributeState::Key
++                        }
++                    };
++                }
++                continue;
++            }
+             if self.destination.is_none() {
+                 if byte == b'`' && (self.code_ticks > 0 || !self.escaped) {
+                     self.pending_ticks += 1;
+@@ -117,10 +199,19 @@ impl LinkPreview {
+                         self.code_ticks = self.pending_ticks;
+                     } else if self.code_ticks == self.pending_ticks {
+                         self.code_ticks = 0;
++                        self.code_followup_start = None;
+                     }
+                     self.pending_ticks = 0;
+                 }
+                 if self.code_ticks > 0 {
++                    // Until the code span closes, its opener may still be a literal unmatched
++                    // backtick. Withhold directive-like text rather than reveal a live prompt.
++                    if byte == b'['
++                        && self.code_followup_start.is_none()
++                        && let Some(prefix) = source[..index].strip_suffix(":codex-followup")
++                    {
++                        self.code_followup_start = Some(prefix.len());
++                    }
+                     continue;
+                 }
+             }
+@@ -158,7 +249,23 @@ impl LinkPreview {
+                 self.whitespace = byte.is_ascii_whitespace();
+             } else {
+                 match byte {
+-                    b'[' => self.brackets += 1,
++                    b'[' => {
++                        if self.followup_start.is_none()
++                            && let Some(prefix) = source[..index].strip_suffix(":codex-followup")
++                            && !prefix.ends_with(':')
++                            && prefix
++                                .bytes()
++                                .rev()
++                                .take_while(|byte| *byte == b'\\')
++                                .count()
++                                % 2
++                                == 0
++                        {
++                            self.followup_start = Some(prefix.len());
++                            self.followup_brackets = self.brackets;
++                        }
++                        self.brackets += 1;
++                    }
+                     b']' if self.brackets > 0 => {
+                         self.brackets -= 1;
+                         self.closed_label = true;
+@@ -168,6 +275,12 @@ impl LinkPreview {
+                         self.destination = Some((index, 1));
+                         self.whitespace = false;
+                     }
++                    b'{' if self.closed_label
++                        && self.followup_start.is_some()
++                        && self.brackets == self.followup_brackets =>
++                    {
++                        self.followup_attributes = Some(AttributeState::Key);
++                    }
+                     _ => {}
+                 }
+                 self.closed_label = false;
+diff --git a/codex-rs/tui/src/streaming/snapshots/codex_tui__streaming__controller__preview_tests__unfinished_link_preview.snap b/codex-rs/tui/src/streaming/snapshots/codex_tui__streaming__controller__preview_tests__unfinished_link_preview.snap
+deleted file mode 100644
+index 4895b40acf..0000000000
+--- a/codex-rs/tui/src/streaming/snapshots/codex_tui__streaming__controller__preview_tests__unfinished_link_preview.snap
++++ /dev/null
+@@ -1,8 +0,0 @@
+----
+-source: tui/src/streaming/controller_preview_tests.rs
+-assertion_line: 52
+-expression: visible_lines(controller.current_tail_lines())
+----
+-[
+-    Line::from("See [documentation]"),
+-]
+diff --git a/codex-rs/tui/src/tooltips.rs b/codex-rs/tui/src/tooltips.rs
+index a8cceac303..5f3b31887b 100644
+--- a/codex-rs/tui/src/tooltips.rs
++++ b/codex-rs/tui/src/tooltips.rs
+@@ -21,16 +21,10 @@ const ANNOUNCEMENT_TIP_URL: &str =
+ const IS_MACOS: bool = cfg!(target_os = "macos");
+ const IS_WINDOWS: bool = cfg!(target_os = "windows");
+ 
+-const APP_TOOLTIP: &str = "Try the **Desktop app**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true";
++const WINDOWS_APP_TOOLTIP: &str = "Use the **desktop app**. Install it from https://chatgpt.com/codex?app-landing-page=true and run `codex app`.";
+ const MACOS_APP_TOOLTIP: &str =
+-    "Run `codex app` to open the Desktop app (it installs on macOS if needed).";
+-const LINUX_APP_TOOLTIP: &str = "Try the **Desktop app** on Linux: install it from https://learn.chatgpt.com/docs/linux/linux-app and run 'chatgpt'.";
+-const FAST_TOOLTIP: &str =
+-    "*New* Use **/fast** to enable our fastest inference with increased plan usage.";
+-const OTHER_TOOLTIP: &str = "*New* Build faster with the **Desktop app**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true";
+-const OTHER_TOOLTIP_NON_MAC: &str = "*New* Build faster with Codex.";
+-const FREE_GO_TOOLTIP: &str =
+-    "*New* For a limited time, Codex is included in your plan for free – let’s build together.";
++    "Use the **desktop app**. Run `codex app` to open it. It installs automatically if needed.";
++const LINUX_APP_TOOLTIP: &str = "Use the **desktop app**. Install it from https://learn.chatgpt.com/docs/linux/linux-app and run `chatgpt`.";
+ 
+ const RAW_TOOLTIPS: &str = include_str!("../assets/tooltips.txt");
+ 
+@@ -39,11 +33,7 @@ lazy_static! {
+         .lines()
+         .map(str::trim)
+         .filter(|line| !line.is_empty() && !line.starts_with('#'))
+-        .chain(if IS_MACOS {
+-            Some(MACOS_APP_TOOLTIP)
+-        } else {
+-            linux_app_tooltip(LinuxDesktopSession::current())
+-        })
++        .chain(app_tooltip())
+         .collect();
+     static ref ALL_TOOLTIPS: Vec<&'static str> = {
+         let mut tips = Vec::new();
+@@ -68,13 +58,9 @@ fn experimental_tooltips(
+ }
+ 
+ /// Pick a random tooltip to show to the user when starting Codex.
+-pub(crate) fn get_tooltip(
+-    plan: Option<PlanType>,
+-    fast_mode_enabled: bool,
+-    keymap: &TuiKeymap,
+-) -> Option<String> {
++pub(crate) fn get_tooltip(plan: Option<PlanType>, keymap: &TuiKeymap) -> Option<String> {
+     let mut rng = rand::rng();
+-    preferred_tooltip(&mut rng, plan, fast_mode_enabled).or_else(|| pick_tooltip(&mut rng, keymap))
++    preferred_tooltip(&mut rng, plan).or_else(|| pick_tooltip(&mut rng, keymap))
+ }
+ 
+ /// Apply the shared announcement and promotion policy before falling back to local tips.
+@@ -82,7 +68,6 @@ pub(crate) fn get_tooltip(
+ pub(crate) fn preferred_tooltip<R: Rng + ?Sized>(
+     rng: &mut R,
+     plan: Option<PlanType>,
+-    fast_mode_enabled: bool,
+ ) -> Option<String> {
+     if let Some(announcement) = announcement::fetch_announcement_tip(plan) {
+         return Some(announcement);
+@@ -90,34 +75,7 @@ pub(crate) fn preferred_tooltip<R: Rng + ?Sized>(
+ 
+     // Leave small chance for a random tooltip to be shown.
+     if rng.random_ratio(/*numerator*/ 8, /*denominator*/ 10) {
+-        match plan {
+-            Some(plan_type)
+-                if matches!(
+-                    plan_type,
+-                    PlanType::Plus
+-                        | PlanType::Enterprise
+-                        | PlanType::Pro
+-                        | PlanType::ProLite
+-                        | PlanType::ProMax
+-                ) || plan_type.is_team_like()
+-                    || plan_type.is_business_like() =>
+-            {
+-                if let Some(tooltip) = pick_paid_tooltip(rng, fast_mode_enabled) {
+-                    return Some(tooltip.to_string());
+-                }
+-            }
+-            Some(PlanType::Go) | Some(PlanType::Free) => {
+-                return Some(FREE_GO_TOOLTIP.to_string());
+-            }
+-            _ => {
+-                let tooltip = if IS_MACOS {
+-                    OTHER_TOOLTIP
+-                } else {
+-                    OTHER_TOOLTIP_NON_MAC
+-                };
+-                return Some(tooltip.to_string());
+-            }
+-        }
++        return app_tooltip().map(str::to_string);
+     }
+ 
+     None
+@@ -153,29 +111,16 @@ fn linux_app_tooltip(session: LinuxDesktopSession) -> Option<&'static str> {
+     (session.has_display && !session.is_wsl).then_some(LINUX_APP_TOOLTIP)
+ }
+ 
+-fn paid_app_tooltip() -> Option<&'static str> {
+-    if IS_MACOS || IS_WINDOWS {
+-        Some(APP_TOOLTIP)
++fn app_tooltip() -> Option<&'static str> {
++    if IS_MACOS {
++        Some(MACOS_APP_TOOLTIP)
++    } else if IS_WINDOWS {
++        Some(WINDOWS_APP_TOOLTIP)
+     } else {
+         linux_app_tooltip(LinuxDesktopSession::current())
+     }
+ }
+ 
+-/// Paid users spend most startup sessions in a dedicated promo slot rather than the
+-/// generic random tip pool. Keep this business logic explicit: we currently split
+-/// that slot between the app promo and Fast mode, but suppress the Fast promo once
+-/// the user already has Fast mode enabled.
+-fn pick_paid_tooltip<R: Rng + ?Sized>(
+-    rng: &mut R,
+-    fast_mode_enabled: bool,
+-) -> Option<&'static str> {
+-    if fast_mode_enabled || rng.random_bool(0.5) {
+-        paid_app_tooltip()
+-    } else {
+-        Some(FAST_TOOLTIP)
+-    }
+-}
+-
+ fn pick_tooltip<R: Rng + ?Sized>(rng: &mut R, keymap: &TuiKeymap) -> Option<String> {
+     // Resolve current settings for each new tip; never replace an invalid or unbound keymap
+     // with defaults, or cache shortcut text across /keymap edits.
+@@ -495,37 +440,54 @@ mod tests {
+         assert_eq!(expected, pick_tooltip(&mut rng, &TuiKeymap::default()));
+     }
+ 
++    #[test]
++    fn desktop_app_tips_render_at_narrow_width() {
++        let cwd = std::env::current_dir().unwrap();
++        for (platform, tip) in [
++            ("macos", MACOS_APP_TOOLTIP),
++            ("windows", WINDOWS_APP_TOOLTIP),
++            ("linux", LINUX_APP_TOOLTIP),
++        ] {
++            let rendered = render_tooltip_lines(tip, /*width*/ 40, &cwd)
++                .iter()
++                .map(|line| format!("{:?} {:?}", line.line, line.hyperlinks))
++                .collect::<Vec<_>>()
++                .join("\n");
++            insta::assert_snapshot!(format!("desktop_app_tip_{platform}"), rendered);
++        }
++    }
++
+     #[test]
+     fn desktop_app_tooltip_uses_supported_platform_launcher() {
+         let tooltip = TOOLTIPS
+             .iter()
+             .copied()
+-            .find(|tip| tip.contains("Desktop app"));
++            .find(|tip| tip.contains("desktop app"));
+ 
+         if linux_app_tooltip(LinuxDesktopSession::current()).is_some() {
+             let tooltip = tooltip.expect("Linux should advertise the desktop app");
+-            assert_eq!(paid_app_tooltip(), Some(tooltip));
++            assert_eq!(app_tooltip(), Some(tooltip));
+         } else if IS_MACOS {
+             let tooltip = tooltip.expect("macOS should advertise the desktop app");
+-            insta::assert_snapshot!(tooltip, @"Run `codex app` to open the Desktop app (it installs on macOS if needed).");
+-            assert_eq!(paid_app_tooltip(), Some(APP_TOOLTIP));
++            assert_eq!(app_tooltip(), Some(tooltip));
+         } else if IS_WINDOWS {
+-            assert_eq!(tooltip, None);
+-            assert_eq!(paid_app_tooltip(), Some(APP_TOOLTIP));
++            let tooltip = tooltip.expect("Windows should advertise the desktop app");
++            assert_eq!(app_tooltip(), Some(tooltip));
+         } else {
+             assert_eq!(tooltip, None);
+-            assert_eq!(paid_app_tooltip(), None);
++            assert_eq!(app_tooltip(), None);
+         }
+     }
+ 
+     #[test]
+     fn linux_desktop_app_tooltip_requires_graphical_native_session() {
+-        let tooltip = linux_app_tooltip(LinuxDesktopSession {
+-            has_display: true,
+-            is_wsl: false,
+-        })
+-        .expect("graphical native Linux should advertise the desktop app");
+-        insta::assert_snapshot!(tooltip, @"Try the **Desktop app** on Linux: install it from https://learn.chatgpt.com/docs/linux/linux-app and run 'chatgpt'.");
++        assert_eq!(
++            linux_app_tooltip(LinuxDesktopSession {
++                has_display: true,
++                is_wsl: false,
++            }),
++            Some(LINUX_APP_TOOLTIP)
++        );
+ 
+         assert_eq!(
+             linux_app_tooltip(LinuxDesktopSession {
+@@ -544,30 +506,24 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn paid_tooltip_pool_rotates_between_promos() {
+-        let mut seen = std::collections::BTreeSet::new();
+-        for seed in 0..32 {
+-            let mut rng = StdRng::seed_from_u64(seed);
+-            seen.insert(pick_paid_tooltip(
+-                &mut rng, /*fast_mode_enabled*/ false,
+-            ));
+-        }
+-
+-        let expected = std::collections::BTreeSet::from([paid_app_tooltip(), Some(FAST_TOOLTIP)]);
+-        assert_eq!(seen, expected);
+-    }
+-
+-    #[test]
+-    fn paid_tooltip_pool_skips_fast_when_fast_mode_is_enabled() {
+-        let mut seen = std::collections::BTreeSet::new();
+-        for seed in 0..8 {
+-            let mut rng = StdRng::seed_from_u64(seed);
+-            seen.insert(pick_paid_tooltip(&mut rng, /*fast_mode_enabled*/ true));
++    fn plans_use_platform_app_tip() {
++        for plan in [
++            Some(PlanType::Free),
++            Some(PlanType::Go),
++            Some(PlanType::Plus),
++            Some(PlanType::Pro),
++            None,
++        ] {
++            let mut seen = std::collections::BTreeSet::new();
++            for seed in 0..32 {
++                let mut rng = StdRng::seed_from_u64(seed);
++                seen.insert(preferred_tooltip(&mut rng, plan));
++            }
++            assert_eq!(
++                seen,
++                std::collections::BTreeSet::from([None, app_tooltip().map(str::to_string)])
++            );
+         }
+-
+-        let expected = std::collections::BTreeSet::from([paid_app_tooltip()]);
+-        assert_eq!(seen, expected);
+-        assert!(!seen.contains(&Some(FAST_TOOLTIP)));
+     }
+ 
+     #[test]

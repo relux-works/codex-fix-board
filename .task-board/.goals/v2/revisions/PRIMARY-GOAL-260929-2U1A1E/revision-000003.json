@@ -1,0 +1,46 @@
+{
+  "contract_version": "board-goal-v2",
+  "goal_id": "PRIMARY-GOAL-260929-2u1a1e",
+  "revision": 3,
+  "expected_previous_revision": 2,
+  "previous_ref": {
+    "id": "PRIMARY-GOAL-260929-2u1a1e",
+    "revision": 2
+  },
+  "owner": {
+    "kind": "parent",
+    "id": "primary"
+  },
+  "kind": "alignment",
+  "objective": "Implement the accepted goal-mode token-burn patch series (TASK-260929-1srn2y final plan) for openai/codex: fork into relux-works/codex and push only there (no pushes to openai, no GitHub CI); keep the task-board board and config out of git history; signed commits as Ivan Oparin \u003coparin@me.com\u003e (ssh key ~/.ssh/ivanopcode); shape work as discrete feature branches for later targeted upstream PRs grouped by domain/code proximity. Orchestrate via task-board: producer gpt-6-luna max (backup muse-spark max), reviewer claude-sonnet-5-5 high (backup gpt-6-astra low; important reviews claude-opus-5-5 xhigh + gpt-6-astra high); ask tb-keeper how to run tests locally.",
+  "scope": {
+    "requested_ids": null,
+    "resolved_leaf_items": null
+  },
+  "mutation_authority": "agent_discretion",
+  "success_predicate": "routing_duty_clear",
+  "provider_condition": "Every terminal task-board run notice for this board has been routed (reviewer, checkpoint, integrate, rework, or a persisted blocked packet), and no unblocked, unassigned leaf of the primary goal remains undispatched, or the session is explicitly waiting on a human decision.",
+  "native_reflection": "required",
+  "state": "active",
+  "legacy_refs": [
+    {
+      "contract": "primary-goal-v1",
+      "id": "PRIMARY-GOAL-260929-2u1a1e",
+      "revision": 3
+    }
+  ],
+  "role_policy": {},
+  "mutation": {
+    "kind": "alignment_realigned",
+    "reason": "User approved implementation and set fork, push, signing, role and PR-shaping requirements.",
+    "actor_context": {
+      "kind": "agent",
+      "actor_id": "iv"
+    },
+    "authority": "agent_discretion"
+  },
+  "created_at": "2026-09-28T22:15:58.846745Z",
+  "updated_at": "2026-09-29T00:47:30.214151Z",
+  "created_by": "iv",
+  "reason": "User approved implementation and set fork, push, signing, role and PR-shaping requirements."
+}

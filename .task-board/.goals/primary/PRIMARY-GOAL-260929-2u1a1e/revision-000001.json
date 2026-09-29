@@ -1,0 +1,20 @@
+{
+  "contract": "primary-goal-v1",
+  "id": "PRIMARY-GOAL-260929-2u1a1e",
+  "revision": 1,
+  "state": "active",
+  "scope": {
+    "kind": "board"
+  },
+  "objective": "Design a patch series for upstream openai/codex main that fixes every goal-mode token-burn mechanism from https://relux.works/en/blog/codex-goal-token-burn/ (goal continuation spin, clock.sleep gating, polling-only wait contract, float argument rejection, missing background completion wake, subagent/child waiting), and obtain an independent gpt-6-astra max research review of the current plan (.temp/goal-token-burn/research.md) to compare against.",
+  "mutation": {
+    "kind": "created",
+    "reason": "User asked to research native Codex patches for the article's defects and to run an independent astra max research via project-management.",
+    "actor": {
+      "kind": "primary_parent",
+      "actor_id": "iv"
+    }
+  },
+  "created_at": "2026-09-28T22:15:58.846745Z",
+  "updated_at": "2026-09-28T22:15:58.846745Z"
+}

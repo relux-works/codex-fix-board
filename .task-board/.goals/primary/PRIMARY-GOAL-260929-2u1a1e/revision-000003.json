@@ -1,0 +1,21 @@
+{
+  "contract": "primary-goal-v1",
+  "id": "PRIMARY-GOAL-260929-2u1a1e",
+  "revision": 3,
+  "previous_revision": 2,
+  "state": "active",
+  "scope": {
+    "kind": "board"
+  },
+  "objective": "Implement the accepted goal-mode token-burn patch series (TASK-260929-1srn2y final plan) for openai/codex: fork into relux-works/codex and push only there (no pushes to openai, no GitHub CI); keep the task-board board and config out of git history; signed commits as Ivan Oparin \u003coparin@me.com\u003e (ssh key ~/.ssh/ivanopcode); shape work as discrete feature branches for later targeted upstream PRs grouped by domain/code proximity. Orchestrate via task-board: producer gpt-6-luna max (backup muse-spark max), reviewer claude-sonnet-5-5 high (backup gpt-6-astra low; important reviews claude-opus-5-5 xhigh + gpt-6-astra high); ask tb-keeper how to run tests locally.",
+  "mutation": {
+    "kind": "objective_realigned",
+    "reason": "User approved implementation and set fork, push, signing, role and PR-shaping requirements.",
+    "actor": {
+      "kind": "primary_parent",
+      "actor_id": "iv"
+    }
+  },
+  "created_at": "2026-09-28T22:15:58.846745Z",
+  "updated_at": "2026-09-29T00:47:30.214151Z"
+}

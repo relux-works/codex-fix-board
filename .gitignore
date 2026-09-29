@@ -1,0 +1,7 @@
+# task-board private/runtime state (mirrors skill-project-management conventions)
+.task-board/logs
+**/.progress-pair-journal.json
+**/.board-write-ledger.json
+**/.progress-pair-generation
+.task-board/.resources/**/*.log
+.DS_Store
