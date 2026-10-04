@@ -1,0 +1,128 @@
+# Merged review verdict — TASK-260929-u2i5rr CR revision 6 (tb-R141 / R132 merge)
+
+Verdict: **accept**
+
+Panel outcomes: `TASK-261002-240men_panel-verdict.md` (accept), `TASK-261002-rwld80_panel-verdict.md` (accept), `TASK-261002-1ll09w_panel-verdict.md` (accept)
+
+Merge rules (R132): identical findings (same row, file and class) collapse; everything else is unioned; each surface row takes its worst panel result; any changes_requested sends the CR back to rework.
+
+```verdict-findings
+{
+  "findings": [],
+  "notes": [
+    "[TASK-261002-240men] {'id': 'static-panel-bound', 'text': 'Held is scoped to the expressly authorized static attack through the receipt API plus reused execution evidence. This panel executed no Rust tests, builds, or mutants. M17/M18 remain unexecuted; their expected failures were checked by control/data-flow inspection, not claimed as kills.'}",
+    "[TASK-261002-240men] {'id': 'coverage', 'text': '6/6 AC rows map to driving/refusal assertions; 24/24 candidate test names are present in the attached local test log with PASS. The error-arm sweep names driving tests for reachable public branches. Its stated undriven bounds are active-phase ReceiptPhase::error arms, missing active under the same held lock in retire and resolve action application, UUID collision retry and four-attempt exhaustion. These bounds agree with the implementation.'}",
+    "[TASK-261002-240men] {'id': 'execution-evidence', 'text': 'Reused TASK-260929-u2i5rr_rev6-local-test.log: Nextest run 77e1c120-e842-4a00-a897-ed9d39bad235, 24 passed, 4881 skipped. Producer reports exit 0 and two runs; the fetched log proves one full 24-test run, not two independent logs. Reused TASK-260929-u2i5rr_hosted-ci-rev6.md reports tree 4a456609f6f928d331d327e167114e71abade872, commit 67a4de28f8cf75651c465ab9ae35d7ab97d18863, run 36998390061, four success lanes. No fresh provider query; the hosted summary contains job conclusions rather than per-test rows.'}",
+    "[TASK-261002-240men] {'id': 'inactive-api', 'text': 'git grep on the exact candidate finds no runtime CompletionReceiptStore caller outside its declaration/implementation. This is explicitly the inactive B1 stage. Tool launch, mailbox, model-context effects and actual transport acknowledgement are outside this leaf; reserve-before-launch is a caller obligation, not attested integration.'}",
+    "[TASK-261002-240men] {'id': 'size', 'text': 'Base-to-candidate delta is 1834 additions across exactly the three scoped paths; rev5-to-rev6 is 301 additions/1 deletion solely in tests. Product code is unchanged from rev5. This exceeds generic review-size guidance but retains a single coherent inactive state machine; nonblocking maintainability note.'}",
+    "[TASK-261002-240men] {'id': 'mutant-delta', 'text': 'M17 narrows the late-decision guard to admit Armed: tests.rs:1007-1074 asserts exact InvalidTransition for both decisions on Armed/Queued/Leased, then samples the original 73 result. M18 admits a forged source with valid token: tests.rs:1077-1161 calls fail and acknowledge with TerminalStdinOutput against a PushedCompletion lease, asserts StaleLease, and acknowledges the legitimate lease to the original result. Both recipes would contradict explicit assertions; neither was run here.'}",
+    "[TASK-261002-240men] {'id': 'free-hunt-bound', 'text': 'Bounded static free hunt after the persisted surface sweep checked cloned lease reuse; cancel versus acknowledge/fail serialization; cancellation of Reserved(Some); freed capacity for InlineResult/Sampled/Cancelled; terminal eviction and UUID collision guards; cross-store receipt isolation; byte-bounded owners and opaque Debug. All mutations share the same mutex and terminal lookup validates owner before phase disclosure. No additional defect found. No scheduler model checking or forced random collisions were performed.'}",
+    "[TASK-261002-rwld80] Revision-5 finding resolve-initial-response-active-nonreserved-arm-unguarded is closed by completion_receipt_late_initial_response_refuses_each_active_nonreserved_state (tests:979-1039): Armed/Queued/Leased x Arm/InlineResult = 6/6 rejection cases, exact status preserved, original completion(Some(73)) acknowledged. M17 narrowing to late Armed admission would fail the Err assertion by static control-flow inspection; NOT executed.",
+    "[TASK-261002-rwld80] All 6/6 AC rows have driving/refusal assertions inspected. The producer sweep has 59 grouped entries: 53 wholly mapped to named driving tests, 6 carry explicit unreachable/unforced bounds (one also maps the fresh UUID path). This is a static mapping ratio, not measured branch coverage. Every Err-returning arm and state transition was cross-checked against source, including the bounds at implementation:214-219,252-255,283-290,360,368.",
+    "[TASK-261002-rwld80] Candidate test definitions, producer legend, and attached local PASS names are exact matching sets: 24/24/24. Reused TASK-260929-u2i5rr_rev6-local-test.log reports 24 passing, 4881 skipped. Its exit-0 attribution is in the producer results supplement; this panel did not run that command. Hosted TASK-260929-u2i5rr_hosted-ci-rev6.md identifies commit 67a4de28f8cf75651c465ab9ae35d7ab97d18863, exact tree 4a456609f6f928d331d327e167114e71abade872, run 36998390061 and success for small/core/lint/app-server. That summary has no per-test rows. No live provider query was performed.",
+    "[TASK-261002-rwld80] No Rust builds, tests, or mutants executed here: measured panel mutant executions 0. M17/M18 remain unexecuted, not killed. Static reasoning shows M18 admitting a matching-token wrong-source lease fails the mismatch test Err(StaleLease) assertions (tests:1093-1103).",
+    "[TASK-261002-rwld80] Inactive B1 scope: candidate git grep finds no non-test receipt-store caller outside this module. API methods are the real entry points for this leaf; launch-before-reserve ordering, actual prompt membership, mailbox/transport integration and caller cleanup belong to B2/later and are not certified. Liveness requires callers to resolve/cancel; no automatic expiry is promised.",
+    "[TASK-261002-rwld80] The installed project-management package omits .roles/reviewer/role.md referenced by its router. The read failed rather than indicating an empty contract. Used the explicit panel brief, full negative-evidence reference and research-workflow contract; no infrastructure edits or substitute workflow introduced.",
+    "[TASK-261002-rwld80] Full CR adds 1834 lines over base, dominated by 1298 test lines; revision 6 adds 301/deletes 1 test lines only. This exceeds repository size guidance, but the reviewed coherent inactive state machine and its adversarial tests have no newly separable runtime stage. Nonblocking maintenance note; no extra prerequisite. Implementation remains unchanged from revision 5.",
+    "[TASK-261002-1ll09w] {'id': 'prior-finding-resolved', 'text': 'resolve-initial-response-active-nonreserved-arm-unguarded: completion_receipt_tests.rs:979-1039 drives Armed/Queued/LeasedToSampling x Arm/InlineResult (6/6), asserts exact InvalidTransition and unchanged status after each refusal, and samples the original exit 73. Static M17 reasoning: allowing Armed returns Ok at the first assertion; allowing Queued/Leased overwrites state and fails both refusal and original-exit checks. No mutant executed.'}",
+    "[TASK-261002-1ll09w] {'id': 'sweep', 'text': 'Reviewed all 59 producer sweep rows against completion_receipt.rs:34-527 and all 24 tests. Reachable error and transition arms have named driving tests; the 6 explicit defensive/randomness rows are bounded: active-phase ReceiptPhase::error, retire missing active, UUID collision retries, UUID exhaustion, and the two missing-active resolve actions. Single held mutex makes missing-active and active-phase terminal errors unreachable through the API. Random UUID retries/exhaustion are not driven. This is a static mapping ratio (59/59 reviewed), not a measured runtime branch-coverage ratio.'}",
+    "[TASK-261002-1ll09w] {'id': 'execution-evidence', 'text': 'Reused attached CR rev6-validation.log: target guard, fmt-check, scoped clippy --tests and small-crate suite each exit 0 (4/4 command shards; case coverage unknown). Reused rev6-local-test.log: 24/24 candidate test names have PASS rows, summary 24 passed/4881 skipped; results reports two exit-0 invocations but the inspected log contains one summary. Reused hosted-ci-rev6.md: exact tree 4a456609f6f928d331d327e167114e71abade872, commit 67a4de28f8cf75651c465ab9ae35d7ab97d18863, run 36998390061, lint/small/core/app-server all success. Hosted summary has job conclusions, not individual test rows. No fresh provider query, Rust test/build or mutant execution by this panel.'}",
+    "[TASK-261002-1ll09w] {'id': 'mutant-bounds', 'text': 'M17/M18 remain unexecuted; normal hosted CI does not execute mutants. Producer honestly records this in its mutant table, though the surface/handoff wording mentions pending hosted execution ambiguously. This panel claims only static expected failures, not observed kills. Historical kills are attributed to prior attached evidence and were not independently replayed.'}",
+    "[TASK-261002-1ll09w] {'id': 'inactive-bound', 'text': 'git grep on exact candidate finds CompletionReceiptStore only at its declaration and impl outside tests. No launch/mailbox/model context caller exists by explicit B1 scope. Actual reserve-before-launch and sampling inclusion are later integration obligations; not attested here. No CLI/config/rollout/app-server wire changes or model-visible fragments.'}",
+    "[TASK-261002-1ll09w] {'id': 'size', 'text': 'Base-to-candidate: 1834 added lines across exactly three authorized paths. Rev5-to-rev6: 301 insertions/1 deletion solely in the dedicated test file; product and module export byte-identical (git diff --exit-code 0). The cumulative size exceeds review guidance, carried as nonblocking note from prior review; the smallest current coherent stage is this tests-only refusal closure. No new split prerequisite.'}"
+  ],
+  "surface_results": [
+    {
+      "row": "concurrency state machine",
+      "result": "held",
+      "reason": "Static attack of public receipt API sequences and candidate assertions: forced exit-before-inline, exit-before-arm and arm-before-exit; repeated decision on each active nonreserved state with both decisions; duplicate exits on Reserved(Some)/Queued/Leased; stale token and wrong-source failure/ack; all terminal outcomes and foreign thread/generation/call owners; cancellation from each unsampled state; 64/65 capacity and release; competing stdin/pushed leases; all eight poisoned-lock entries. One mutex serializes lookup and mutation; refusal branches preserve phase/result. No bypass reproduced within this static panel.",
+      "evidence": [
+        "completion_receipt.rs:268-530",
+        "completion_receipt_tests.rs:70-1298",
+        "TASK-260929-u2i5rr_results.md (Exhaustive error/transition-arm sweep)",
+        "TASK-260929-u2i5rr_rev6-local-test.log",
+        "TASK-260929-u2i5rr_hosted-ci-rev6.md"
+      ],
+      "reported_by": "TASK-261002-240men"
+    }
+  ],
+  "free_hunt": [
+    {
+      "attack": "Cloned lease reuse, fail/ack and cancel/ack ordering",
+      "result": "held",
+      "reason": "All entry points hold the same store Mutex throughout lookup and mutation; first successful retire removes active membership. Clone acknowledgments then see terminal error; stale failed tokens cannot requeue a new lease. No double claim or partial state update found (implementation:441-511).",
+      "reported_by": "TASK-261002-rwld80"
+    },
+    {
+      "attack": "Reserved(Some) cancellation and duplicate publication",
+      "result": "held",
+      "reason": "Reserved with retained exit is still active; cancel retires regardless of active phase. publish_exit only fills an empty Reserved completion or transitions Armed; all other phases refuse (implementation:389-399,492-511). Reserved(Some) cancellation is statically inspected, not a separate executed case.",
+      "reported_by": "TASK-261002-rwld80"
+    },
+    {
+      "attack": "Slot accounting and terminal eviction",
+      "result": "held",
+      "reason": "reserve checks active.len >=64 under lock; all terminal outcomes pass through retire, remove active, and retain at most 64 terminal records. Capacity and 65 sequential retirement tests attack the two bounds (implementation:252-297; tests:452-521). Test loop constants are coupled to active capacity; coordinated future edits to both bounds are not covered.",
+      "reported_by": "TASK-261002-rwld80"
+    },
+    {
+      "attack": "Owner isolation and forged lease target/source",
+      "result": "held",
+      "reason": "Owner comparison precedes state inspection on active and terminal lookups. Tests vary thread/generation/call separately and forge from real leases; wrong phase, stale token and matching-token wrong source are refused without harming the real lease (tests:511-727,1042-1115).",
+      "reported_by": "TASK-261002-rwld80"
+    },
+    {
+      "attack": "RNG, bounded ownership and poison",
+      "result": "held",
+      "reason": "IDs check both active and terminal sets before insertion; owner IDs are byte-bounded and Debug redacted. RNG collision/exhaustion unforced; lease-token UUID collision remains probabilistic, not exhaustive. All eight store methods acquire lock_state and return LockPoisoned after the induced panic (tests:1249-1298).",
+      "reported_by": "TASK-261002-rwld80"
+    },
+    {
+      "attack": "External surfaces and context",
+      "result": "held",
+      "reason": "Only two new internal files and one module export differ. No app-server/CLI/config/rollout API or model-context injection added. The unwired API is explicitly permitted, so unit API tests meet this stage scope; no agent behavior change requiring an integration test.",
+      "reported_by": "TASK-261002-rwld80"
+    },
+    {
+      "attack": "late decisions, forged source, stale lease and late publication",
+      "result": "held",
+      "evidence": "tests:979-1115. Real live lease is cloned before wrong-source mutation, so matching token reaches the source guard. Both fail and acknowledge refuse; original completion subsequently samples. Reserved/Armed/Queued wrong-phase tests hit fallback arms. No product weakening.",
+      "reported_by": "TASK-261002-1ll09w"
+    },
+    {
+      "attack": "terminal owner/unknown paths and history eviction",
+      "result": "held",
+      "evidence": "tests:480-613,1118-1246. Every terminal outcome is attacked across all owner dimensions; nil UUID is outside v4-generated IDs; six terminal_error callers plus status reject unknown IDs. All 64 recent retired receipts are asserted after 65 retirements. Eviction intentionally forgets older receipts.",
+      "reported_by": "TASK-261002-1ll09w"
+    },
+    {
+      "attack": "capacity and retirement accounting",
+      "result": "held",
+      "evidence": "product:252-297,351-353,482-511. Every retirement removes active before recording terminal; capacity guard precedes insertion. Existing test uses the product constant, so a coordinated capacity-constant increase is a remaining test blind spot; static value is 64. Cancel of Reserved(Some) uses the same unconditional retirement path; no retained-exit-specific cancellation test claimed.",
+      "reported_by": "TASK-261002-1ll09w"
+    },
+    {
+      "attack": "concurrency and poison",
+      "result": "held",
+      "evidence": "tests:128-268,771-854,1249-1298. Exit/decision barriers force the named orders; source race holds acknowledgment until both leases are attempted. This verifies linearization, not exhaustive scheduler exploration. Poison test reaches all 8/8 store entry points and expects LockPoisoned. UUID collision/exhaustion remain unforced.",
+      "reported_by": "TASK-261002-1ll09w"
+    }
+  ]
+}
+```
+
+## Recording reviewer attestation — RUN-261002-6a2dc8
+
+I read all three panel outcomes and verified their merge in this recording run.
+All 3/3 panel verdicts are accept; findings remain empty; all 20/20 notes,
+1/1 surface rows (held in every panel), and 10/10 held free-hunt entries are
+preserved. Python merge comparison exited 0. The prior revision-5 finding is
+explicitly resolved in the panel evidence. I endorse the merged acceptance
+under its stated static-review and reused-validation bounds; no fresh Rust
+tests, mutants, or live hosted-CI query were run here.
+
+Recording evidence: TASK-260929-u2i5rr_recording-review-rev6.md.
+The initial accept_cr call was refused with change_request_evidence_missing
+because this merged outcome predated the run without a manifest digest.
+This reviewer-authored attestation updates the named evidence through resource
+CRUD; it does not alter the panel findings, surface result, or candidate.

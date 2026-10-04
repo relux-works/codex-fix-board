@@ -1,0 +1,4965 @@
+diff --git a/codex-rs/core/src/unified_exec/async_watcher.rs b/codex-rs/core/src/unified_exec/async_watcher.rs
+index f30c750cbb..7434ab627e 100644
+--- a/codex-rs/core/src/unified_exec/async_watcher.rs
++++ b/codex-rs/core/src/unified_exec/async_watcher.rs
+@@ -7,8 +7,10 @@ use tokio::time::Duration;
+ use tokio::time::Instant;
+ use tokio::time::Sleep;
+ 
++use super::ExitWatcherReceiptHook;
+ use super::SharedPluginMetricsSidecar;
+ use super::UnifiedExecContext;
++use super::completion_receipt::TerminalCompletion;
+ use super::process::OutputBuffers;
+ use super::process::OutputHandles;
+ use super::process::UnifiedExecProcess;
+@@ -166,6 +168,7 @@ pub(crate) fn spawn_exit_watcher(
+     started_at: Instant,
+     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
+     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
++    receipt_hook: Option<ExitWatcherReceiptHook>,
+ ) {
+     let session_ref = Arc::clone(&context.session);
+     let turn_ref = Arc::clone(&context.step_context.turn);
+@@ -187,11 +190,48 @@ pub(crate) fn spawn_exit_watcher(
+         }
+         let _interaction_guard = interaction_lock.lock_owned().await;
+ 
++        // Publish the finalized exit only here: after exit, output drain,
++        // denial-monitor settling, and final classification. Publication
++        // failures (released, cancelled, or already inline) are ignored so
++        // the terminal event below stays exactly as before.
++        let failure_message = process.failure_message();
++        if let Some(hook) = receipt_hook.as_ref() {
++            let completion = match failure_message.as_ref() {
++                Some(_) => TerminalCompletion {
++                    exit_code: None,
++                    timed_out: process.timed_out(),
++                },
++                None => TerminalCompletion {
++                    exit_code: process.exit_code(),
++                    timed_out: process.timed_out(),
++                },
++            };
++            if hook
++                .store
++                .publish_exit(hook.receipt_id, &hook.owner, completion)
++                .is_ok()
++            {
++                let (transcript, omitted_bytes) = {
++                    let guard = output_buffer.lock().await;
++                    (
++                        guard.transcript.to_bytes(),
++                        guard.transcript.omitted_bytes(),
++                    )
++                };
++                hook.hooks.lock().await.retention.insert_pending(
++                    hook.receipt_id,
++                    hook.owner.clone(),
++                    transcript,
++                    omitted_bytes,
++                );
++            }
++        }
++
+         let duration = Instant::now().saturating_duration_since(started_at);
+         let plugin_metrics_sidecar = plugin_metrics_sidecar
+             .as_ref()
+             .and_then(take_plugin_metrics_sidecar);
+-        if let Some(message) = process.failure_message() {
++        if let Some(message) = failure_message {
+             drop(plugin_metrics_sidecar);
+             emit_failed_exec_end_for_unified_exec(
+                 process.sandbox_type(),
+diff --git a/codex-rs/core/src/unified_exec/async_watcher_tests.rs b/codex-rs/core/src/unified_exec/async_watcher_tests.rs
+index d5e1b9ba3e..9cac5788c2 100644
+--- a/codex-rs/core/src/unified_exec/async_watcher_tests.rs
++++ b/codex-rs/core/src/unified_exec/async_watcher_tests.rs
+@@ -114,6 +114,7 @@ async fn completed_output_preserves_bytes_before_subscription(
+         Instant::now(),
+         /*network_denial_monitor*/ None,
+         /*plugin_metrics_sidecar*/ None,
++        /*receipt_hook*/ None,
+     );
+     stdout_tx.send(late_output.to_vec())?;
+     drop(stdout_tx);
+@@ -330,6 +331,7 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() ->
+         Instant::now(),
+         Some(network_denial_monitor),
+         /*plugin_metrics_sidecar*/ None,
++        /*receipt_hook*/ None,
+     );
+ 
+     let exited_at = Instant::now();
+diff --git a/codex-rs/core/src/unified_exec/completion_receipt.rs b/codex-rs/core/src/unified_exec/completion_receipt.rs
+new file mode 100644
+index 0000000000..567a12db6d
+--- /dev/null
++++ b/codex-rs/core/src/unified_exec/completion_receipt.rs
+@@ -0,0 +1,569 @@
++//! In-memory receipt state for opted-in background exec completions.
++//!
++//! This module owns only the receipt lifecycle. Exec launch, watcher, mailbox,
++//! and sampling-request integration are separate stages.
++//
++// The exported API is intentionally unused until those later integration stages.
++#![allow(dead_code)]
++
++use std::collections::HashMap;
++use std::collections::VecDeque;
++use std::fmt::Debug;
++use std::fmt::Formatter;
++use std::sync::Mutex;
++use std::sync::MutexGuard;
++
++use codex_protocol::ThreadId;
++use thiserror::Error;
++use uuid::Uuid;
++
++pub(crate) const MAX_COMPLETION_RECEIPTS: usize = 64;
++const MAX_TERMINAL_RECEIPTS: usize = 64;
++const MAX_RECEIPT_ID_ATTEMPTS: usize = 4;
++const MAX_CALL_ID_BYTES: usize = 256;
++
++/// Identifies the thread runtime and tool call that owns a receipt.
++#[derive(Clone, PartialEq, Eq)]
++pub(crate) struct ReceiptOwner {
++    thread_id: ThreadId,
++    runtime_generation: u64,
++    call_id: Box<str>,
++}
++
++impl ReceiptOwner {
++    pub(crate) fn new(
++        thread_id: ThreadId,
++        runtime_generation: u64,
++        call_id: impl Into<String>,
++    ) -> Result<Self, ReceiptError> {
++        let call_id = call_id.into();
++        if call_id.is_empty() || call_id.len() > MAX_CALL_ID_BYTES {
++            return Err(ReceiptError::InvalidOwner);
++        }
++
++        Ok(Self {
++            thread_id,
++            runtime_generation,
++            call_id: call_id.into_boxed_str(),
++        })
++    }
++}
++
++impl Debug for ReceiptOwner {
++    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("ReceiptOwner(<opaque>)")
++    }
++}
++
++/// Opaque identifier for one reserved completion slot.
++#[derive(Clone, Copy, PartialEq, Eq, Hash)]
++pub(crate) struct ReceiptId(Uuid);
++
++impl Debug for ReceiptId {
++    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("ReceiptId(<opaque>)")
++    }
++}
++
++/// The finalized process outcome retained by the receipt state machine.
++///
++/// `exit_code` is `None` when the process failed without producing an exit
++/// code (for example a failure message), mirroring the failed
++/// `ExecCommandEnd` event. Otherwise it carries the observed exit code and
++/// `timed_out` preserves the process timeout flag.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct TerminalCompletion {
++    pub(crate) exit_code: Option<i32>,
++    pub(crate) timed_out: bool,
++}
++
++/// Internal opt-in for exit notification on an exec launch.
++///
++/// This is never exposed to the model and never changes the tool schema;
++/// exposing `notify_on_exit` is a later story. Default launches behave
++/// exactly as before and never reserve a receipt.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub(crate) enum ExecCompletionMode {
++    #[default]
++    Default,
++    NotifyOnExit,
++}
++
++/// The initial tool response either returns a terminal result or arms a wake.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum InitialResponseDecision {
++    InlineResult,
++    Arm,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum InitialResponseOutcome {
++    InlineResult(TerminalCompletion),
++    Armed,
++    Queued,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum ExitPublicationOutcome {
++    RetainedUntilDecision,
++    Queued,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum SamplingSource {
++    PushedCompletion,
++    TerminalStdinOutput,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum CancellationReason {
++    Released,
++    OwnerStopped,
++    Shutdown,
++    Interrupted,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) enum ReceiptStatus {
++    Reserved,
++    Armed,
++    Queued,
++    LeasedToSampling { source: SamplingSource },
++    InlineResult,
++    Sampled { source: SamplingSource },
++    Cancelled { reason: CancellationReason },
++}
++
++#[derive(Debug, Error, PartialEq, Eq)]
++pub(crate) enum ReceiptError {
++    #[error("receipt capacity is full (limit {capacity})")]
++    CapacityExceeded { capacity: usize },
++    #[error("receipt owner must have a non-empty call id no longer than 256 bytes")]
++    InvalidOwner,
++    #[error("receipt id is unknown or has expired from the bounded terminal history")]
++    UnknownReceipt,
++    #[error("receipt belongs to a different thread, runtime generation, or call")]
++    ForeignOwner,
++    #[error("receipt is already leased to a sampling path")]
++    AlreadyLeased,
++    #[error("receipt claim was already consumed")]
++    AlreadyConsumed,
++    #[error("receipt was cancelled: {reason:?}")]
++    Cancelled { reason: CancellationReason },
++    #[error("receipt output was retired to free capacity")]
++    Retired,
++    #[error("receipt is not valid for this operation in state {actual:?}")]
++    InvalidTransition { actual: ReceiptStatus },
++    #[error("sampling lease is stale or no longer owns this receipt")]
++    StaleLease,
++    #[error("receipt is already terminal")]
++    AlreadyTerminal,
++    #[error("could not allocate a unique opaque receipt id")]
++    IdGenerationFailed,
++    #[error("completion receipt lock was poisoned by a panic")]
++    LockPoisoned,
++}
++
++/// A sampling claim. Its fields are private so a caller cannot mint a lease.
++#[derive(Clone, PartialEq, Eq)]
++pub(crate) struct SamplingLease {
++    receipt_id: ReceiptId,
++    owner: ReceiptOwner,
++    token: Uuid,
++    source: SamplingSource,
++}
++
++impl Debug for SamplingLease {
++    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("SamplingLease(<opaque>)")
++    }
++}
++
++impl SamplingLease {
++    pub(crate) fn receipt_id(&self) -> ReceiptId {
++        self.receipt_id
++    }
++}
++
++#[derive(Default)]
++pub(crate) struct CompletionReceiptStore {
++    state: Mutex<StoreState>,
++}
++
++#[derive(Default)]
++struct StoreState {
++    active: HashMap<ReceiptId, ReceiptRecord>,
++    terminal: VecDeque<TerminalReceipt>,
++}
++
++struct ReceiptRecord {
++    owner: ReceiptOwner,
++    phase: ReceiptPhase,
++}
++
++enum ReceiptPhase {
++    Reserved {
++        completion: Option<TerminalCompletion>,
++    },
++    Armed,
++    Queued(TerminalCompletion),
++    LeasedToSampling {
++        completion: TerminalCompletion,
++        token: Uuid,
++        source: SamplingSource,
++    },
++    InlineResult,
++    Sampled {
++        source: SamplingSource,
++    },
++    Cancelled(CancellationReason),
++}
++
++impl ReceiptPhase {
++    fn status(&self) -> ReceiptStatus {
++        match self {
++            Self::Reserved { .. } => ReceiptStatus::Reserved,
++            Self::Armed => ReceiptStatus::Armed,
++            Self::Queued(_) => ReceiptStatus::Queued,
++            Self::LeasedToSampling { source, .. } => {
++                ReceiptStatus::LeasedToSampling { source: *source }
++            }
++            Self::InlineResult => ReceiptStatus::InlineResult,
++            Self::Sampled { source } => ReceiptStatus::Sampled { source: *source },
++            Self::Cancelled(reason) => ReceiptStatus::Cancelled { reason: *reason },
++        }
++    }
++
++    fn error(&self) -> ReceiptError {
++        match self {
++            Self::Reserved { .. }
++            | Self::Armed
++            | Self::Queued(_)
++            | Self::LeasedToSampling { .. } => ReceiptError::InvalidTransition {
++                actual: self.status(),
++            },
++            Self::InlineResult => ReceiptError::InvalidTransition {
++                actual: ReceiptStatus::InlineResult,
++            },
++            Self::Sampled { .. } => ReceiptError::AlreadyConsumed,
++            Self::Cancelled(reason) => ReceiptError::Cancelled { reason: *reason },
++        }
++    }
++}
++
++struct TerminalReceipt {
++    id: ReceiptId,
++    owner: ReceiptOwner,
++    phase: ReceiptPhase,
++}
++
++impl StoreState {
++    fn terminal(&self, receipt_id: ReceiptId) -> Option<&TerminalReceipt> {
++        self.terminal
++            .iter()
++            .rev()
++            .find(|receipt| receipt.id == receipt_id)
++    }
++
++    fn terminal_error(&self, receipt_id: ReceiptId, owner: &ReceiptOwner) -> ReceiptError {
++        match self.terminal(receipt_id) {
++            Some(receipt) if receipt.owner != *owner => ReceiptError::ForeignOwner,
++            Some(receipt) => receipt.phase.error(),
++            None => ReceiptError::UnknownReceipt,
++        }
++    }
++
++    fn retire(&mut self, receipt_id: ReceiptId, phase: ReceiptPhase) -> Result<(), ReceiptError> {
++        let record = self
++            .active
++            .remove(&receipt_id)
++            .ok_or(ReceiptError::UnknownReceipt)?;
++        if self.terminal.len() == MAX_TERMINAL_RECEIPTS {
++            self.terminal.pop_front();
++        }
++        self.terminal.push_back(TerminalReceipt {
++            id: receipt_id,
++            owner: record.owner,
++            phase,
++        });
++        Ok(())
++    }
++}
++
++impl CompletionReceiptStore {
++    fn lock_state(&self) -> Result<MutexGuard<'_, StoreState>, ReceiptError> {
++        self.state.lock().map_err(|_| ReceiptError::LockPoisoned)
++    }
++
++    /// Reserves capacity before the caller launches an opted-in process.
++    pub(crate) fn reserve(&self, owner: ReceiptOwner) -> Result<ReceiptId, ReceiptError> {
++        let mut state = self.lock_state()?;
++        if state.active.len() >= MAX_COMPLETION_RECEIPTS {
++            return Err(ReceiptError::CapacityExceeded {
++                capacity: MAX_COMPLETION_RECEIPTS,
++            });
++        }
++
++        let mut receipt_id = None;
++        for _ in 0..MAX_RECEIPT_ID_ATTEMPTS {
++            let candidate = ReceiptId(Uuid::new_v4());
++            if !state.active.contains_key(&candidate) && state.terminal(candidate).is_none() {
++                receipt_id = Some(candidate);
++                break;
++            }
++        }
++        let receipt_id = receipt_id.ok_or(ReceiptError::IdGenerationFailed)?;
++        state.active.insert(
++            receipt_id,
++            ReceiptRecord {
++                owner,
++                phase: ReceiptPhase::Reserved { completion: None },
++            },
++        );
++        Ok(receipt_id)
++    }
++
++    /// Resolves whether the initial response is terminal or acknowledges a wake.
++    pub(crate) fn resolve_initial_response(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++        decision: InitialResponseDecision,
++    ) -> Result<InitialResponseOutcome, ReceiptError> {
++        enum Action {
++            Inline(TerminalCompletion),
++            Armed,
++            Queued(TerminalCompletion),
++        }
++
++        let mut state = self.lock_state()?;
++        let action = match state.active.get(&receipt_id) {
++            Some(record) if record.owner != *owner => return Err(ReceiptError::ForeignOwner),
++            Some(record) => match (&record.phase, decision) {
++                (
++                    ReceiptPhase::Reserved {
++                        completion: Some(completion),
++                    },
++                    InitialResponseDecision::InlineResult,
++                ) => Action::Inline(*completion),
++                (
++                    ReceiptPhase::Reserved { completion: None },
++                    InitialResponseDecision::InlineResult,
++                ) => {
++                    return Err(ReceiptError::InvalidTransition {
++                        actual: ReceiptStatus::Reserved,
++                    });
++                }
++                (
++                    ReceiptPhase::Reserved {
++                        completion: Some(completion),
++                    },
++                    InitialResponseDecision::Arm,
++                ) => Action::Queued(*completion),
++                (ReceiptPhase::Reserved { completion: None }, InitialResponseDecision::Arm) => {
++                    Action::Armed
++                }
++                (phase, _) => {
++                    return Err(ReceiptError::InvalidTransition {
++                        actual: phase.status(),
++                    });
++                }
++            },
++            None => return Err(state.terminal_error(receipt_id, owner)),
++        };
++
++        match action {
++            Action::Inline(completion) => {
++                state.retire(receipt_id, ReceiptPhase::InlineResult)?;
++                Ok(InitialResponseOutcome::InlineResult(completion))
++            }
++            Action::Armed => {
++                if let Some(record) = state.active.get_mut(&receipt_id) {
++                    record.phase = ReceiptPhase::Armed;
++                    Ok(InitialResponseOutcome::Armed)
++                } else {
++                    Err(ReceiptError::UnknownReceipt)
++                }
++            }
++            Action::Queued(completion) => {
++                if let Some(record) = state.active.get_mut(&receipt_id) {
++                    record.phase = ReceiptPhase::Queued(completion);
++                    Ok(InitialResponseOutcome::Queued)
++                } else {
++                    Err(ReceiptError::UnknownReceipt)
++                }
++            }
++        }
++    }
++
++    /// Publishes a fully finalized exit, retaining it if the response is undecided.
++    pub(crate) fn publish_exit(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++        completion: TerminalCompletion,
++    ) -> Result<ExitPublicationOutcome, ReceiptError> {
++        let mut state = self.lock_state()?;
++        let record = match state.active.get_mut(&receipt_id) {
++            Some(record) if record.owner != *owner => return Err(ReceiptError::ForeignOwner),
++            Some(record) => record,
++            None => return Err(state.terminal_error(receipt_id, owner)),
++        };
++
++        match &mut record.phase {
++            ReceiptPhase::Reserved { completion: stored } if stored.is_none() => {
++                *stored = Some(completion);
++                Ok(ExitPublicationOutcome::RetainedUntilDecision)
++            }
++            ReceiptPhase::Armed => {
++                record.phase = ReceiptPhase::Queued(completion);
++                Ok(ExitPublicationOutcome::Queued)
++            }
++            phase => Err(ReceiptError::InvalidTransition {
++                actual: phase.status(),
++            }),
++        }
++    }
++
++    /// Leases the single queued claim to either the pushed or terminal-stdin path.
++    pub(crate) fn lease_for_sampling(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++        source: SamplingSource,
++    ) -> Result<SamplingLease, ReceiptError> {
++        let mut state = self.lock_state()?;
++        let record = match state.active.get_mut(&receipt_id) {
++            Some(record) if record.owner != *owner => return Err(ReceiptError::ForeignOwner),
++            Some(record) => record,
++            None => return Err(state.terminal_error(receipt_id, owner)),
++        };
++
++        match &record.phase {
++            ReceiptPhase::Queued(completion) => {
++                let completion = *completion;
++                let token = Uuid::new_v4();
++                record.phase = ReceiptPhase::LeasedToSampling {
++                    completion,
++                    token,
++                    source,
++                };
++                Ok(SamplingLease {
++                    receipt_id,
++                    owner: owner.clone(),
++                    token,
++                    source,
++                })
++            }
++            ReceiptPhase::LeasedToSampling { .. } => Err(ReceiptError::AlreadyLeased),
++            phase => Err(ReceiptError::InvalidTransition {
++                actual: phase.status(),
++            }),
++        }
++    }
++
++    /// A failed sampling attempt requeues the same receipt without another claim.
++    pub(crate) fn fail_sampling(&self, lease: &SamplingLease) -> Result<(), ReceiptError> {
++        let mut state = self.lock_state()?;
++        let record = match state.active.get_mut(&lease.receipt_id) {
++            Some(record) if record.owner != lease.owner => return Err(ReceiptError::ForeignOwner),
++            Some(record) => record,
++            None => return Err(state.terminal_error(lease.receipt_id, &lease.owner)),
++        };
++
++        match &record.phase {
++            ReceiptPhase::LeasedToSampling {
++                completion,
++                token,
++                source,
++            } if *token == lease.token && *source == lease.source => {
++                let completion = *completion;
++                record.phase = ReceiptPhase::Queued(completion);
++                Ok(())
++            }
++            _ => Err(ReceiptError::StaleLease),
++        }
++    }
++
++    /// Acknowledges the claim only after its contents were included in sampling.
++    pub(crate) fn acknowledge_sampled(
++        &self,
++        lease: &SamplingLease,
++    ) -> Result<TerminalCompletion, ReceiptError> {
++        let mut state = self.lock_state()?;
++        let completion = match state.active.get(&lease.receipt_id) {
++            Some(record) if record.owner != lease.owner => return Err(ReceiptError::ForeignOwner),
++            Some(record) => match &record.phase {
++                ReceiptPhase::LeasedToSampling {
++                    completion,
++                    token,
++                    source,
++                } if *token == lease.token && *source == lease.source => *completion,
++                _ => return Err(ReceiptError::StaleLease),
++            },
++            None => return Err(state.terminal_error(lease.receipt_id, &lease.owner)),
++        };
++
++        state.retire(
++            lease.receipt_id,
++            ReceiptPhase::Sampled {
++                source: lease.source,
++            },
++        )?;
++        Ok(completion)
++    }
++
++    /// Cancels any reserved, armed, queued, or leased receipt and frees its slot.
++    pub(crate) fn cancel(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++        reason: CancellationReason,
++    ) -> Result<(), ReceiptError> {
++        let mut state = self.lock_state()?;
++        match state.active.get(&receipt_id) {
++            Some(record) if record.owner != *owner => return Err(ReceiptError::ForeignOwner),
++            Some(_) => {}
++            None => {
++                return match state.terminal_error(receipt_id, owner) {
++                    ReceiptError::UnknownReceipt => Err(ReceiptError::UnknownReceipt),
++                    ReceiptError::ForeignOwner => Err(ReceiptError::ForeignOwner),
++                    _ => Err(ReceiptError::AlreadyTerminal),
++                };
++            }
++        }
++
++        state.retire(receipt_id, ReceiptPhase::Cancelled(reason))
++    }
++
++    /// Returns the number of receipts currently holding an active slot.
++    ///
++    /// Terminal outcomes (inline, sampled, cancelled) move to the bounded
++    /// terminal history and no longer count here. The unified exec hooks add
++    /// sampled receipts with retained output on top to size combined capacity.
++    pub(crate) fn active_len(&self) -> Result<usize, ReceiptError> {
++        Ok(self.lock_state()?.active.len())
++    }
++
++    /// Returns the current state for the matching owner, including recent outcomes.
++    pub(crate) fn status(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++    ) -> Result<ReceiptStatus, ReceiptError> {
++        let state = self.lock_state()?;
++        match state.active.get(&receipt_id) {
++            Some(record) if record.owner != *owner => Err(ReceiptError::ForeignOwner),
++            Some(record) => Ok(record.phase.status()),
++            None => match state.terminal(receipt_id) {
++                Some(record) if record.owner != *owner => Err(ReceiptError::ForeignOwner),
++                Some(record) => Ok(record.phase.status()),
++                None => Err(ReceiptError::UnknownReceipt),
++            },
++        }
++    }
++}
++
++#[cfg(test)]
++#[path = "completion_receipt_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/unified_exec/completion_receipt_tests.rs b/codex-rs/core/src/unified_exec/completion_receipt_tests.rs
+new file mode 100644
+index 0000000000..f0ff5ba93f
+--- /dev/null
++++ b/codex-rs/core/src/unified_exec/completion_receipt_tests.rs
+@@ -0,0 +1,1298 @@
++use std::sync::Arc;
++use std::sync::Barrier;
++use std::thread;
++
++use codex_protocol::ThreadId;
++use pretty_assertions::assert_eq;
++
++use super::CancellationReason;
++use super::CompletionReceiptStore;
++use super::ExitPublicationOutcome;
++use super::InitialResponseDecision;
++use super::InitialResponseOutcome;
++use super::MAX_COMPLETION_RECEIPTS;
++use super::ReceiptError;
++use super::ReceiptOwner;
++use super::ReceiptStatus;
++use super::SamplingSource;
++use super::TerminalCompletion;
++
++fn receipt_owner(runtime_generation: u64) -> ReceiptOwner {
++    ReceiptOwner::new(
++        ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0001),
++        runtime_generation,
++        "call-1",
++    )
++    .expect("test owner should be valid")
++}
++
++fn foreign_receipt_owners(runtime_generation: u64) -> [ReceiptOwner; 3] {
++    [
++        ReceiptOwner::new(
++            ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0002),
++            runtime_generation,
++            "call-1",
++        )
++        .expect("foreign thread owner should be valid"),
++        receipt_owner(runtime_generation + 1),
++        ReceiptOwner::new(
++            ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0001),
++            runtime_generation,
++            "call-2",
++        )
++        .expect("foreign call owner should be valid"),
++    ]
++}
++
++fn completion(exit_code: Option<i32>) -> TerminalCompletion {
++    TerminalCompletion {
++        exit_code,
++        timed_out: false,
++    }
++}
++
++fn queued_receipt(store: &CompletionReceiptStore, owner: &ReceiptOwner) -> super::ReceiptId {
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("reservation should succeed");
++    assert_eq!(
++        store.resolve_initial_response(receipt_id, owner, InitialResponseDecision::Arm),
++        Ok(InitialResponseOutcome::Armed)
++    );
++    assert_eq!(
++        store.publish_exit(receipt_id, owner, completion(Some(0))),
++        Ok(ExitPublicationOutcome::Queued)
++    );
++    receipt_id
++}
++
++#[test]
++fn completion_receipt_happy_path_samples_exactly_once() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(1);
++    let expected_completion = completion(Some(17));
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("reservation should succeed");
++
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::Reserved)
++    );
++    assert_eq!(
++        store.resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm),
++        Ok(InitialResponseOutcome::Armed)
++    );
++    assert_eq!(
++        store.publish_exit(receipt_id, &owner, expected_completion),
++        Ok(ExitPublicationOutcome::Queued)
++    );
++
++    let lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("queued receipt should lease");
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::LeasedToSampling {
++            source: SamplingSource::PushedCompletion,
++        })
++    );
++    assert_eq!(store.acknowledge_sampled(&lease), Ok(expected_completion));
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::Sampled {
++            source: SamplingSource::PushedCompletion,
++        })
++    );
++}
++
++#[test]
++fn completion_receipt_rejects_a_second_claim_after_sampling() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(2);
++    let receipt_id = queued_receipt(&store, &owner);
++    let lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("queued receipt should lease");
++    store
++        .acknowledge_sampled(&lease)
++        .expect("first claim should sample");
++
++    assert_eq!(
++        store.lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion),
++        Err(ReceiptError::AlreadyConsumed)
++    );
++}
++
++#[test]
++fn completion_receipt_exit_and_initial_response_are_linearized_in_both_orders() {
++    let store = Arc::new(CompletionReceiptStore::default());
++    let owner = receipt_owner(3);
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("reservation should succeed");
++    let exit_published = Arc::new(Barrier::new(2));
++
++    let publisher_store = Arc::clone(&store);
++    let publisher_owner = owner.clone();
++    let publisher_barrier = Arc::clone(&exit_published);
++    let publisher = thread::spawn(move || {
++        let result =
++            publisher_store.publish_exit(receipt_id, &publisher_owner, completion(Some(23)));
++        publisher_barrier.wait();
++        result
++    });
++
++    exit_published.wait();
++    assert_eq!(
++        publisher.join().expect("publisher should not panic"),
++        Ok(ExitPublicationOutcome::RetainedUntilDecision)
++    );
++    assert_eq!(
++        store.resolve_initial_response(receipt_id, &owner, InitialResponseDecision::InlineResult,),
++        Ok(InitialResponseOutcome::InlineResult(completion(Some(23))))
++    );
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::InlineResult)
++    );
++    assert_eq!(
++        store.lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion),
++        Err(ReceiptError::InvalidTransition {
++            actual: ReceiptStatus::InlineResult,
++        })
++    );
++
++    let early_armed_store = Arc::new(CompletionReceiptStore::default());
++    let early_armed_owner = receipt_owner(30);
++    let early_armed_receipt_id = early_armed_store
++        .reserve(early_armed_owner.clone())
++        .expect("reservation should succeed");
++    let exit_published_before_arm = Arc::new(Barrier::new(2));
++    let publisher_store = Arc::clone(&early_armed_store);
++    let publisher_owner = early_armed_owner.clone();
++    let publisher_barrier = Arc::clone(&exit_published_before_arm);
++    let publisher = thread::spawn(move || {
++        let result = publisher_store.publish_exit(
++            early_armed_receipt_id,
++            &publisher_owner,
++            completion(Some(27)),
++        );
++        publisher_barrier.wait();
++        result
++    });
++
++    exit_published_before_arm.wait();
++    assert_eq!(
++        publisher.join().expect("publisher should not panic"),
++        Ok(ExitPublicationOutcome::RetainedUntilDecision)
++    );
++    assert_eq!(
++        early_armed_store.resolve_initial_response(
++            early_armed_receipt_id,
++            &early_armed_owner,
++            InitialResponseDecision::Arm,
++        ),
++        Ok(InitialResponseOutcome::Queued)
++    );
++    let lease = early_armed_store
++        .lease_for_sampling(
++            early_armed_receipt_id,
++            &early_armed_owner,
++            SamplingSource::PushedCompletion,
++        )
++        .expect("exit retained before arming should be claimable");
++    assert_eq!(
++        early_armed_store.acknowledge_sampled(&lease),
++        Ok(completion(Some(27)))
++    );
++
++    let armed_store = Arc::new(CompletionReceiptStore::default());
++    let armed_owner = receipt_owner(4);
++    let armed_receipt_id = armed_store
++        .reserve(armed_owner.clone())
++        .expect("reservation should succeed");
++    let armed_before_publish = Arc::new(Barrier::new(2));
++    let response_store = Arc::clone(&armed_store);
++    let response_owner = armed_owner.clone();
++    let response_barrier = Arc::clone(&armed_before_publish);
++    let response = thread::spawn(move || {
++        let result = response_store.resolve_initial_response(
++            armed_receipt_id,
++            &response_owner,
++            InitialResponseDecision::Arm,
++        );
++        response_barrier.wait();
++        result
++    });
++
++    let publisher_store = Arc::clone(&armed_store);
++    let publisher_owner = armed_owner.clone();
++    let publisher_barrier = Arc::clone(&armed_before_publish);
++    let publisher = thread::spawn(move || {
++        publisher_barrier.wait();
++        publisher_store.publish_exit(armed_receipt_id, &publisher_owner, completion(Some(29)))
++    });
++
++    assert_eq!(
++        response.join().expect("response decision should not panic"),
++        Ok(InitialResponseOutcome::Armed)
++    );
++    assert_eq!(
++        publisher.join().expect("publisher should not panic"),
++        Ok(ExitPublicationOutcome::Queued)
++    );
++    assert_eq!(
++        armed_store.status(armed_receipt_id, &armed_owner),
++        Ok(ReceiptStatus::Queued)
++    );
++    let lease = armed_store
++        .lease_for_sampling(
++            armed_receipt_id,
++            &armed_owner,
++            SamplingSource::PushedCompletion,
++        )
++        .expect("retained exit should be claimable once armed");
++    assert_eq!(
++        armed_store.acknowledge_sampled(&lease),
++        Ok(completion(Some(29)))
++    );
++    assert_eq!(
++        armed_store.lease_for_sampling(
++            armed_receipt_id,
++            &armed_owner,
++            SamplingSource::PushedCompletion,
++        ),
++        Err(ReceiptError::AlreadyConsumed)
++    );
++}
++
++#[test]
++fn completion_receipt_inline_decision_waits_for_finalized_exit() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(5);
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("reservation should succeed");
++
++    assert_eq!(
++        store.resolve_initial_response(receipt_id, &owner, InitialResponseDecision::InlineResult,),
++        Err(ReceiptError::InvalidTransition {
++            actual: ReceiptStatus::Reserved,
++        })
++    );
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::Reserved)
++    );
++    assert_eq!(
++        store.publish_exit(receipt_id, &owner, completion(Some(31))),
++        Ok(ExitPublicationOutcome::RetainedUntilDecision)
++    );
++    assert_eq!(
++        store.resolve_initial_response(receipt_id, &owner, InitialResponseDecision::InlineResult,),
++        Ok(InitialResponseOutcome::InlineResult(completion(Some(31))))
++    );
++}
++
++#[test]
++fn completion_receipt_failed_lease_requeues_same_receipt_and_rejects_stale_token() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(6);
++    let receipt_id = queued_receipt(&store, &owner);
++    let first_lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("first lease should succeed");
++
++    store
++        .fail_sampling(&first_lease)
++        .expect("failed lease should return to the queue");
++    assert_eq!(store.status(receipt_id, &owner), Ok(ReceiptStatus::Queued));
++    let second_lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("same receipt should be re-leased");
++    assert_eq!(
++        store.acknowledge_sampled(&first_lease),
++        Err(ReceiptError::StaleLease)
++    );
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::LeasedToSampling {
++            source: SamplingSource::PushedCompletion,
++        })
++    );
++    assert_eq!(
++        store.acknowledge_sampled(&second_lease),
++        Ok(completion(Some(0)))
++    );
++}
++
++#[test]
++fn completion_receipt_stale_failed_lease_cannot_requeue_a_new_lease() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(61);
++    let receipt_id = queued_receipt(&store, &owner);
++    let first_lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("first lease should succeed");
++
++    store
++        .fail_sampling(&first_lease)
++        .expect("first lease failure should requeue the receipt");
++    let second_lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("same receipt should be re-leased");
++
++    assert_eq!(
++        store.fail_sampling(&first_lease),
++        Err(ReceiptError::StaleLease)
++    );
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::LeasedToSampling {
++            source: SamplingSource::PushedCompletion,
++        })
++    );
++    assert_eq!(
++        store.acknowledge_sampled(&second_lease),
++        Ok(completion(Some(0)))
++    );
++}
++
++#[test]
++fn completion_receipt_cancellation_is_terminal_from_each_unsampled_state() {
++    #[derive(Clone, Copy)]
++    enum StartingState {
++        Reserved,
++        Armed,
++        Queued,
++        Leased,
++    }
++
++    for (index, (starting_state, reason)) in [
++        (StartingState::Reserved, CancellationReason::Released),
++        (StartingState::Armed, CancellationReason::OwnerStopped),
++        (StartingState::Queued, CancellationReason::Shutdown),
++        (StartingState::Leased, CancellationReason::Interrupted),
++    ]
++    .into_iter()
++    .enumerate()
++    {
++        let store = CompletionReceiptStore::default();
++        let owner = receipt_owner(index as u64 + 7);
++        let receipt_id = store
++            .reserve(owner.clone())
++            .expect("reservation should succeed");
++        let lease = match starting_state {
++            StartingState::Reserved => None,
++            StartingState::Armed => {
++                assert_eq!(
++                    store.resolve_initial_response(
++                        receipt_id,
++                        &owner,
++                        InitialResponseDecision::Arm,
++                    ),
++                    Ok(InitialResponseOutcome::Armed)
++                );
++                None
++            }
++            StartingState::Queued | StartingState::Leased => {
++                assert_eq!(
++                    store.resolve_initial_response(
++                        receipt_id,
++                        &owner,
++                        InitialResponseDecision::Arm,
++                    ),
++                    Ok(InitialResponseOutcome::Armed)
++                );
++                assert_eq!(
++                    store.publish_exit(receipt_id, &owner, completion(Some(0))),
++                    Ok(ExitPublicationOutcome::Queued)
++                );
++                if matches!(starting_state, StartingState::Leased) {
++                    Some(
++                        store
++                            .lease_for_sampling(
++                                receipt_id,
++                                &owner,
++                                SamplingSource::PushedCompletion,
++                            )
++                            .expect("queued receipt should lease"),
++                    )
++                } else {
++                    None
++                }
++            }
++        };
++
++        store
++            .cancel(receipt_id, &owner, reason)
++            .expect("unsampled receipt should cancel");
++        assert_eq!(
++            store.status(receipt_id, &owner),
++            Ok(ReceiptStatus::Cancelled { reason })
++        );
++        assert_eq!(
++            store.lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion),
++            Err(ReceiptError::Cancelled { reason })
++        );
++        if let Some(lease) = lease {
++            assert_eq!(
++                store.acknowledge_sampled(&lease),
++                Err(ReceiptError::Cancelled { reason })
++            );
++        }
++        assert!(
++            store.reserve(owner).is_ok(),
++            "cancellation must free a slot"
++        );
++    }
++}
++
++#[test]
++fn completion_receipt_capacity_refuses_the_65th_and_reuses_a_freed_slot() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(11);
++    let receipts = (0..MAX_COMPLETION_RECEIPTS)
++        .map(|_| {
++            store
++                .reserve(owner.clone())
++                .expect("capacity slot should reserve")
++        })
++        .collect::<Vec<_>>();
++
++    assert_eq!(
++        store.reserve(owner.clone()),
++        Err(ReceiptError::CapacityExceeded {
++            capacity: MAX_COMPLETION_RECEIPTS,
++        })
++    );
++    store
++        .cancel(receipts[0], &owner, CancellationReason::Released)
++        .expect("released receipt should free capacity");
++    assert!(
++        store.reserve(owner).is_ok(),
++        "freed capacity should be reusable"
++    );
++}
++
++#[test]
++fn completion_receipt_terminal_history_evicts_only_the_oldest_after_64_outcomes() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(66);
++    let mut receipts = Vec::new();
++
++    for _ in 0..=MAX_COMPLETION_RECEIPTS {
++        let receipt_id = store
++            .reserve(owner.clone())
++            .expect("each retirement must free its capacity slot");
++        assert_eq!(
++            store.cancel(receipt_id, &owner, CancellationReason::Released),
++            Ok(())
++        );
++        receipts.push(receipt_id);
++    }
++
++    assert_eq!(
++        store.status(receipts[0], &owner),
++        Err(ReceiptError::UnknownReceipt)
++    );
++    for receipt_id in &receipts[1..] {
++        assert_eq!(
++            store.status(*receipt_id, &owner),
++            Ok(ReceiptStatus::Cancelled {
++                reason: CancellationReason::Released,
++            })
++        );
++    }
++}
++
++#[test]
++fn completion_receipt_terminal_history_refuses_foreign_owners_and_repeat_cancellation() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(67);
++    let sampled_receipt = queued_receipt(&store, &owner);
++    let sampled_lease = store
++        .lease_for_sampling(sampled_receipt, &owner, SamplingSource::PushedCompletion)
++        .expect("queued receipt should lease");
++    assert_eq!(
++        store.acknowledge_sampled(&sampled_lease),
++        Ok(completion(Some(0)))
++    );
++
++    let inline_receipt = store
++        .reserve(owner.clone())
++        .expect("inline receipt should reserve");
++    assert_eq!(
++        store.publish_exit(inline_receipt, &owner, completion(Some(17))),
++        Ok(ExitPublicationOutcome::RetainedUntilDecision)
++    );
++    assert_eq!(
++        store.resolve_initial_response(
++            inline_receipt,
++            &owner,
++            InitialResponseDecision::InlineResult
++        ),
++        Ok(InitialResponseOutcome::InlineResult(completion(Some(17))))
++    );
++
++    let cancelled_receipt = queued_receipt(&store, &owner);
++    assert_eq!(
++        store.cancel(cancelled_receipt, &owner, CancellationReason::Shutdown),
++        Ok(())
++    );
++
++    for (receipt_id, expected_status) in [
++        (
++            sampled_receipt,
++            ReceiptStatus::Sampled {
++                source: SamplingSource::PushedCompletion,
++            },
++        ),
++        (inline_receipt, ReceiptStatus::InlineResult),
++        (
++            cancelled_receipt,
++            ReceiptStatus::Cancelled {
++                reason: CancellationReason::Shutdown,
++            },
++        ),
++    ] {
++        for foreign_owner in &foreign_receipt_owners(67) {
++            assert_eq!(
++                store.status(receipt_id, foreign_owner),
++                Err(ReceiptError::ForeignOwner)
++            );
++            assert_eq!(
++                store.cancel(receipt_id, foreign_owner, CancellationReason::Released),
++                Err(ReceiptError::ForeignOwner)
++            );
++            assert_eq!(
++                store.lease_for_sampling(
++                    receipt_id,
++                    foreign_owner,
++                    SamplingSource::PushedCompletion
++                ),
++                Err(ReceiptError::ForeignOwner)
++            );
++            assert_eq!(
++                store.resolve_initial_response(
++                    receipt_id,
++                    foreign_owner,
++                    InitialResponseDecision::Arm
++                ),
++                Err(ReceiptError::ForeignOwner)
++            );
++            assert_eq!(
++                store.publish_exit(receipt_id, foreign_owner, completion(Some(99))),
++                Err(ReceiptError::ForeignOwner)
++            );
++
++            // Forge both target and owner from a real lease to attack the terminal lookup.
++            let mut foreign_lease = sampled_lease.clone();
++            foreign_lease.receipt_id = receipt_id;
++            foreign_lease.owner = foreign_owner.clone();
++            assert_eq!(
++                store.fail_sampling(&foreign_lease),
++                Err(ReceiptError::ForeignOwner)
++            );
++            assert_eq!(
++                store.acknowledge_sampled(&foreign_lease),
++                Err(ReceiptError::ForeignOwner)
++            );
++            assert_eq!(
++                store.status(receipt_id, &owner),
++                Ok(expected_status.clone())
++            );
++        }
++        assert_eq!(
++            store.cancel(receipt_id, &owner, CancellationReason::Released),
++            Err(ReceiptError::AlreadyTerminal)
++        );
++        assert_eq!(store.status(receipt_id, &owner), Ok(expected_status));
++    }
++}
++
++#[test]
++fn completion_receipt_foreign_runtime_generation_is_refused() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(12);
++    let foreign_owners = [
++        receipt_owner(13),
++        ReceiptOwner::new(
++            ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0002),
++            12,
++            "call-1",
++        )
++        .expect("foreign thread owner should be valid"),
++        ReceiptOwner::new(
++            ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0001),
++            12,
++            "call-2",
++        )
++        .expect("foreign call owner should be valid"),
++    ];
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("reservation should succeed");
++
++    for foreign_owner in &foreign_owners {
++        assert_eq!(
++            store.status(receipt_id, foreign_owner),
++            Err(ReceiptError::ForeignOwner)
++        );
++        assert_eq!(
++            store.publish_exit(receipt_id, foreign_owner, completion(Some(0))),
++            Err(ReceiptError::ForeignOwner)
++        );
++        assert_eq!(
++            store.cancel(receipt_id, foreign_owner, CancellationReason::Released),
++            Err(ReceiptError::ForeignOwner)
++        );
++    }
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::Reserved)
++    );
++}
++
++#[test]
++fn completion_receipt_foreign_owner_is_refused_on_resolve_and_lease() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(62);
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("reservation should succeed");
++
++    for foreign_owner in &foreign_receipt_owners(62) {
++        assert_eq!(
++            store
++                .resolve_initial_response(receipt_id, foreign_owner, InitialResponseDecision::Arm,),
++            Err(ReceiptError::ForeignOwner)
++        );
++    }
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::Reserved)
++    );
++    assert_eq!(
++        store.resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm),
++        Ok(InitialResponseOutcome::Armed)
++    );
++    assert_eq!(
++        store.publish_exit(receipt_id, &owner, completion(Some(0))),
++        Ok(ExitPublicationOutcome::Queued)
++    );
++
++    for foreign_owner in &foreign_receipt_owners(62) {
++        assert_eq!(
++            store.lease_for_sampling(receipt_id, foreign_owner, SamplingSource::PushedCompletion,),
++            Err(ReceiptError::ForeignOwner)
++        );
++    }
++    assert_eq!(store.status(receipt_id, &owner), Ok(ReceiptStatus::Queued));
++}
++
++#[test]
++fn completion_receipt_foreign_lease_is_refused_on_fail_and_acknowledge() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(63);
++    let receipt_id = queued_receipt(&store, &owner);
++    let lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("owning receipt should lease");
++
++    for foreign_owner in &foreign_receipt_owners(63) {
++        let mut foreign_lease = lease.clone();
++        foreign_lease.owner = foreign_owner.clone();
++        assert_eq!(
++            store.fail_sampling(&foreign_lease),
++            Err(ReceiptError::ForeignOwner)
++        );
++
++        let mut foreign_lease = lease.clone();
++        foreign_lease.owner = foreign_owner.clone();
++        assert_eq!(
++            store.acknowledge_sampled(&foreign_lease),
++            Err(ReceiptError::ForeignOwner)
++        );
++    }
++
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::LeasedToSampling {
++            source: SamplingSource::PushedCompletion,
++        })
++    );
++    assert_eq!(store.acknowledge_sampled(&lease), Ok(completion(Some(0))));
++}
++
++#[test]
++fn completion_receipt_terminal_stdin_and_pushed_sources_share_one_lease() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(16);
++    let receipt_id = queued_receipt(&store, &owner);
++    let pushed_lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("pushed source should acquire the queued claim");
++
++    assert_eq!(
++        store.lease_for_sampling(receipt_id, &owner, SamplingSource::TerminalStdinOutput,),
++        Err(ReceiptError::AlreadyLeased)
++    );
++    store
++        .fail_sampling(&pushed_lease)
++        .expect("failed pushed claim should requeue the same receipt");
++    let stdin_lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::TerminalStdinOutput)
++        .expect("terminal stdin source should acquire the requeued claim");
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::LeasedToSampling {
++            source: SamplingSource::TerminalStdinOutput,
++        })
++    );
++    assert_eq!(
++        store.acknowledge_sampled(&stdin_lease),
++        Ok(completion(Some(0)))
++    );
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::Sampled {
++            source: SamplingSource::TerminalStdinOutput,
++        })
++    );
++    assert_eq!(
++        store.lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion),
++        Err(ReceiptError::AlreadyConsumed)
++    );
++}
++
++#[test]
++fn completion_receipt_terminal_stdin_and_pushed_claim_race_consumes_once() {
++    let store = Arc::new(CompletionReceiptStore::default());
++    let owner = receipt_owner(14);
++    let receipt_id = queued_receipt(&store, &owner);
++    let start = Arc::new(Barrier::new(3));
++    let both_leases_attempted = Arc::new(Barrier::new(3));
++
++    let pushed_store = Arc::clone(&store);
++    let pushed_owner = owner.clone();
++    let pushed_start = Arc::clone(&start);
++    let pushed_claimed = Arc::clone(&both_leases_attempted);
++    let pushed = thread::spawn(move || {
++        pushed_start.wait();
++        let lease = pushed_store.lease_for_sampling(
++            receipt_id,
++            &pushed_owner,
++            SamplingSource::PushedCompletion,
++        );
++        pushed_claimed.wait();
++        let result = match lease {
++            Ok(lease) => pushed_store.acknowledge_sampled(&lease),
++            Err(error) => Err(error),
++        };
++        (SamplingSource::PushedCompletion, result)
++    });
++
++    let stdin_store = Arc::clone(&store);
++    let stdin_owner = owner.clone();
++    let stdin_start = Arc::clone(&start);
++    let stdin_claimed = Arc::clone(&both_leases_attempted);
++    let stdin = thread::spawn(move || {
++        stdin_start.wait();
++        let lease = stdin_store.lease_for_sampling(
++            receipt_id,
++            &stdin_owner,
++            SamplingSource::TerminalStdinOutput,
++        );
++        stdin_claimed.wait();
++        let result = match lease {
++            Ok(lease) => stdin_store.acknowledge_sampled(&lease),
++            Err(error) => Err(error),
++        };
++        (SamplingSource::TerminalStdinOutput, result)
++    });
++
++    start.wait();
++    both_leases_attempted.wait();
++    let pushed = pushed.join().expect("pushed claim should not panic");
++    let stdin = stdin.join().expect("stdin claim should not panic");
++    let (winner, winner_result, loser, loser_result) = match (pushed, stdin) {
++        (
++            (SamplingSource::PushedCompletion, Ok(result)),
++            (SamplingSource::TerminalStdinOutput, Err(error)),
++        ) => (
++            SamplingSource::PushedCompletion,
++            result,
++            SamplingSource::TerminalStdinOutput,
++            error,
++        ),
++        (
++            (SamplingSource::PushedCompletion, Err(error)),
++            (SamplingSource::TerminalStdinOutput, Ok(result)),
++        ) => (
++            SamplingSource::TerminalStdinOutput,
++            result,
++            SamplingSource::PushedCompletion,
++            error,
++        ),
++        _ => panic!("exactly one sampling path should win"),
++    };
++    assert_eq!(winner_result, completion(Some(0)));
++    assert!(matches!(
++        loser_result,
++        ReceiptError::AlreadyLeased | ReceiptError::AlreadyConsumed
++    ));
++    assert_eq!(
++        store.lease_for_sampling(receipt_id, &owner, loser),
++        Err(ReceiptError::AlreadyConsumed)
++    );
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::Sampled { source: winner })
++    );
++}
++
++#[test]
++fn completion_receipt_refuses_duplicate_exit_publication() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(15);
++    let receipt_id = queued_receipt(&store, &owner);
++
++    assert_eq!(
++        store.publish_exit(receipt_id, &owner, completion(Some(1))),
++        Err(ReceiptError::InvalidTransition {
++            actual: ReceiptStatus::Queued,
++        })
++    );
++    assert_eq!(store.status(receipt_id, &owner), Ok(ReceiptStatus::Queued));
++}
++
++#[test]
++fn completion_receipt_duplicate_exit_while_reserved_preserves_first_completion() {
++    let inline_store = CompletionReceiptStore::default();
++    let inline_owner = receipt_owner(64);
++    let inline_receipt = inline_store
++        .reserve(inline_owner.clone())
++        .expect("reservation should succeed");
++    let first_inline_completion = completion(Some(41));
++
++    assert_eq!(
++        inline_store.publish_exit(inline_receipt, &inline_owner, first_inline_completion),
++        Ok(ExitPublicationOutcome::RetainedUntilDecision)
++    );
++    assert_eq!(
++        inline_store.publish_exit(inline_receipt, &inline_owner, completion(Some(42))),
++        Err(ReceiptError::InvalidTransition {
++            actual: ReceiptStatus::Reserved,
++        })
++    );
++    assert_eq!(
++        inline_store.resolve_initial_response(
++            inline_receipt,
++            &inline_owner,
++            InitialResponseDecision::InlineResult,
++        ),
++        Ok(InitialResponseOutcome::InlineResult(
++            first_inline_completion
++        ))
++    );
++
++    let queued_store = CompletionReceiptStore::default();
++    let queued_owner = receipt_owner(65);
++    let queued_receipt = queued_store
++        .reserve(queued_owner.clone())
++        .expect("reservation should succeed");
++    let first_queued_completion = completion(Some(51));
++
++    assert_eq!(
++        queued_store.publish_exit(queued_receipt, &queued_owner, first_queued_completion),
++        Ok(ExitPublicationOutcome::RetainedUntilDecision)
++    );
++    assert_eq!(
++        queued_store.publish_exit(queued_receipt, &queued_owner, completion(Some(52))),
++        Err(ReceiptError::InvalidTransition {
++            actual: ReceiptStatus::Reserved,
++        })
++    );
++    assert_eq!(
++        queued_store.resolve_initial_response(
++            queued_receipt,
++            &queued_owner,
++            InitialResponseDecision::Arm,
++        ),
++        Ok(InitialResponseOutcome::Queued)
++    );
++    let lease = queued_store
++        .lease_for_sampling(
++            queued_receipt,
++            &queued_owner,
++            SamplingSource::PushedCompletion,
++        )
++        .expect("first retained completion should lease");
++    assert_eq!(
++        queued_store.acknowledge_sampled(&lease),
++        Ok(first_queued_completion)
++    );
++}
++
++#[test]
++fn completion_receipt_owner_requires_a_bounded_call_id() {
++    assert_eq!(
++        ReceiptOwner::new(
++            ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0001),
++            1,
++            "",
++        ),
++        Err(ReceiptError::InvalidOwner)
++    );
++    assert_eq!(
++        ReceiptOwner::new(
++            ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0001),
++            1,
++            "x".repeat(257),
++        ),
++        Err(ReceiptError::InvalidOwner)
++    );
++}
++
++#[test]
++fn completion_receipt_owner_accepts_256_bytes_and_refuses_257() {
++    let thread_id = ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0001);
++    let owner = ReceiptOwner::new(thread_id, /*runtime_generation*/ 68, "x".repeat(256))
++        .expect("a call id at the 256-byte limit must be accepted");
++    let store = CompletionReceiptStore::default();
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("owner at the call id limit should reserve");
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::Reserved)
++    );
++    assert_eq!(
++        ReceiptOwner::new(thread_id, /*runtime_generation*/ 68, "x".repeat(257)),
++        Err(ReceiptError::InvalidOwner)
++    );
++}
++
++#[test]
++fn completion_receipt_late_initial_response_refuses_each_active_nonreserved_state() {
++    for expected_status in [
++        ReceiptStatus::Armed,
++        ReceiptStatus::Queued,
++        ReceiptStatus::LeasedToSampling {
++            source: SamplingSource::PushedCompletion,
++        },
++    ] {
++        let store = CompletionReceiptStore::default();
++        let owner = receipt_owner(/*runtime_generation*/ 69);
++        let receipt_id = store
++            .reserve(owner.clone())
++            .expect("receipt should reserve");
++        assert_eq!(
++            store.resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm),
++            Ok(InitialResponseOutcome::Armed)
++        );
++        if expected_status != ReceiptStatus::Armed {
++            assert_eq!(
++                store.publish_exit(receipt_id, &owner, completion(Some(73))),
++                Ok(ExitPublicationOutcome::Queued)
++            );
++        }
++        let lease = if matches!(expected_status, ReceiptStatus::LeasedToSampling { .. }) {
++            Some(
++                store
++                    .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++                    .expect("queued receipt should lease"),
++            )
++        } else {
++            None
++        };
++        for decision in [
++            InitialResponseDecision::Arm,
++            InitialResponseDecision::InlineResult,
++        ] {
++            assert_eq!(
++                store.resolve_initial_response(receipt_id, &owner, decision),
++                Err(ReceiptError::InvalidTransition {
++                    actual: expected_status.clone(),
++                })
++            );
++            assert_eq!(
++                store.status(receipt_id, &owner),
++                Ok(expected_status.clone())
++            );
++        }
++        if expected_status == ReceiptStatus::Armed {
++            assert_eq!(
++                store.publish_exit(receipt_id, &owner, completion(Some(73))),
++                Ok(ExitPublicationOutcome::Queued)
++            );
++        }
++        let lease = lease.unwrap_or_else(|| {
++            store
++                .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++                .expect("late decision must preserve the queued completion")
++        });
++        assert_eq!(store.acknowledge_sampled(&lease), Ok(completion(Some(73))));
++    }
++}
++
++#[test]
++fn completion_receipt_unqueued_and_mismatched_leases_preserve_active_state() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(/*runtime_generation*/ 70);
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("receipt should reserve");
++    let donor_id = queued_receipt(&store, &owner);
++    let donor = store
++        .lease_for_sampling(donor_id, &owner, SamplingSource::PushedCompletion)
++        .expect("donor receipt should lease");
++    let mut wrong_phase = donor.clone();
++    wrong_phase.receipt_id = receipt_id;
++    for expected_status in [ReceiptStatus::Reserved, ReceiptStatus::Armed] {
++        assert_eq!(
++            store.lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion),
++            Err(ReceiptError::InvalidTransition {
++                actual: expected_status.clone()
++            })
++        );
++        assert_eq!(
++            store.fail_sampling(&wrong_phase),
++            Err(ReceiptError::StaleLease)
++        );
++        assert_eq!(
++            store.acknowledge_sampled(&wrong_phase),
++            Err(ReceiptError::StaleLease)
++        );
++        assert_eq!(
++            store.status(receipt_id, &owner),
++            Ok(expected_status.clone())
++        );
++        if expected_status == ReceiptStatus::Reserved {
++            assert_eq!(
++                store.resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm),
++                Ok(InitialResponseOutcome::Armed)
++            );
++        }
++    }
++    assert_eq!(store.fail_sampling(&donor), Ok(()));
++    assert_eq!(store.fail_sampling(&donor), Err(ReceiptError::StaleLease));
++    assert_eq!(
++        store.acknowledge_sampled(&donor),
++        Err(ReceiptError::StaleLease)
++    );
++    assert_eq!(store.status(donor_id, &owner), Ok(ReceiptStatus::Queued));
++    let live = store
++        .lease_for_sampling(donor_id, &owner, SamplingSource::PushedCompletion)
++        .expect("requeued receipt should lease");
++    let mut wrong_source = live.clone();
++    wrong_source.source = SamplingSource::TerminalStdinOutput;
++    assert_eq!(
++        store.fail_sampling(&wrong_source),
++        Err(ReceiptError::StaleLease)
++    );
++    assert_eq!(
++        store.acknowledge_sampled(&wrong_source),
++        Err(ReceiptError::StaleLease)
++    );
++    assert_eq!(
++        store.publish_exit(donor_id, &owner, completion(Some(99))),
++        Err(ReceiptError::InvalidTransition {
++            actual: ReceiptStatus::LeasedToSampling {
++                source: SamplingSource::PushedCompletion
++            },
++        })
++    );
++    assert_eq!(
++        store.status(donor_id, &owner),
++        Ok(ReceiptStatus::LeasedToSampling {
++            source: SamplingSource::PushedCompletion
++        })
++    );
++    assert_eq!(store.acknowledge_sampled(&live), Ok(completion(Some(0))));
++}
++
++#[test]
++fn completion_receipt_unknown_id_is_refused_by_every_entry() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(/*runtime_generation*/ 71);
++    let donor_id = queued_receipt(&store, &owner);
++    let mut unknown_lease = store
++        .lease_for_sampling(donor_id, &owner, SamplingSource::PushedCompletion)
++        .expect("donor receipt should lease");
++    let unknown_id = super::ReceiptId(uuid::Uuid::nil());
++    unknown_lease.receipt_id = unknown_id;
++    assert_eq!(
++        store.status(unknown_id, &owner),
++        Err(ReceiptError::UnknownReceipt)
++    );
++    assert_eq!(
++        store.cancel(unknown_id, &owner, CancellationReason::Released),
++        Err(ReceiptError::UnknownReceipt)
++    );
++    assert_eq!(
++        store.resolve_initial_response(unknown_id, &owner, InitialResponseDecision::Arm),
++        Err(ReceiptError::UnknownReceipt)
++    );
++    assert_eq!(
++        store.publish_exit(unknown_id, &owner, completion(Some(0))),
++        Err(ReceiptError::UnknownReceipt)
++    );
++    assert_eq!(
++        store.lease_for_sampling(unknown_id, &owner, SamplingSource::PushedCompletion),
++        Err(ReceiptError::UnknownReceipt)
++    );
++    assert_eq!(
++        store.fail_sampling(&unknown_lease),
++        Err(ReceiptError::UnknownReceipt)
++    );
++    assert_eq!(
++        store.acknowledge_sampled(&unknown_lease),
++        Err(ReceiptError::UnknownReceipt)
++    );
++    assert_eq!(
++        store.status(donor_id, &owner),
++        Ok(ReceiptStatus::LeasedToSampling {
++            source: SamplingSource::PushedCompletion
++        })
++    );
++}
++
++#[test]
++fn completion_receipt_terminal_outcomes_refuse_every_late_operation() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(/*runtime_generation*/ 72);
++    let sampled_id = queued_receipt(&store, &owner);
++    let sampled_lease = store
++        .lease_for_sampling(sampled_id, &owner, SamplingSource::PushedCompletion)
++        .expect("sampled receipt should lease");
++    assert_eq!(
++        store.acknowledge_sampled(&sampled_lease),
++        Ok(completion(Some(0)))
++    );
++    let inline_id = store
++        .reserve(owner.clone())
++        .expect("inline receipt should reserve");
++    assert_eq!(
++        store.publish_exit(inline_id, &owner, completion(Some(0))),
++        Ok(ExitPublicationOutcome::RetainedUntilDecision)
++    );
++    assert_eq!(
++        store.resolve_initial_response(inline_id, &owner, InitialResponseDecision::InlineResult),
++        Ok(InitialResponseOutcome::InlineResult(completion(Some(0))))
++    );
++    let cancelled_id = queued_receipt(&store, &owner);
++    assert_eq!(
++        store.cancel(cancelled_id, &owner, CancellationReason::Released),
++        Ok(())
++    );
++    for (receipt_id, status) in [
++        (
++            sampled_id,
++            ReceiptStatus::Sampled {
++                source: SamplingSource::PushedCompletion,
++            },
++        ),
++        (inline_id, ReceiptStatus::InlineResult),
++        (
++            cancelled_id,
++            ReceiptStatus::Cancelled {
++                reason: CancellationReason::Released,
++            },
++        ),
++    ] {
++        let error = || match &status {
++            ReceiptStatus::Sampled { .. } => ReceiptError::AlreadyConsumed,
++            ReceiptStatus::InlineResult => ReceiptError::InvalidTransition {
++                actual: ReceiptStatus::InlineResult,
++            },
++            ReceiptStatus::Cancelled { reason } => ReceiptError::Cancelled { reason: *reason },
++            ReceiptStatus::Reserved
++            | ReceiptStatus::Armed
++            | ReceiptStatus::Queued
++            | ReceiptStatus::LeasedToSampling { .. } => {
++                panic!("test only constructs terminal states")
++            }
++        };
++        let mut late_lease = sampled_lease.clone();
++        late_lease.receipt_id = receipt_id;
++        for decision in [
++            InitialResponseDecision::Arm,
++            InitialResponseDecision::InlineResult,
++        ] {
++            assert_eq!(
++                store.resolve_initial_response(receipt_id, &owner, decision),
++                Err(error())
++            );
++        }
++        assert_eq!(
++            store.publish_exit(receipt_id, &owner, completion(Some(99))),
++            Err(error())
++        );
++        assert_eq!(
++            store.lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion),
++            Err(error())
++        );
++        assert_eq!(store.fail_sampling(&late_lease), Err(error()));
++        assert_eq!(store.acknowledge_sampled(&late_lease), Err(error()));
++        assert_eq!(
++            store.cancel(receipt_id, &owner, CancellationReason::Shutdown),
++            Err(ReceiptError::AlreadyTerminal)
++        );
++        assert_eq!(store.status(receipt_id, &owner), Ok(status));
++    }
++}
++
++#[test]
++fn completion_receipt_poisoned_lock_returns_a_structured_error_after_panic() {
++    let store = Arc::new(CompletionReceiptStore::default());
++    let owner = receipt_owner(16);
++    let receipt_id = queued_receipt(&store, &owner);
++    let lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("receipt should lease before the panic");
++    let poison_store = Arc::clone(&store);
++    let panicker = thread::spawn(move || {
++        let _guard = poison_store
++            .state
++            .lock()
++            .expect("initial lock should be clean");
++        panic!("poison the receipt lock for this test");
++    });
++
++    assert!(
++        panicker.join().is_err(),
++        "the lock-poisoning panic is expected"
++    );
++    assert_eq!(
++        store.reserve(owner.clone()),
++        Err(ReceiptError::LockPoisoned)
++    );
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Err(ReceiptError::LockPoisoned)
++    );
++    assert_eq!(
++        store.resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm),
++        Err(ReceiptError::LockPoisoned)
++    );
++    assert_eq!(
++        store.publish_exit(receipt_id, &owner, completion(Some(0))),
++        Err(ReceiptError::LockPoisoned)
++    );
++    assert_eq!(
++        store.lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion),
++        Err(ReceiptError::LockPoisoned)
++    );
++    assert_eq!(store.fail_sampling(&lease), Err(ReceiptError::LockPoisoned));
++    assert_eq!(
++        store.acknowledge_sampled(&lease),
++        Err(ReceiptError::LockPoisoned)
++    );
++    assert_eq!(
++        store.cancel(receipt_id, &owner, CancellationReason::Released),
++        Err(ReceiptError::LockPoisoned)
++    );
++}
+diff --git a/codex-rs/core/src/unified_exec/errors.rs b/codex-rs/core/src/unified_exec/errors.rs
+index 8fa2ef7857..68933a3e5d 100644
+--- a/codex-rs/core/src/unified_exec/errors.rs
++++ b/codex-rs/core/src/unified_exec/errors.rs
+@@ -31,6 +31,8 @@ pub(crate) enum UnifiedExecError {
+     },
+     #[error("{path} is not valid on {}", std::env::consts::OS)]
+     ForeignPath { path: PathUri },
++    #[error("completion receipt capacity is full (limit {capacity})")]
++    ReceiptCapacityExceeded { capacity: usize },
+ }
+ 
+ impl UnifiedExecError {
+diff --git a/codex-rs/core/src/unified_exec/mod.rs b/codex-rs/core/src/unified_exec/mod.rs
+index 3645306c27..e660844332 100644
+--- a/codex-rs/core/src/unified_exec/mod.rs
++++ b/codex-rs/core/src/unified_exec/mod.rs
+@@ -48,12 +48,15 @@ use crate::tools::network_approval::DeferredNetworkApproval;
+ use codex_core_plugins::PluginMetricsSidecar;
+ 
+ mod async_watcher;
++pub(crate) mod completion_receipt;
+ mod errors;
+ mod head_tail_buffer;
+ mod oneshot;
+ mod process;
+ mod process_manager;
+ mod process_state;
++mod receipt_hooks;
++mod receipt_output;
+ mod shell_snapshot;
+ mod stdin_approval;
+ 
+@@ -167,9 +170,22 @@ impl ProcessStore {
+     }
+ }
+ 
++/// Receipt context carried by the exit watcher for an opted-in process.
++///
++/// Default launches pass `None`, keeping watcher behavior unchanged.
++pub(crate) struct ExitWatcherReceiptHook {
++    pub receipt_id: completion_receipt::ReceiptId,
++    pub owner: completion_receipt::ReceiptOwner,
++    pub store: Arc<completion_receipt::CompletionReceiptStore>,
++    pub hooks: Arc<Mutex<receipt_hooks::ReceiptHooksState>>,
++}
++
+ pub(crate) struct UnifiedExecProcessManager {
+     process_store: Mutex<ProcessStore>,
+     max_write_stdin_yield_time_ms: u64,
++    receipt_store: Arc<completion_receipt::CompletionReceiptStore>,
++    receipt_hooks: Arc<Mutex<receipt_hooks::ReceiptHooksState>>,
++    receipt_generation: u64,
+ }
+ 
+ impl UnifiedExecProcessManager {
+@@ -178,6 +194,9 @@ impl UnifiedExecProcessManager {
+             process_store: Mutex::new(ProcessStore::default()),
+             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
+                 .max(MIN_EMPTY_YIELD_TIME_MS),
++            receipt_store: Arc::new(completion_receipt::CompletionReceiptStore::default()),
++            receipt_hooks: Arc::new(Mutex::new(receipt_hooks::ReceiptHooksState::default())),
++            receipt_generation: receipt_hooks::next_receipt_generation(),
+         }
+     }
+ }
+diff --git a/codex-rs/core/src/unified_exec/oneshot.rs b/codex-rs/core/src/unified_exec/oneshot.rs
+index 460aaeb462..b6ac08a4b0 100644
+--- a/codex-rs/core/src/unified_exec/oneshot.rs
++++ b/codex-rs/core/src/unified_exec/oneshot.rs
+@@ -15,6 +15,7 @@ use super::UnifiedExecContext;
+ use super::UnifiedExecError;
+ use super::UnifiedExecProcess;
+ use super::UnifiedExecProcessManager;
++use super::completion_receipt::ExecCompletionMode;
+ use super::trace_id;
+ use crate::tools::context::ExecCommandToolOutput;
+ 
+@@ -70,8 +71,12 @@ impl UnifiedExecProcessManager {
+                 process: &process,
+             };
+             let result = {
+-                let mut execution =
+-                    Box::pin(manager.exec_command_inner(request, &context, Some(&mut completion)));
++                let mut execution = Box::pin(manager.exec_command_inner(
++                    request,
++                    &context,
++                    Some(&mut completion),
++                    ExecCompletionMode::Default,
++                ));
+                 tokio::select! {
+                     biased;
+                     _ = context.cancellation_token.cancelled() => {
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+index 3dc3e97d91..d16450411d 100644
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -44,6 +44,7 @@ use crate::tools::sandboxing::SandboxAttempt;
+ use crate::tools::sandboxing::ToolCtx;
+ use crate::tools::sandboxing::ToolError;
+ use crate::unified_exec::ExecCommandRequest;
++use crate::unified_exec::ExitWatcherReceiptHook;
+ use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
+ use crate::unified_exec::MAX_YIELD_TIME_MS;
+ use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
+@@ -60,6 +61,11 @@ use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
+ use crate::unified_exec::async_watcher::spawn_exit_watcher;
+ use crate::unified_exec::async_watcher::start_streaming_output;
+ use crate::unified_exec::clamp_yield_time;
++use crate::unified_exec::completion_receipt::CancellationReason;
++use crate::unified_exec::completion_receipt::ExecCompletionMode;
++use crate::unified_exec::completion_receipt::InitialResponseDecision;
++use crate::unified_exec::completion_receipt::ReceiptError;
++use crate::unified_exec::completion_receipt::TerminalCompletion;
+ use crate::unified_exec::generate_chunk_id;
+ use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
+ use crate::unified_exec::process::OutputBuffers;
+@@ -377,6 +383,13 @@ async fn finish_deferred_network_approval_after_process_exit_for_session(
+     finish_deferred_network_approval_for_session(session, deferred).await
+ }
+ 
++fn failed_terminal_completion(process: &UnifiedExecProcess) -> TerminalCompletion {
++    TerminalCompletion {
++        exit_code: None,
++        timed_out: process.timed_out(),
++    }
++}
++
+ fn fail_process_with_message(process: &UnifiedExecProcess, message: String) -> UnifiedExecError {
+     if let Some(message) = process.failure_message() {
+         process.terminate();
+@@ -482,6 +495,7 @@ impl UnifiedExecProcessManager {
+             }
+             entry
+         };
++        self.unbind_process_from_receipt(process_id).await;
+         if let Some(entry) = removed {
+             unregister_network_approval_for_entry(&entry).await;
+         }
+@@ -506,7 +520,7 @@ impl UnifiedExecProcessManager {
+         context: &UnifiedExecContext,
+     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+         let result = self
+-            .exec_command_inner(request, context, /*completion*/ None)
++            .exec_command_with_completion_mode(request, context, ExecCompletionMode::Default)
+             .await;
+         let outcome = match &result {
+             Ok(output) if output.process_id.is_some() => "yielded",
+@@ -518,12 +532,55 @@ impl UnifiedExecProcessManager {
+         result
+     }
+ 
++    pub(crate) async fn exec_command_with_completion_mode(
++        &self,
++        request: ExecCommandRequest,
++        context: &UnifiedExecContext,
++        completion_mode: ExecCompletionMode,
++    ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
++        self.exec_command_inner(request, context, /*completion*/ None, completion_mode)
++            .await
++    }
++
+     pub(super) async fn exec_command_inner(
+         &self,
+         request: ExecCommandRequest,
+         context: &UnifiedExecContext,
+         mut completion: Option<&mut Completion<'_>>,
++        completion_mode: ExecCompletionMode,
+     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
++        let opted_in_receipt = match completion_mode {
++            ExecCompletionMode::Default => None,
++            ExecCompletionMode::NotifyOnExit => {
++                let owner = match self.receipt_owner_for(context) {
++                    Ok(owner) => owner,
++                    Err(err) => {
++                        self.release_process_id(request.process_id).await;
++                        return Err(UnifiedExecError::create_process(format!(
++                            "completion receipt owner: {err}"
++                        )));
++                    }
++                };
++                // Reserve before launching so a full store refuses before any
++                // process starts.
++                match self
++                    .reserve_completion_receipt(owner.clone(), request.process_id)
++                    .await
++                {
++                    Ok(receipt_id) => Some((receipt_id, owner)),
++                    Err(ReceiptError::CapacityExceeded { capacity }) => {
++                        self.release_process_id(request.process_id).await;
++                        return Err(UnifiedExecError::ReceiptCapacityExceeded { capacity });
++                    }
++                    Err(err) => {
++                        self.release_process_id(request.process_id).await;
++                        return Err(UnifiedExecError::create_process(format!(
++                            "completion receipt reservation: {err}"
++                        )));
++                    }
++                }
++            }
++        };
+         let cwd = request.cwd.clone();
+         let process = self
+             .open_session_with_sandbox(&request, cwd.clone(), context)
+@@ -532,6 +589,13 @@ impl UnifiedExecProcessManager {
+         let (attempt, mut deferred_network_approval) = match process {
+             Ok((attempt, deferred_network_approval)) => (attempt, deferred_network_approval),
+             Err(err) => {
++                if opted_in_receipt.is_some() {
++                    self.cancel_receipt_for_process(
++                        request.process_id,
++                        CancellationReason::OwnerStopped,
++                    )
++                    .await;
++                }
+                 self.release_process_id(request.process_id).await;
+                 return Err(err);
+             }
+@@ -596,6 +660,9 @@ impl UnifiedExecProcessManager {
+         // Persist live sessions before the initial yield wait so interrupting the
+         // turn cannot drop the last Arc and terminate the background process.
+         let process_started_alive = !process.has_exited() && process.exit_code().is_none();
++        let receipt_hook = opted_in_receipt
++            .as_ref()
++            .map(|(receipt_id, owner)| self.watcher_receipt_hook(*receipt_id, owner.clone()));
+         let mut initial_exec_command_guard = if process_started_alive {
+             let initial_exec_command_active = Arc::new(AtomicBool::new(true));
+             self.store_process(
+@@ -615,6 +682,7 @@ impl UnifiedExecProcessManager {
+                 metrics_sidecar,
+                 Arc::clone(&output_buffer),
+                 Arc::clone(&initial_exec_command_active),
++                receipt_hook,
+             )
+             .await;
+             InitialExecCommandGuard {
+@@ -673,6 +741,14 @@ impl UnifiedExecProcessManager {
+                 deferred_network_approval.take(),
+             )
+             .await;
++            if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {
++                self.settle_opted_in_inline(
++                    *receipt_id,
++                    owner,
++                    failed_terminal_completion(&process),
++                )
++                .await;
++            }
+             emit_failed_initial_exec_end_if_unstored(
+                 process_started_alive,
+                 process.sandbox_type(),
+@@ -695,6 +771,14 @@ impl UnifiedExecProcessManager {
+                 deferred_network_approval.take(),
+             )
+             .await;
++            if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {
++                self.settle_opted_in_inline(
++                    *receipt_id,
++                    owner,
++                    failed_terminal_completion(&process),
++                )
++                .await;
++            }
+             emit_failed_initial_exec_end_if_unstored(
+                 process_started_alive,
+                 process.sandbox_type(),
+@@ -721,7 +805,19 @@ impl UnifiedExecProcessManager {
+                     exit_code,
+                     process_id,
+                     ..
+-                } => (Some(process_id), exit_code),
++                } => {
++                    if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {
++                        // Arm the subscription; a concurrent exit publication
++                        // already queued the completion and is equally
++                        // exactly-once.
++                        let _ = self.receipt_store.resolve_initial_response(
++                            *receipt_id,
++                            owner,
++                            InitialResponseDecision::Arm,
++                        );
++                    }
++                    (Some(process_id), exit_code)
++                }
+                 ProcessStatus::Exited { exit_code, entry } => {
+                     if let Err(message) =
+                         finish_deferred_network_approval_after_process_exit_for_session(
+@@ -730,21 +826,38 @@ impl UnifiedExecProcessManager {
+                         )
+                         .await
+                     {
++                        if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {
++                            self.settle_opted_in_inline(
++                                *receipt_id,
++                                owner,
++                                failed_terminal_completion(&entry.process),
++                            )
++                            .await;
++                        }
+                         return Err(fail_process_with_message(entry.process.as_ref(), message));
+                     }
+                     if !completion
+                         .as_ref()
+                         .is_some_and(|completion| completion.timed_out)
++                        && let Err(err) = process.check_for_sandbox_denial_with_text(&text).await
+                     {
+-                        process
+-                            .check_for_sandbox_denial_with_text(&text)
+-                            .await
+-                            .map_err(|err| {
+-                                err.with_output_collection_metadata(
+-                                    original_token_count,
+-                                    output_omitted_bytes,
+-                                )
+-                            })?;
++                        if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {
++                            // Sandbox denial surfaces to the model with the
++                            // exit code, so the inline completion carries it.
++                            self.settle_opted_in_inline(
++                                *receipt_id,
++                                owner,
++                                TerminalCompletion {
++                                    exit_code,
++                                    timed_out: process.timed_out(),
++                                },
++                            )
++                            .await;
++                        }
++                        return Err(err.with_output_collection_metadata(
++                            original_token_count,
++                            output_omitted_bytes,
++                        ));
+                     }
+                     let metrics_sidecar = entry
+                         .plugin_metrics_sidecar
+@@ -759,6 +872,17 @@ impl UnifiedExecProcessManager {
+                         &context.call_id,
+                     )
+                     .await;
++                    if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {
++                        self.settle_opted_in_inline(
++                            *receipt_id,
++                            owner,
++                            TerminalCompletion {
++                                exit_code,
++                                timed_out: process.timed_out(),
++                            },
++                        )
++                        .await;
++                    }
+                     (None, exit_code)
+                 }
+                 ProcessStatus::Unknown => {
+@@ -774,6 +898,14 @@ impl UnifiedExecProcessManager {
+             )
+             .await;
+             if let Err(message) = finish_result {
++                if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {
++                    self.settle_opted_in_inline(
++                        *receipt_id,
++                        owner,
++                        failed_terminal_completion(&process),
++                    )
++                    .await;
++                }
+                 emit_failed_initial_exec_end_if_unstored(
+                     process_started_alive,
+                     process.sandbox_type(),
+@@ -791,6 +923,17 @@ impl UnifiedExecProcessManager {
+                 return Err(fail_process_with_message(process.as_ref(), message));
+             }
+             let exit_code = process.exit_code();
++            if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {
++                self.settle_opted_in_inline(
++                    *receipt_id,
++                    owner,
++                    TerminalCompletion {
++                        exit_code,
++                        timed_out: process.timed_out(),
++                    },
++                )
++                .await;
++            }
+             let exit = exit_code.unwrap_or(-1);
+             initial_exec_command_guard
+                 .finish_plugin_metrics(context, exit)
+@@ -983,6 +1126,8 @@ impl UnifiedExecProcessManager {
+         if !request.input.is_empty() {
+             if !tty {
+                 if request.input == INTERRUPT {
++                    self.cancel_receipt_for_process(process_id, CancellationReason::Interrupted)
++                        .await;
+                     process.interrupt().await?;
+                 } else {
+                     return Err(UnifiedExecError::StdinClosed);
+@@ -1078,10 +1223,16 @@ impl UnifiedExecProcessManager {
+                 {
+                     return Err(fail_process_with_message(entry.process.as_ref(), message));
+                 }
++                // Claim through the process binding before dropping it: the
++                // binding is how the terminal stdin path finds its receipt.
++                self.claim_terminal_stdin_output(process_id).await;
++                self.unbind_process_from_receipt(process_id).await;
+                 (None, exit_code, call_id)
+             }
+             ProcessStatus::Unknown => {
+                 if process.has_exited() {
++                    self.claim_terminal_stdin_output(process_id).await;
++                    self.unbind_process_from_receipt(process_id).await;
+                     (None, process.exit_code(), call_id)
+                 } else {
+                     return Err(UnifiedExecError::UnknownProcessId {
+@@ -1126,29 +1277,35 @@ impl UnifiedExecProcessManager {
+     }
+ 
+     async fn refresh_process_state(&self, process_id: i32) -> ProcessStatus {
+-        let mut store = self.process_store.lock().await;
+-        let Some(entry) = store.processes.get_mut(&process_id) else {
+-            return ProcessStatus::Unknown;
+-        };
+-
+-        let exit_code = entry.process.exit_code();
+-        let process_id = entry.process_id;
+-
+-        if entry.process.has_exited() {
+-            let Some(entry) = store.remove(process_id) else {
++        let outcome = {
++            let mut store = self.process_store.lock().await;
++            let Some(entry) = store.processes.get_mut(&process_id) else {
+                 return ProcessStatus::Unknown;
+             };
+-            ProcessStatus::Exited {
+-                exit_code,
+-                entry: Box::new(entry),
+-            }
+-        } else {
+-            ProcessStatus::Alive {
+-                exit_code,
+-                call_id: entry.call_id.clone(),
+-                process_id,
++
++            let exit_code = entry.process.exit_code();
++            let process_id = entry.process_id;
++
++            if entry.process.has_exited() {
++                let Some(entry) = store.remove(process_id) else {
++                    return ProcessStatus::Unknown;
++                };
++                ProcessStatus::Exited {
++                    exit_code,
++                    entry: Box::new(entry),
++                }
++            } else {
++                ProcessStatus::Alive {
++                    exit_code,
++                    call_id: entry.call_id.clone(),
++                    process_id,
++                }
+             }
+-        }
++        };
++        // The receipt binding is intentionally left in place here: the
++        // write_stdin terminal branches claim through it before unbinding,
++        // while the exec_command inline paths settle (and unbind) by receipt.
++        outcome
+     }
+ 
+     async fn prepare_process_handles(
+@@ -1204,6 +1361,7 @@ impl UnifiedExecProcessManager {
+         metrics_sidecar: Option<PluginMetricsSidecar>,
+         output_buffer: Arc<tokio::sync::Mutex<OutputBuffers>>,
+         initial_exec_command_active: Arc<AtomicBool>,
++        receipt_hook: Option<ExitWatcherReceiptHook>,
+     ) {
+         let plugin_metrics_sidecar =
+             metrics_sidecar.map(|sidecar| Arc::new(std::sync::Mutex::new(Some(sidecar))));
+@@ -1231,6 +1389,11 @@ impl UnifiedExecProcessManager {
+         // prune_processes_if_needed runs while holding process_store; do async
+         // network-approval cleanup only after dropping that lock.
+         if let Some(pruned_entry) = pruned_entry {
++            self.cancel_receipt_for_process(
++                pruned_entry.process_id,
++                CancellationReason::OwnerStopped,
++            )
++            .await;
+             unregister_network_approval_for_entry(&pruned_entry).await;
+             pruned_entry.process.terminate();
+         }
+@@ -1246,6 +1409,7 @@ impl UnifiedExecProcessManager {
+             started_at,
+             network_denial_monitor,
+             plugin_metrics_sidecar,
++            receipt_hook,
+         );
+     }
+ 
+@@ -1794,6 +1958,8 @@ impl UnifiedExecProcessManager {
+     }
+ 
+     pub(crate) async fn terminate_all_processes(&self) {
++        self.cancel_all_completion_receipts(CancellationReason::Shutdown)
++            .await;
+         let entries: Vec<ProcessEntry> = {
+             let mut processes = self.process_store.lock().await;
+             let entries: Vec<ProcessEntry> = processes
+@@ -1849,6 +2015,8 @@ impl UnifiedExecProcessManager {
+             (Arc::clone(&entry.process), entry.process.has_exited())
+         };
+ 
++        self.cancel_receipt_for_process(process_id, CancellationReason::OwnerStopped)
++            .await;
+         if !already_exited && process.terminate_confirmed().await.is_err() {
+             return false;
+         }
+diff --git a/codex-rs/core/src/unified_exec/receipt_hooks.rs b/codex-rs/core/src/unified_exec/receipt_hooks.rs
+new file mode 100644
+index 0000000000..88842c68db
+--- /dev/null
++++ b/codex-rs/core/src/unified_exec/receipt_hooks.rs
+@@ -0,0 +1,373 @@
++//! Thin receipt hooks wiring the completion receipt store into unified exec.
++//!
++//! The process manager owns one [`CompletionReceiptStore`] per runtime
++//! generation. Opted-in launches reserve a receipt before spawning; the exit
++//! watcher publishes the finalized exit at the point it classifies the
++//! terminal event; release, terminate, interrupt, and shutdown paths cancel
++//! with matching reasons before the process is killed. Default launches never
++//! touch this state.
++//
++// Release/read/lease/acknowledge entry points serve later stories (mailbox,
++// exec_notification tool) and are covered by tests until then.
++#![allow(dead_code)]
++
++use std::collections::HashMap;
++use std::sync::Arc;
++use std::sync::atomic::AtomicU64;
++use std::sync::atomic::Ordering;
++
++use super::ExitWatcherReceiptHook;
++use super::UnifiedExecContext;
++use super::UnifiedExecProcessManager;
++use super::completion_receipt::CancellationReason;
++use super::completion_receipt::CompletionReceiptStore;
++use super::completion_receipt::InitialResponseDecision;
++use super::completion_receipt::MAX_COMPLETION_RECEIPTS;
++use super::completion_receipt::ReceiptError;
++use super::completion_receipt::ReceiptId;
++use super::completion_receipt::ReceiptOwner;
++use super::completion_receipt::ReceiptStatus;
++use super::completion_receipt::SamplingLease;
++use super::completion_receipt::SamplingSource;
++use super::completion_receipt::TerminalCompletion;
++use super::receipt_output::RetainedOutputSnapshot;
++use super::receipt_output::RetentionLookup;
++use super::receipt_output::RetentionState;
++
++pub(crate) fn next_receipt_generation() -> u64 {
++    static NEXT_RECEIPT_GENERATION: AtomicU64 = AtomicU64::new(1);
++    NEXT_RECEIPT_GENERATION.fetch_add(1, Ordering::Relaxed)
++}
++
++struct ReceiptBinding {
++    owner: ReceiptOwner,
++    process_id: Option<i32>,
++}
++
++/// Receipt bindings and retention for one runtime generation.
++///
++/// All mutations that change combined capacity (reserve, inline settle,
++/// cancel, acknowledge transfer) run under the single manager lock that owns
++/// this state, so the active-plus-sampled count stays exact.
++#[derive(Default)]
++pub(crate) struct ReceiptHooksState {
++    bindings: HashMap<ReceiptId, ReceiptBinding>,
++    by_process: HashMap<i32, ReceiptId>,
++    pub(crate) retention: RetentionState,
++    sample_seq: u64,
++}
++
++impl ReceiptHooksState {
++    fn bind(&mut self, receipt_id: ReceiptId, owner: ReceiptOwner, process_id: i32) {
++        if let Some(previous) = self.by_process.insert(process_id, receipt_id)
++            && previous != receipt_id
++            && let Some(binding) = self.bindings.get_mut(&previous)
++        {
++            binding.process_id = None;
++        }
++        if let Some(existing) = self.bindings.get(&receipt_id)
++            && let Some(old_process_id) = existing.process_id
++            && old_process_id != process_id
++        {
++            self.by_process.remove(&old_process_id);
++        }
++        self.bindings.insert(
++            receipt_id,
++            ReceiptBinding {
++                owner,
++                process_id: Some(process_id),
++            },
++        );
++    }
++
++    fn unbind_process(&mut self, process_id: i32) {
++        if let Some(receipt_id) = self.by_process.remove(&process_id)
++            && let Some(binding) = self.bindings.get_mut(&receipt_id)
++        {
++            binding.process_id = None;
++        }
++    }
++
++    fn remove_binding(&mut self, receipt_id: ReceiptId) {
++        if let Some(binding) = self.bindings.remove(&receipt_id)
++            && let Some(process_id) = binding.process_id
++        {
++            self.by_process.remove(&process_id);
++        }
++    }
++
++    fn binding_for_process(&self, process_id: i32) -> Option<(ReceiptId, ReceiptOwner)> {
++        let receipt_id = *self.by_process.get(&process_id)?;
++        let binding = self.bindings.get(&receipt_id)?;
++        Some((receipt_id, binding.owner.clone()))
++    }
++
++    fn binding_owner_mismatch(&self, receipt_id: ReceiptId, owner: &ReceiptOwner) -> bool {
++        self.bindings
++            .get(&receipt_id)
++            .is_some_and(|binding| binding.owner != *owner)
++    }
++
++    fn next_sample_seq(&mut self) -> u64 {
++        self.sample_seq = self.sample_seq.saturating_add(1);
++        self.sample_seq
++    }
++
++    fn clear_all(&mut self) {
++        self.bindings.clear();
++        self.by_process.clear();
++        self.retention.clear();
++    }
++}
++
++impl UnifiedExecProcessManager {
++    /// Builds the receipt owner for an opted-in launch from live context.
++    pub(crate) fn receipt_owner_for(
++        &self,
++        context: &UnifiedExecContext,
++    ) -> Result<ReceiptOwner, ReceiptError> {
++        ReceiptOwner::new(
++            context.session.thread_id,
++            self.receipt_generation,
++            context.call_id.clone(),
++        )
++    }
++
++    pub(crate) fn receipt_store(&self) -> &CompletionReceiptStore {
++        &self.receipt_store
++    }
++
++    /// Reserves a receipt and binds it to the launching process atomically.
++    ///
++    /// Combined capacity counts active receipts plus sampled receipts with
++    /// retained output. When full with at least one sampled entry, the
++    /// least-recently-sampled output is retired first; with 64 unsampled
++    /// receipts the reservation is refused before any process starts.
++    pub(crate) async fn reserve_completion_receipt(
++        &self,
++        owner: ReceiptOwner,
++        process_id: i32,
++    ) -> Result<ReceiptId, ReceiptError> {
++        let mut hooks = self.receipt_hooks.lock().await;
++        let used = self.receipt_store.active_len()? + hooks.retention.sampled_count();
++        if used >= MAX_COMPLETION_RECEIPTS
++            && hooks.retention.retire_least_recently_sampled().is_none()
++        {
++            return Err(ReceiptError::CapacityExceeded {
++                capacity: MAX_COMPLETION_RECEIPTS,
++            });
++        }
++        let receipt_id = self.receipt_store.reserve(owner.clone())?;
++        hooks.bind(receipt_id, owner, process_id);
++        Ok(receipt_id)
++    }
++
++    /// Forgets the process side of a binding without cancelling the receipt.
++    pub(crate) async fn unbind_process_from_receipt(&self, process_id: i32) {
++        self.receipt_hooks.lock().await.unbind_process(process_id);
++    }
++
++    pub(crate) fn watcher_receipt_hook(
++        &self,
++        receipt_id: ReceiptId,
++        owner: ReceiptOwner,
++    ) -> ExitWatcherReceiptHook {
++        ExitWatcherReceiptHook {
++            receipt_id,
++            owner,
++            store: Arc::clone(&self.receipt_store),
++            hooks: Arc::clone(&self.receipt_hooks),
++        }
++    }
++
++    /// Settles an exit observed before arming as an inline result.
++    ///
++    /// Best-effort: a concurrent watcher publication or release wins the race
++    /// instead, and every outcome stays exactly-once. Inline delivery frees
++    /// the slot and retains no output.
++    pub(crate) async fn settle_opted_in_inline(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++        completion: TerminalCompletion,
++    ) {
++        let mut hooks = self.receipt_hooks.lock().await;
++        let _ = self
++            .receipt_store
++            .publish_exit(receipt_id, owner, completion);
++        let _ = self.receipt_store.resolve_initial_response(
++            receipt_id,
++            owner,
++            InitialResponseDecision::InlineResult,
++        );
++        hooks.retention.drop(receipt_id);
++        hooks.remove_binding(receipt_id);
++    }
++
++    /// Cancels the receipt bound to a process, best-effort.
++    pub(crate) async fn cancel_receipt_for_process(
++        &self,
++        process_id: i32,
++        reason: CancellationReason,
++    ) {
++        let mut hooks = self.receipt_hooks.lock().await;
++        let Some((receipt_id, owner)) = hooks.binding_for_process(process_id) else {
++            return;
++        };
++        let _ = self.receipt_store.cancel(receipt_id, &owner, reason);
++        hooks.retention.drop(receipt_id);
++        hooks.remove_binding(receipt_id);
++    }
++
++    /// Cancels every receipt of this generation, freeing all slots.
++    pub(crate) async fn cancel_all_completion_receipts(&self, reason: CancellationReason) {
++        let mut hooks = self.receipt_hooks.lock().await;
++        let bound: Vec<(ReceiptId, ReceiptOwner)> = hooks
++            .bindings
++            .iter()
++            .map(|(receipt_id, binding)| (*receipt_id, binding.owner.clone()))
++            .collect();
++        for (receipt_id, owner) in bound {
++            let _ = self.receipt_store.cancel(receipt_id, &owner, reason);
++        }
++        hooks.clear_all();
++    }
++
++    /// Releases a receipt without killing its process.
++    ///
++    /// Unknown and foreign receipts are refused without mutating anything.
++    /// Releasing an already-terminal receipt still drops retained output.
++    pub(crate) async fn release_completion_receipt(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++    ) -> Result<(), ReceiptError> {
++        let mut hooks = self.receipt_hooks.lock().await;
++        if hooks.binding_owner_mismatch(receipt_id, owner) {
++            return Err(ReceiptError::ForeignOwner);
++        }
++        let had_output = match hooks.retention.lookup(receipt_id, owner) {
++            RetentionLookup::ForeignOwner => return Err(ReceiptError::ForeignOwner),
++            RetentionLookup::Present { .. } | RetentionLookup::Retired => {
++                hooks.retention.drop(receipt_id);
++                hooks.remove_binding(receipt_id);
++                true
++            }
++            RetentionLookup::Absent => {
++                hooks.remove_binding(receipt_id);
++                false
++            }
++        };
++        match self
++            .receipt_store
++            .cancel(receipt_id, owner, CancellationReason::Released)
++        {
++            Ok(()) | Err(ReceiptError::AlreadyTerminal) => Ok(()),
++            Err(ReceiptError::UnknownReceipt) if had_output => Ok(()),
++            Err(err) => Err(err),
++        }
++    }
++
++    /// Reads retained output by receipt id for the matching owner.
++    pub(crate) async fn read_retained_output(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++    ) -> Result<RetainedOutputSnapshot, ReceiptError> {
++        let hooks = self.receipt_hooks.lock().await;
++        match hooks.retention.lookup(receipt_id, owner) {
++            RetentionLookup::Present {
++                bytes,
++                omitted_bytes,
++            } => Ok(RetainedOutputSnapshot {
++                bytes,
++                truncated: omitted_bytes > 0,
++                omitted_bytes,
++            }),
++            RetentionLookup::Retired => Err(ReceiptError::Retired),
++            RetentionLookup::ForeignOwner => Err(ReceiptError::ForeignOwner),
++            RetentionLookup::Absent => match self.receipt_store.status(receipt_id, owner) {
++                Ok(ReceiptStatus::Sampled { .. }) => Err(ReceiptError::AlreadyConsumed),
++                Ok(ReceiptStatus::Cancelled { reason }) => Err(ReceiptError::Cancelled { reason }),
++                Ok(actual) => Err(ReceiptError::InvalidTransition { actual }),
++                Err(err) => Err(err),
++            },
++        }
++    }
++
++    /// Leases the single queued claim for the pushed-completion path.
++    pub(crate) fn lease_pushed_completion(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++    ) -> Result<SamplingLease, ReceiptError> {
++        self.receipt_store
++            .lease_for_sampling(receipt_id, owner, SamplingSource::PushedCompletion)
++    }
++
++    /// Acknowledges a pushed lease, retaining output under the sampled slot.
++    pub(crate) async fn acknowledge_pushed_completion(
++        &self,
++        lease: &SamplingLease,
++    ) -> Result<TerminalCompletion, ReceiptError> {
++        let mut hooks = self.receipt_hooks.lock().await;
++        let completion = self.receipt_store.acknowledge_sampled(lease)?;
++        let sampled_seq = hooks.next_sample_seq();
++        hooks
++            .retention
++            .move_to_sampled(lease.receipt_id(), sampled_seq);
++        Ok(completion)
++    }
++
++    /// Claims terminal stdin output through the single shared claim.
++    ///
++    /// Best-effort: when the pushed path already consumed the claim (or the
++    /// exit is not published yet) the tool response still returns normally and
++    /// no second completion is produced.
++    pub(crate) async fn claim_terminal_stdin_output(&self, process_id: i32) {
++        let mut hooks = self.receipt_hooks.lock().await;
++        let Some((receipt_id, owner)) = hooks.binding_for_process(process_id) else {
++            return;
++        };
++        let Ok(lease) = self.receipt_store.lease_for_sampling(
++            receipt_id,
++            &owner,
++            SamplingSource::TerminalStdinOutput,
++        ) else {
++            return;
++        };
++        let Ok(_) = self.receipt_store.acknowledge_sampled(&lease) else {
++            return;
++        };
++        let sampled_seq = hooks.next_sample_seq();
++        hooks.retention.move_to_sampled(receipt_id, sampled_seq);
++    }
++
++    pub(crate) async fn receipt_for_process(
++        &self,
++        process_id: i32,
++    ) -> Option<(ReceiptId, ReceiptOwner)> {
++        self.receipt_hooks
++            .lock()
++            .await
++            .binding_for_process(process_id)
++    }
++
++    pub(crate) fn receipt_status(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++    ) -> Result<ReceiptStatus, ReceiptError> {
++        self.receipt_store.status(receipt_id, owner)
++    }
++
++    /// Combined slots held: active receipts plus sampled retained outputs.
++    pub(crate) async fn receipt_capacity_used(&self) -> Result<usize, ReceiptError> {
++        let hooks = self.receipt_hooks.lock().await;
++        Ok(self.receipt_store.active_len()? + hooks.retention.sampled_count())
++    }
++}
++
++#[cfg(test)]
++#[path = "receipt_hooks_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/unified_exec/receipt_hooks_tests.rs b/codex-rs/core/src/unified_exec/receipt_hooks_tests.rs
+new file mode 100644
+index 0000000000..7d30c82bca
+--- /dev/null
++++ b/codex-rs/core/src/unified_exec/receipt_hooks_tests.rs
+@@ -0,0 +1,1675 @@
++use std::sync::Arc;
++use std::sync::atomic::AtomicBool;
++use std::sync::atomic::Ordering;
++
++use codex_exec_server::ExecProcess;
++use codex_exec_server::ExecProcessEventReceiver;
++use codex_exec_server::ExecProcessFuture;
++use codex_exec_server::ProcessId;
++use codex_exec_server::ProcessSignal;
++use codex_exec_server::ReadResponse;
++use codex_exec_server::StartedExecProcess;
++use codex_exec_server::WriteResponse;
++use codex_exec_server::WriteStatus;
++use codex_protocol::ThreadId;
++use codex_protocol::items::CommandExecutionItem;
++use codex_protocol::items::CommandExecutionStatus;
++use codex_protocol::items::TurnItem;
++use codex_protocol::protocol::AskForApproval;
++use codex_protocol::protocol::Event;
++use codex_protocol::protocol::EventMsg;
++use codex_sandboxing::SandboxType;
++use codex_utils_output_truncation::TruncationPolicy;
++#[cfg(unix)]
++use core_test_support::skip_if_sandbox;
++use pretty_assertions::assert_eq;
++use tokio::sync::Notify;
++use tokio::sync::watch;
++use tokio::time::Duration;
++use tokio::time::Instant;
++
++use crate::sandboxing::SandboxPermissions;
++use crate::session::session::Session;
++use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
++use crate::session::turn_context::TurnContext;
++use crate::shell::ShellType;
++use crate::tools::context::ExecCommandToolOutput;
++use crate::unified_exec::ExecCommandRequest;
++use crate::unified_exec::ProcessEntry;
++use crate::unified_exec::TerminalPermissions;
++use crate::unified_exec::TerminalSandboxSource;
++use crate::unified_exec::UnifiedExecContext;
++use crate::unified_exec::UnifiedExecError;
++use crate::unified_exec::UnifiedExecProcessManager;
++use crate::unified_exec::WriteStdinRequest;
++use crate::unified_exec::async_watcher::spawn_exit_watcher;
++use crate::unified_exec::async_watcher::start_streaming_output;
++use crate::unified_exec::completion_receipt::CancellationReason;
++use crate::unified_exec::completion_receipt::CompletionReceiptStore;
++use crate::unified_exec::completion_receipt::ExecCompletionMode;
++use crate::unified_exec::completion_receipt::InitialResponseDecision;
++use crate::unified_exec::completion_receipt::InitialResponseOutcome;
++use crate::unified_exec::completion_receipt::MAX_COMPLETION_RECEIPTS;
++use crate::unified_exec::completion_receipt::ReceiptError;
++use crate::unified_exec::completion_receipt::ReceiptId;
++use crate::unified_exec::completion_receipt::ReceiptOwner;
++use crate::unified_exec::completion_receipt::ReceiptStatus;
++use crate::unified_exec::completion_receipt::SamplingSource;
++use crate::unified_exec::completion_receipt::TerminalCompletion;
++use crate::unified_exec::process::NoopSpawnLifecycle;
++use crate::unified_exec::process::OutputBuffers;
++use crate::unified_exec::process::UnifiedExecProcess;
++use crate::unified_exec::receipt_output::RetainedOutputSnapshot;
++
++async fn hook_test_session() -> (
++    Arc<Session>,
++    Arc<TurnContext>,
++    async_channel::Receiver<Event>,
++) {
++    make_session_and_context_with_auth_and_config_and_rx(
++        codex_login::CodexAuth::from_api_key("Test API Key"),
++        Vec::new(),
++        |config| {
++            config.permissions.approval_policy =
++                codex_config::Constrained::allow_any(AskForApproval::Never);
++            // Spawning through the production exec_command path applies the
++            // Linux sandbox, which needs the helper executable resolved the
++            // same way as the other unified exec tests.
++            #[cfg(target_os = "linux")]
++            {
++                config.codex_linux_sandbox_exe = Some(
++                    core_test_support::find_codex_linux_sandbox_exe()
++                        .expect("codex-linux-sandbox helper should resolve for tests"),
++                );
++            }
++        },
++    )
++    .await
++}
++
++fn test_context(
++    session: &Arc<Session>,
++    turn: &Arc<TurnContext>,
++    call_id: &str,
++) -> UnifiedExecContext {
++    UnifiedExecContext::new(
++        Arc::clone(session),
++        crate::session::step_context::StepContext::for_test(Arc::clone(turn)),
++        tokio_util::sync::CancellationToken::new(),
++        call_id.to_string(),
++    )
++}
++
++async fn exec_request_for_hooks(
++    session: &Arc<Session>,
++    turn: &Arc<TurnContext>,
++    call_id: &str,
++    shell_command: &str,
++    yield_time_ms: u64,
++) -> (ExecCommandRequest, UnifiedExecContext) {
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone();
++    let request = ExecCommandRequest {
++        command: vec![
++            "bash".to_string(),
++            "-lc".to_string(),
++            shell_command.to_string(),
++        ],
++        shell_type: ShellType::Bash,
++        hook_command: shell_command.to_string(),
++        process_id,
++        yield_time_ms,
++        max_output_tokens: None,
++        cwd: cwd.clone().into(),
++        sandbox_cwd: cwd.into(),
++        turn_environment: turn
++            .initial_environments
++            .primary()
++            .cloned()
++            .expect("primary environment"),
++        shell_mode: codex_tools::UnifiedExecShellMode::Direct,
++        network: None,
++        tty: false,
++        sandbox_permissions: SandboxPermissions::UseDefault,
++        additional_permissions: None,
++        additional_permissions_preapproved: false,
++        justification: None,
++        prefix_rule: None,
++    };
++    (request, test_context(session, turn, call_id))
++}
++
++#[cfg(unix)]
++async fn exec_command_for_hooks(
++    session: &Arc<Session>,
++    turn: &Arc<TurnContext>,
++    call_id: &str,
++    shell_command: &str,
++    yield_time_ms: u64,
++    mode: ExecCompletionMode,
++) -> Result<ExecCommandToolOutput, UnifiedExecError> {
++    let (request, context) =
++        exec_request_for_hooks(session, turn, call_id, shell_command, yield_time_ms).await;
++    session
++        .services
++        .unified_exec_manager
++        .exec_command_with_completion_mode(request, &context, mode)
++        .await
++}
++
++async fn write_stdin_for_hooks(
++    session: &Arc<Session>,
++    turn: &Arc<TurnContext>,
++    process_id: i32,
++    input: &str,
++    yield_time_ms: u64,
++) -> Result<ExecCommandToolOutput, UnifiedExecError> {
++    session
++        .services
++        .unified_exec_manager
++        .write_stdin(
++            &test_context(session, turn, "write-stdin-test"),
++            WriteStdinRequest {
++                process_id,
++                input,
++                yield_time_ms,
++                max_output_tokens: None,
++                truncation_policy: TruncationPolicy::Tokens(10_000),
++                interaction_event: None,
++            },
++        )
++        .await
++}
++
++struct DriverProcess {
++    process: Arc<UnifiedExecProcess>,
++    stdout_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
++    exit_tx: tokio::sync::oneshot::Sender<i32>,
++    output_buffer: Arc<tokio::sync::Mutex<OutputBuffers>>,
++}
++
++async fn driver_process(channel_capacity: usize) -> anyhow::Result<DriverProcess> {
++    let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
++    let (stdout_tx, stdout_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(channel_capacity);
++    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<i32>();
++    let spawned = codex_utils_pty::spawn_from_driver(codex_utils_pty::ProcessDriver {
++        writer_tx,
++        stdout_rx,
++        stderr_rx: None,
++        exit_rx,
++        terminator: None,
++        writer_handle: None,
++        resizer: None,
++        #[cfg(windows)]
++        tty: false,
++    });
++    let process = Arc::new(
++        UnifiedExecProcess::from_spawned(spawned, SandboxType::None, Box::new(NoopSpawnLifecycle))
++            .await?,
++    );
++    let output_buffer = Arc::clone(&process.output_handles().output_buffer);
++    Ok(DriverProcess {
++        process,
++        stdout_tx,
++        exit_tx,
++        output_buffer,
++    })
++}
++
++async fn insert_process_entry(
++    session: &Arc<Session>,
++    turn: &Arc<TurnContext>,
++    process: Arc<UnifiedExecProcess>,
++    process_id: i32,
++    call_id: &str,
++    hook_command: &str,
++    tty: bool,
++) {
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone();
++    let entry = ProcessEntry {
++        process,
++        plugin_metrics_sidecar: None,
++        call_id: call_id.to_string(),
++        process_id,
++        cwd: cwd.into(),
++        initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
++        hook_command: hook_command.to_string(),
++        tty,
++        environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
++        permissions: TerminalPermissions::for_launch(
++            turn.initial_environments
++                .primary()
++                .expect("turn environment"),
++            turn,
++            TerminalSandboxSource::Native,
++            SandboxPermissions::UseDefault,
++            /*additional_permissions*/ None,
++            /*internal_permissions*/ None,
++        ),
++        network_approval: None,
++        session: Arc::downgrade(session),
++        last_used: Instant::now(),
++    };
++    session
++        .services
++        .unified_exec_manager
++        .process_store
++        .lock()
++        .await
++        .processes
++        .insert(process_id, entry);
++}
++
++async fn reserve_and_arm(
++    manager: &UnifiedExecProcessManager,
++    session: &Arc<Session>,
++    turn: &Arc<TurnContext>,
++    call_id: &str,
++    process_id: i32,
++) -> (ReceiptId, ReceiptOwner) {
++    let context = test_context(session, turn, call_id);
++    let owner = manager
++        .receipt_owner_for(&context)
++        .expect("receipt owner should build");
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), process_id)
++        .await
++        .expect("reservation should succeed");
++    assert_eq!(
++        manager.receipt_store().resolve_initial_response(
++            receipt_id,
++            &owner,
++            InitialResponseDecision::Arm,
++        ),
++        Ok(InitialResponseOutcome::Armed)
++    );
++    (receipt_id, owner)
++}
++
++async fn await_receipt_status(
++    manager: &UnifiedExecProcessManager,
++    receipt_id: ReceiptId,
++    owner: &ReceiptOwner,
++    expected: ReceiptStatus,
++) {
++    let deadline = Instant::now() + Duration::from_secs(10);
++    loop {
++        let status = manager.receipt_status(receipt_id, owner);
++        if status == Ok(expected.clone()) {
++            return;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "timed out waiting for {expected:?}, last status: {status:?}"
++        );
++        tokio::time::sleep(Duration::from_millis(10)).await;
++    }
++}
++
++async fn await_transcript_bytes(process: &UnifiedExecProcess, min_bytes: usize) {
++    let deadline = Instant::now() + Duration::from_secs(5);
++    loop {
++        let observed = process
++            .output_handles()
++            .output_buffer
++            .lock()
++            .await
++            .transcript
++            .total_bytes();
++        if observed >= min_bytes {
++            return;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "timed out waiting for transcript output"
++        );
++        tokio::time::sleep(Duration::from_millis(5)).await;
++    }
++}
++
++async fn await_process_exit(process: &UnifiedExecProcess) {
++    let deadline = Instant::now() + Duration::from_secs(5);
++    loop {
++        if process.has_exited() {
++            return;
++        }
++        assert!(Instant::now() < deadline, "timed out waiting for exit");
++        tokio::time::sleep(Duration::from_millis(5)).await;
++    }
++}
++
++async fn await_flag(flag: &AtomicBool) {
++    let deadline = Instant::now() + Duration::from_secs(5);
++    while !flag.load(Ordering::SeqCst) {
++        assert!(Instant::now() < deadline, "timed out waiting for flag");
++        tokio::time::sleep(Duration::from_millis(5)).await;
++    }
++}
++
++async fn await_command_end(
++    rx_event: &async_channel::Receiver<Event>,
++) -> anyhow::Result<CommandExecutionItem> {
++    tokio::time::timeout(Duration::from_secs(10), async {
++        loop {
++            let event = rx_event.recv().await.expect("event channel stays open");
++            if let EventMsg::ItemCompleted(completed) = event.msg
++                && let TurnItem::CommandExecution(item) = completed.item
++            {
++                return item;
++            }
++        }
++    })
++    .await
++    .map_err(|_| anyhow::anyhow!("timed out waiting for command end"))
++}
++
++async fn sampled_output_receipt(
++    session: &Arc<Session>,
++    turn: &Arc<TurnContext>,
++    call_id: &str,
++    process_id: i32,
++    output: &[u8],
++) -> anyhow::Result<(ReceiptId, ReceiptOwner)> {
++    let manager = &session.services.unified_exec_manager;
++    let context = test_context(session, turn, call_id);
++    let owner = manager.receipt_owner_for(&context)?;
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), process_id)
++        .await?;
++    assert_eq!(
++        manager.receipt_store().resolve_initial_response(
++            receipt_id,
++            &owner,
++            InitialResponseDecision::Arm,
++        ),
++        Ok(InitialResponseOutcome::Armed)
++    );
++    let DriverProcess {
++        process,
++        stdout_tx,
++        exit_tx,
++        output_buffer,
++    } = driver_process(/*channel_capacity*/ 8).await?;
++    start_streaming_output(&process, &context);
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone().into();
++    spawn_exit_watcher(
++        Arc::clone(&process),
++        &context,
++        vec!["sampled-proof".to_string()],
++        cwd,
++        process_id,
++        /*plugin_attribution*/ None,
++        output_buffer,
++        Instant::now(),
++        /*network_denial_monitor*/ None,
++        /*plugin_metrics_sidecar*/ None,
++        Some(manager.watcher_receipt_hook(receipt_id, owner.clone())),
++    );
++    stdout_tx.send(output.to_vec())?;
++    await_transcript_bytes(&process, output.len()).await;
++    exit_tx.send(0).expect("send exit");
++    drop(stdout_tx);
++    await_receipt_status(manager, receipt_id, &owner, ReceiptStatus::Queued).await;
++    let lease = manager.lease_pushed_completion(receipt_id, &owner)?;
++    manager.acknowledge_pushed_completion(&lease).await?;
++    Ok((receipt_id, owner))
++}
++
++fn foreign_receipt_owners(
++    thread_id: ThreadId,
++    other_generation: u64,
++    call_id: &str,
++) -> [ReceiptOwner; 3] {
++    [
++        ReceiptOwner::new(
++            ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_00c3),
++            other_generation,
++            call_id.to_string(),
++        )
++        .expect("foreign thread owner should be valid"),
++        ReceiptOwner::new(thread_id, other_generation, call_id.to_string())
++            .expect("foreign generation owner should be valid"),
++        ReceiptOwner::new(thread_id, other_generation, format!("{call_id}-other"))
++            .expect("foreign call owner should be valid"),
++    ]
++}
++
++struct GatedExecProcess {
++    process_id: ProcessId,
++    wake_tx: watch::Sender<u64>,
++    block_terminate: AtomicBool,
++    block_signal: AtomicBool,
++    terminate_called: AtomicBool,
++    signal_called: AtomicBool,
++    release_terminate: Notify,
++    release_signal: Notify,
++}
++
++impl GatedExecProcess {
++    fn new(process_id: i32) -> Arc<Self> {
++        let (wake_tx, _) = watch::channel(0);
++        Arc::new(Self {
++            process_id: process_id.to_string().into(),
++            wake_tx,
++            block_terminate: AtomicBool::new(false),
++            block_signal: AtomicBool::new(false),
++            terminate_called: AtomicBool::new(false),
++            signal_called: AtomicBool::new(false),
++            release_terminate: Notify::new(),
++            release_signal: Notify::new(),
++        })
++    }
++
++    async fn read(&self) -> Result<ReadResponse, codex_exec_server::ExecServerError> {
++        Ok(ReadResponse {
++            chunks: Vec::new(),
++            next_seq: 1,
++            exited: false,
++            exit_code: None,
++            closed: false,
++            failure: None,
++            sandbox_denied: false,
++        })
++    }
++
++    async fn write(&self) -> Result<WriteResponse, codex_exec_server::ExecServerError> {
++        Ok(WriteResponse {
++            status: WriteStatus::Accepted,
++        })
++    }
++
++    async fn signal(&self) -> Result<(), codex_exec_server::ExecServerError> {
++        self.signal_called.store(true, Ordering::SeqCst);
++        if self.block_signal.load(Ordering::SeqCst) {
++            self.release_signal.notified().await;
++        }
++        Ok(())
++    }
++
++    async fn terminate(&self) -> Result<(), codex_exec_server::ExecServerError> {
++        self.terminate_called.store(true, Ordering::SeqCst);
++        if self.block_terminate.load(Ordering::SeqCst) {
++            self.release_terminate.notified().await;
++        }
++        Ok(())
++    }
++}
++
++impl ExecProcess for GatedExecProcess {
++    fn process_id(&self) -> &ProcessId {
++        &self.process_id
++    }
++
++    fn subscribe_wake(&self) -> watch::Receiver<u64> {
++        self.wake_tx.subscribe()
++    }
++
++    fn subscribe_events(&self) -> ExecProcessEventReceiver {
++        ExecProcessEventReceiver::empty()
++    }
++
++    fn read(
++        &self,
++        _after_seq: Option<u64>,
++        _max_bytes: Option<usize>,
++        _wait_ms: Option<u64>,
++    ) -> ExecProcessFuture<'_, ReadResponse> {
++        Box::pin(GatedExecProcess::read(self))
++    }
++
++    fn write(&self, _chunk: Vec<u8>) -> ExecProcessFuture<'_, WriteResponse> {
++        Box::pin(GatedExecProcess::write(self))
++    }
++
++    fn signal(&self, _signal: ProcessSignal) -> ExecProcessFuture<'_, ()> {
++        Box::pin(GatedExecProcess::signal(self))
++    }
++
++    fn terminate(&self) -> ExecProcessFuture<'_, ()> {
++        Box::pin(GatedExecProcess::terminate(self))
++    }
++}
++
++async fn gated_unified_process(
++    backend: Arc<GatedExecProcess>,
++) -> anyhow::Result<Arc<UnifiedExecProcess>> {
++    Ok(Arc::new(
++        UnifiedExecProcess::from_exec_server_started(StartedExecProcess {
++            process: backend,
++            sandbox_type: Some(SandboxType::None),
++        })
++        .await?,
++    ))
++}
++
++#[tokio::test]
++async fn receipt_exit_publishes_only_after_drain_denial_and_classification() -> anyhow::Result<()> {
++    let (session, turn, rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let context = test_context(&session, &turn, "call-latch");
++    let owner = manager.receipt_owner_for(&context)?;
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ -1)
++        .await?;
++    assert_eq!(
++        manager.receipt_store().resolve_initial_response(
++            receipt_id,
++            &owner,
++            InitialResponseDecision::Arm,
++        ),
++        Ok(InitialResponseOutcome::Armed)
++    );
++
++    let DriverProcess {
++        process,
++        stdout_tx,
++        exit_tx,
++        output_buffer,
++    } = driver_process(/*channel_capacity*/ 8).await?;
++    // Hold the output drain by not starting streaming, and hold the denial
++    // monitor with a latched join handle.
++    let (monitor_release_tx, monitor_release_rx) = tokio::sync::oneshot::channel::<()>();
++    let network_denial_monitor = tokio::spawn(async move {
++        let _ = monitor_release_rx.await;
++    });
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone().into();
++    spawn_exit_watcher(
++        Arc::clone(&process),
++        &context,
++        vec!["latch-proof".to_string()],
++        cwd,
++        /*process_id*/ 4242,
++        /*plugin_attribution*/ None,
++        output_buffer,
++        Instant::now(),
++        Some(network_denial_monitor),
++        /*plugin_metrics_sidecar*/ None,
++        Some(manager.watcher_receipt_hook(receipt_id, owner.clone())),
++    );
++
++    stdout_tx.send(b"latch-output\n".to_vec())?;
++    await_transcript_bytes(&process, b"latch-output\n".len()).await;
++    exit_tx.send(0).expect("send exit");
++    drop(stdout_tx);
++    await_process_exit(&process).await;
++
++    // Exit observed but the drain held: still Armed.
++    assert_eq!(
++        manager.receipt_status(receipt_id, &owner),
++        Ok(ReceiptStatus::Armed)
++    );
++
++    // Drain released but the denial monitor held: still Armed.
++    process.output_drained_notify().notify_one();
++    assert_eq!(
++        manager.receipt_status(receipt_id, &owner),
++        Ok(ReceiptStatus::Armed)
++    );
++
++    // Monitor released: exactly one queued completion.
++    monitor_release_tx.send(()).expect("release monitor");
++    await_receipt_status(manager, receipt_id, &owner, ReceiptStatus::Queued).await;
++    let lease = manager.lease_pushed_completion(receipt_id, &owner)?;
++    assert_eq!(
++        manager.acknowledge_pushed_completion(&lease).await?,
++        TerminalCompletion {
++            exit_code: Some(0),
++            timed_out: false,
++        }
++    );
++
++    // ExecCommandEnd emission is unchanged.
++    let end = await_command_end(&rx_event).await?;
++    assert_eq!(
++        (end.status, end.exit_code),
++        (CommandExecutionStatus::Completed, Some(0))
++    );
++
++    // Retained output is readable by receipt.
++    assert_eq!(
++        manager.read_retained_output(receipt_id, &owner).await?,
++        RetainedOutputSnapshot {
++            bytes: b"latch-output\n".to_vec(),
++            truncated: false,
++            omitted_bytes: 0,
++        }
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn receipt_failed_exit_maps_to_failed_completion() -> anyhow::Result<()> {
++    let (session, turn, rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let context = test_context(&session, &turn, "call-failed");
++    let owner = manager.receipt_owner_for(&context)?;
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ -2)
++        .await?;
++    assert_eq!(
++        manager.receipt_store().resolve_initial_response(
++            receipt_id,
++            &owner,
++            InitialResponseDecision::Arm,
++        ),
++        Ok(InitialResponseOutcome::Armed)
++    );
++
++    let DriverProcess {
++        process,
++        stdout_tx,
++        exit_tx: _exit_tx,
++        output_buffer,
++    } = driver_process(/*channel_capacity*/ 8).await?;
++    start_streaming_output(&process, &context);
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone().into();
++    spawn_exit_watcher(
++        Arc::clone(&process),
++        &context,
++        vec!["failed-proof".to_string()],
++        cwd,
++        /*process_id*/ 4243,
++        /*plugin_attribution*/ None,
++        output_buffer,
++        Instant::now(),
++        /*network_denial_monitor*/ None,
++        /*plugin_metrics_sidecar*/ None,
++        Some(manager.watcher_receipt_hook(receipt_id, owner.clone())),
++    );
++
++    process.fail_and_terminate("BOOM".to_string());
++    drop(stdout_tx);
++    await_receipt_status(manager, receipt_id, &owner, ReceiptStatus::Queued).await;
++    let lease = manager.lease_pushed_completion(receipt_id, &owner)?;
++    assert_eq!(
++        manager.acknowledge_pushed_completion(&lease).await?,
++        TerminalCompletion {
++            exit_code: None,
++            timed_out: false,
++        }
++    );
++    let end = await_command_end(&rx_event).await?;
++    assert_eq!(
++        (end.status, end.exit_code),
++        (CommandExecutionStatus::Failed, Some(-1))
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn receipt_exit_preserves_timed_out() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let context = test_context(&session, &turn, "call-timed-out");
++    let owner = manager.receipt_owner_for(&context)?;
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ -3)
++        .await?;
++    assert_eq!(
++        manager.receipt_store().resolve_initial_response(
++            receipt_id,
++            &owner,
++            InitialResponseDecision::Arm,
++        ),
++        Ok(InitialResponseOutcome::Armed)
++    );
++
++    let DriverProcess {
++        process,
++        stdout_tx,
++        exit_tx,
++        output_buffer,
++    } = driver_process(/*channel_capacity*/ 8).await?;
++    process.mark_timed_out();
++    start_streaming_output(&process, &context);
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone().into();
++    spawn_exit_watcher(
++        Arc::clone(&process),
++        &context,
++        vec!["timed-out-proof".to_string()],
++        cwd,
++        /*process_id*/ 4244,
++        /*plugin_attribution*/ None,
++        output_buffer,
++        Instant::now(),
++        /*network_denial_monitor*/ None,
++        /*plugin_metrics_sidecar*/ None,
++        Some(manager.watcher_receipt_hook(receipt_id, owner.clone())),
++    );
++
++    exit_tx.send(0).expect("send exit");
++    drop(stdout_tx);
++    await_receipt_status(manager, receipt_id, &owner, ReceiptStatus::Queued).await;
++    let lease = manager.lease_pushed_completion(receipt_id, &owner)?;
++    assert_eq!(
++        manager.acknowledge_pushed_completion(&lease).await?,
++        TerminalCompletion {
++            exit_code: Some(124),
++            timed_out: true,
++        }
++    );
++    Ok(())
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn opted_in_exit_before_decision_returns_inline_and_frees_slot() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let response = exec_command_for_hooks(
++        &session,
++        &turn,
++        "call-inline",
++        "echo hello-inline",
++        /*yield_time_ms*/ 30_000,
++        ExecCompletionMode::NotifyOnExit,
++    )
++    .await?;
++    assert_eq!(response.process_id, None);
++    assert_eq!(response.exit_code, Some(0));
++    assert!(
++        String::from_utf8_lossy(&response.raw_output).contains("hello-inline"),
++        "terminal result should be returned inline"
++    );
++
++    let manager = &session.services.unified_exec_manager;
++    assert_eq!(manager.receipt_capacity_used().await?, 0);
++    // No queued completion holds a slot: 64 fresh reservations succeed.
++    for index in 0..MAX_COMPLETION_RECEIPTS {
++        let context = test_context(&session, &turn, &format!("call-inline-fill-{index}"));
++        let owner = manager.receipt_owner_for(&context)?;
++        manager
++            .reserve_completion_receipt(owner, -(1000 + index as i32))
++            .await?;
++    }
++    assert_eq!(
++        manager.receipt_capacity_used().await?,
++        MAX_COMPLETION_RECEIPTS
++    );
++    Ok(())
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn opted_in_decision_before_exit_queues_exactly_one_completion() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++    let (session, turn, rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let response = exec_command_for_hooks(
++        &session,
++        &turn,
++        "call-queued",
++        "sleep 2",
++        /*yield_time_ms*/ 250,
++        ExecCompletionMode::NotifyOnExit,
++    )
++    .await?;
++    let process_id = response.process_id.expect("should yield a live process");
++    let (receipt_id, owner) = manager
++        .receipt_for_process(process_id)
++        .await
++        .expect("opted-in launch should bind a receipt");
++    assert_eq!(
++        manager.receipt_status(receipt_id, &owner),
++        Ok(ReceiptStatus::Armed)
++    );
++
++    await_receipt_status(manager, receipt_id, &owner, ReceiptStatus::Queued).await;
++    let lease = manager.lease_pushed_completion(receipt_id, &owner)?;
++    assert_eq!(
++        manager.acknowledge_pushed_completion(&lease).await?,
++        TerminalCompletion {
++            exit_code: Some(0),
++            timed_out: false,
++        }
++    );
++    assert_eq!(
++        manager.lease_pushed_completion(receipt_id, &owner),
++        Err(ReceiptError::AlreadyConsumed)
++    );
++    let end = await_command_end(&rx_event).await?;
++    assert_eq!(end.exit_code, Some(0));
++    manager
++        .release_completion_receipt(receipt_id, &owner)
++        .await?;
++    assert_eq!(manager.receipt_capacity_used().await?, 0);
++    Ok(())
++}
++
++#[tokio::test]
++async fn retained_output_survives_process_entry_removal() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let (receipt_id, owner) =
++        reserve_and_arm(manager, &session, &turn, "call-retain", process_id).await;
++    let DriverProcess {
++        process,
++        stdout_tx,
++        exit_tx,
++        output_buffer,
++    } = driver_process(/*channel_capacity*/ 8).await?;
++    insert_process_entry(
++        &session,
++        &turn,
++        Arc::clone(&process),
++        process_id,
++        "call-retain",
++        "retain-proof",
++        /*tty*/ false,
++    )
++    .await;
++    let context = test_context(&session, &turn, "call-retain");
++    start_streaming_output(&process, &context);
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone().into();
++    spawn_exit_watcher(
++        Arc::clone(&process),
++        &context,
++        vec!["retain-proof".to_string()],
++        cwd,
++        process_id,
++        /*plugin_attribution*/ None,
++        output_buffer,
++        Instant::now(),
++        /*network_denial_monitor*/ None,
++        /*plugin_metrics_sidecar*/ None,
++        Some(manager.watcher_receipt_hook(receipt_id, owner.clone())),
++    );
++    stdout_tx.send(b"output-bytes-123".to_vec())?;
++    await_transcript_bytes(&process, b"output-bytes-123".len()).await;
++    exit_tx.send(0).expect("send exit");
++    drop(stdout_tx);
++    await_receipt_status(manager, receipt_id, &owner, ReceiptStatus::Queued).await;
++
++    manager.release_process_id(process_id).await;
++    assert!(
++        !manager
++            .process_store
++            .lock()
++            .await
++            .processes
++            .contains_key(&process_id),
++        "process entry should be removed before the read"
++    );
++    assert_eq!(
++        manager.read_retained_output(receipt_id, &owner).await?,
++        RetainedOutputSnapshot {
++            bytes: b"output-bytes-123".to_vec(),
++            truncated: false,
++            omitted_bytes: 0,
++        }
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn retained_output_over_cap_keeps_head_tail_and_omitted_count() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let context = test_context(&session, &turn, "call-head-tail");
++    let owner = manager.receipt_owner_for(&context)?;
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ -7)
++        .await?;
++    assert_eq!(
++        manager.receipt_store().resolve_initial_response(
++            receipt_id,
++            &owner,
++            InitialResponseDecision::Arm,
++        ),
++        Ok(InitialResponseOutcome::Armed)
++    );
++
++    let DriverProcess {
++        process,
++        stdout_tx,
++        exit_tx,
++        output_buffer,
++    } = driver_process(/*channel_capacity*/ 512).await?;
++    start_streaming_output(&process, &context);
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone().into();
++    spawn_exit_watcher(
++        Arc::clone(&process),
++        &context,
++        vec!["head-tail-proof".to_string()],
++        cwd,
++        /*process_id*/ -7,
++        /*plugin_attribution*/ None,
++        output_buffer,
++        Instant::now(),
++        /*network_denial_monitor*/ None,
++        /*plugin_metrics_sidecar*/ None,
++        Some(manager.watcher_receipt_hook(receipt_id, owner.clone())),
++    );
++    const ONE_MIB: usize = 1024 * 1024;
++    stdout_tx.send(vec![b'H'; ONE_MIB])?;
++    stdout_tx.send(vec![b'M'; ONE_MIB])?;
++    stdout_tx.send(vec![b'T'; ONE_MIB])?;
++    await_transcript_bytes(&process, 3 * ONE_MIB).await;
++    exit_tx.send(0).expect("send exit");
++    drop(stdout_tx);
++    await_receipt_status(manager, receipt_id, &owner, ReceiptStatus::Queued).await;
++
++    let snapshot = manager.read_retained_output(receipt_id, &owner).await?;
++    assert_eq!(snapshot.bytes.len(), ONE_MIB);
++    assert_eq!(&snapshot.bytes[..8], b"HHHHHHHH");
++    assert_eq!(&snapshot.bytes[snapshot.bytes.len() - 8..], b"TTTTTTTT");
++    assert_eq!(snapshot.truncated, true);
++    assert_eq!(snapshot.omitted_bytes, 2 * ONE_MIB);
++    Ok(())
++}
++
++#[tokio::test]
++async fn retained_output_read_refuses_unknown_and_foreign_receipts() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let (receipt_id, owner) = sampled_output_receipt(
++        &session,
++        &turn,
++        "call-owned",
++        /*process_id*/ -8,
++        b"owned",
++    )
++    .await?;
++
++    // Unknown: an id reserved on a separate store.
++    let separate = CompletionReceiptStore::default();
++    let unknown_owner = manager.receipt_owner_for(&test_context(&session, &turn, "call-owned"))?;
++    let unknown_id = separate.reserve(unknown_owner.clone())?;
++    assert_eq!(
++        manager
++            .read_retained_output(unknown_id, &unknown_owner)
++            .await,
++        Err(ReceiptError::UnknownReceipt)
++    );
++
++    let other_manager = UnifiedExecProcessManager::default();
++    for foreign_owner in foreign_receipt_owners(
++        session.thread_id,
++        other_manager.receipt_generation,
++        "call-owned",
++    ) {
++        assert_eq!(
++            manager
++                .read_retained_output(receipt_id, &foreign_owner)
++                .await,
++            Err(ReceiptError::ForeignOwner)
++        );
++    }
++    assert!(
++        manager
++            .read_retained_output(receipt_id, &owner)
++            .await
++            .is_ok(),
++        "matching owner should still read"
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn receipt_capacity_refuses_65th_unsampled_reservation() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    for index in 0..MAX_COMPLETION_RECEIPTS {
++        let context = test_context(&session, &turn, &format!("call-fill-{index}"));
++        let owner = manager.receipt_owner_for(&context)?;
++        manager
++            .reserve_completion_receipt(owner, -(1000 + index as i32))
++            .await?;
++    }
++    assert_eq!(
++        manager.receipt_capacity_used().await?,
++        MAX_COMPLETION_RECEIPTS
++    );
++
++    let context = test_context(&session, &turn, "call-overflow");
++    let owner = manager.receipt_owner_for(&context)?;
++    assert_eq!(
++        manager
++            .reserve_completion_receipt(owner, /*process_id*/ -2000)
++            .await,
++        Err(ReceiptError::CapacityExceeded {
++            capacity: MAX_COMPLETION_RECEIPTS,
++        })
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn opted_in_exec_refuses_65th_before_spawning() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    for index in 0..MAX_COMPLETION_RECEIPTS {
++        let context = test_context(&session, &turn, &format!("call-prefill-{index}"));
++        let owner = manager.receipt_owner_for(&context)?;
++        manager
++            .reserve_completion_receipt(owner, -(2000 + index as i32))
++            .await?;
++    }
++
++    let scratch = tempfile::tempdir()?;
++    let sentinel = scratch.path().join("must-not-spawn");
++    let (request, context) = exec_request_for_hooks(
++        &session,
++        &turn,
++        "call-refused",
++        &format!("touch {}", sentinel.display()),
++        /*yield_time_ms*/ 5_000,
++    )
++    .await;
++    let process_id = request.process_id;
++    let result = manager
++        .exec_command_with_completion_mode(request, &context, ExecCompletionMode::NotifyOnExit)
++        .await;
++    match result {
++        Err(UnifiedExecError::ReceiptCapacityExceeded { capacity }) => {
++            assert_eq!(capacity, MAX_COMPLETION_RECEIPTS);
++        }
++        other => panic!("65th opted-in launch should be refused before spawning, got {other:?}"),
++    }
++    assert!(
++        !sentinel.exists(),
++        "refused launch must not spawn a child process"
++    );
++    assert!(
++        !manager
++            .process_store
++            .lock()
++            .await
++            .processes
++            .contains_key(&process_id),
++        "refused launch must not leave a process-store entry"
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn new_reservation_retires_least_recently_sampled_output() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    for index in 0..MAX_COMPLETION_RECEIPTS - 2 {
++        let context = test_context(&session, &turn, &format!("call-lru-fill-{index}"));
++        let owner = manager.receipt_owner_for(&context)?;
++        manager
++            .reserve_completion_receipt(owner, -(3000 + index as i32))
++            .await?;
++    }
++    let (first_id, first_owner) = sampled_output_receipt(
++        &session,
++        &turn,
++        "call-sampled-first",
++        /*process_id*/ -4001,
++        b"first-output",
++    )
++    .await?;
++    let (second_id, second_owner) = sampled_output_receipt(
++        &session,
++        &turn,
++        "call-sampled-second",
++        /*process_id*/ -4002,
++        b"second-output",
++    )
++    .await?;
++    assert_eq!(
++        manager.receipt_capacity_used().await?,
++        MAX_COMPLETION_RECEIPTS
++    );
++
++    let context = test_context(&session, &turn, "call-new");
++    let new_owner = manager.receipt_owner_for(&context)?;
++    manager
++        .reserve_completion_receipt(new_owner, /*process_id*/ -4000)
++        .await?;
++
++    assert_eq!(
++        manager.read_retained_output(first_id, &first_owner).await,
++        Err(ReceiptError::Retired)
++    );
++    assert_eq!(
++        manager
++            .read_retained_output(second_id, &second_owner)
++            .await?
++            .bytes,
++        b"second-output"
++    );
++    assert_eq!(
++        manager.receipt_capacity_used().await?,
++        MAX_COMPLETION_RECEIPTS
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn release_frees_active_and_sampled_slots() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++
++    let context = test_context(&session, &turn, "call-release-active");
++    let owner = manager.receipt_owner_for(&context)?;
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ -5001)
++        .await?;
++    manager
++        .release_completion_receipt(receipt_id, &owner)
++        .await?;
++    assert_eq!(
++        manager.read_retained_output(receipt_id, &owner).await,
++        Err(ReceiptError::Cancelled {
++            reason: CancellationReason::Released,
++        })
++    );
++
++    let (sampled_id, sampled_owner) = sampled_output_receipt(
++        &session,
++        &turn,
++        "call-release-sampled",
++        /*process_id*/ -5002,
++        b"sampled-output",
++    )
++    .await?;
++    manager
++        .release_completion_receipt(sampled_id, &sampled_owner)
++        .await?;
++    assert_eq!(
++        manager
++            .read_retained_output(sampled_id, &sampled_owner)
++            .await,
++        Err(ReceiptError::AlreadyConsumed)
++    );
++    assert_eq!(manager.receipt_capacity_used().await?, 0);
++    Ok(())
++}
++
++#[tokio::test]
++async fn terminal_stdin_claim_consumes_the_single_claim_first() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let (receipt_id, owner) =
++        reserve_and_arm(manager, &session, &turn, "call-stdin-first", process_id).await;
++    let DriverProcess {
++        process,
++        stdout_tx,
++        exit_tx,
++        output_buffer,
++    } = driver_process(/*channel_capacity*/ 8).await?;
++    insert_process_entry(
++        &session,
++        &turn,
++        Arc::clone(&process),
++        process_id,
++        "call-stdin-first",
++        "stdin-first-proof",
++        /*tty*/ false,
++    )
++    .await;
++    let context = test_context(&session, &turn, "call-stdin-first");
++    start_streaming_output(&process, &context);
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone().into();
++    spawn_exit_watcher(
++        Arc::clone(&process),
++        &context,
++        vec!["stdin-first-proof".to_string()],
++        cwd,
++        process_id,
++        /*plugin_attribution*/ None,
++        output_buffer,
++        Instant::now(),
++        /*network_denial_monitor*/ None,
++        /*plugin_metrics_sidecar*/ None,
++        Some(manager.watcher_receipt_hook(receipt_id, owner.clone())),
++    );
++    stdout_tx.send(b"stdin-terminal\n".to_vec())?;
++    await_transcript_bytes(&process, b"stdin-terminal\n".len()).await;
++    exit_tx.send(0).expect("send exit");
++    drop(stdout_tx);
++    await_receipt_status(manager, receipt_id, &owner, ReceiptStatus::Queued).await;
++
++    let response =
++        write_stdin_for_hooks(&session, &turn, process_id, "", /*yield_time_ms*/ 250).await?;
++    assert_eq!(response.process_id, None);
++    assert_eq!(
++        manager.receipt_status(receipt_id, &owner),
++        Ok(ReceiptStatus::Sampled {
++            source: SamplingSource::TerminalStdinOutput,
++        })
++    );
++    assert_eq!(
++        manager.lease_pushed_completion(receipt_id, &owner),
++        Err(ReceiptError::AlreadyConsumed)
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn terminal_stdin_and_pushed_claims_race_exactly_once() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let (receipt_id, owner) =
++        reserve_and_arm(manager, &session, &turn, "call-stdin-race", process_id).await;
++    let DriverProcess {
++        process,
++        stdout_tx,
++        exit_tx,
++        output_buffer,
++    } = driver_process(/*channel_capacity*/ 8).await?;
++    insert_process_entry(
++        &session,
++        &turn,
++        Arc::clone(&process),
++        process_id,
++        "call-stdin-race",
++        "stdin-race-proof",
++        /*tty*/ false,
++    )
++    .await;
++    let context = test_context(&session, &turn, "call-stdin-race");
++    start_streaming_output(&process, &context);
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone().into();
++    spawn_exit_watcher(
++        Arc::clone(&process),
++        &context,
++        vec!["stdin-race-proof".to_string()],
++        cwd,
++        process_id,
++        /*plugin_attribution*/ None,
++        output_buffer,
++        Instant::now(),
++        /*network_denial_monitor*/ None,
++        /*plugin_metrics_sidecar*/ None,
++        Some(manager.watcher_receipt_hook(receipt_id, owner.clone())),
++    );
++    exit_tx.send(0).expect("send exit");
++    drop(stdout_tx);
++    await_receipt_status(manager, receipt_id, &owner, ReceiptStatus::Queued).await;
++
++    let (stdin_result, pushed_lease) = tokio::join!(
++        write_stdin_for_hooks(&session, &turn, process_id, "", /*yield_time_ms*/ 250),
++        async { manager.lease_pushed_completion(receipt_id, &owner) }
++    );
++    assert_eq!(stdin_result?.process_id, None);
++    match pushed_lease {
++        Ok(lease) => {
++            manager.acknowledge_pushed_completion(&lease).await?;
++        }
++        Err(ReceiptError::AlreadyLeased | ReceiptError::AlreadyConsumed) => {}
++        Err(err) => panic!("unexpected pushed lease error: {err:?}"),
++    }
++
++    assert!(
++        matches!(
++            manager.receipt_status(receipt_id, &owner),
++            Ok(ReceiptStatus::Sampled { .. })
++        ),
++        "exactly one sampling path should win"
++    );
++    assert_eq!(
++        manager.lease_pushed_completion(receipt_id, &owner),
++        Err(ReceiptError::AlreadyConsumed)
++    );
++    assert_eq!(
++        manager.receipt_store().lease_for_sampling(
++            receipt_id,
++            &owner,
++            SamplingSource::TerminalStdinOutput,
++        ),
++        Err(ReceiptError::AlreadyConsumed)
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn release_cancels_receipt_and_keeps_process_running() -> anyhow::Result<()> {
++    let (session, turn, rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let (receipt_id, owner) =
++        reserve_and_arm(manager, &session, &turn, "call-release", process_id).await;
++    let DriverProcess {
++        process,
++        stdout_tx,
++        exit_tx,
++        output_buffer,
++    } = driver_process(/*channel_capacity*/ 8).await?;
++    insert_process_entry(
++        &session,
++        &turn,
++        Arc::clone(&process),
++        process_id,
++        "call-release",
++        "release-proof",
++        /*tty*/ false,
++    )
++    .await;
++    let context = test_context(&session, &turn, "call-release");
++    start_streaming_output(&process, &context);
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone().into();
++    spawn_exit_watcher(
++        Arc::clone(&process),
++        &context,
++        vec!["release-proof".to_string()],
++        cwd,
++        process_id,
++        /*plugin_attribution*/ None,
++        output_buffer,
++        Instant::now(),
++        /*network_denial_monitor*/ None,
++        /*plugin_metrics_sidecar*/ None,
++        Some(manager.watcher_receipt_hook(receipt_id, owner.clone())),
++    );
++
++    manager
++        .release_completion_receipt(receipt_id, &owner)
++        .await?;
++    assert_eq!(
++        manager.receipt_status(receipt_id, &owner),
++        Ok(ReceiptStatus::Cancelled {
++            reason: CancellationReason::Released,
++        })
++    );
++    assert!(!process.has_exited(), "release must not kill the process");
++    assert!(
++        manager
++            .process_store
++            .lock()
++            .await
++            .processes
++            .contains_key(&process_id),
++        "release must keep the process entry"
++    );
++
++    // A later exit queues nothing.
++    exit_tx.send(0).expect("send exit");
++    drop(stdout_tx);
++    await_command_end(&rx_event).await?;
++    assert_eq!(
++        manager.receipt_status(receipt_id, &owner),
++        Ok(ReceiptStatus::Cancelled {
++            reason: CancellationReason::Released,
++        })
++    );
++    assert_eq!(
++        manager.lease_pushed_completion(receipt_id, &owner),
++        Err(ReceiptError::Cancelled {
++            reason: CancellationReason::Released,
++        })
++    );
++
++    // Unknown and foreign releases are refused.
++    let separate = CompletionReceiptStore::default();
++    let unknown_owner =
++        manager.receipt_owner_for(&test_context(&session, &turn, "call-release"))?;
++    let unknown_id = separate.reserve(unknown_owner.clone())?;
++    assert_eq!(
++        manager
++            .release_completion_receipt(unknown_id, &unknown_owner)
++            .await,
++        Err(ReceiptError::UnknownReceipt)
++    );
++    let other_manager = UnifiedExecProcessManager::default();
++    for foreign_owner in foreign_receipt_owners(
++        session.thread_id,
++        other_manager.receipt_generation,
++        "call-release",
++    ) {
++        assert_eq!(
++            manager
++                .release_completion_receipt(receipt_id, &foreign_owner)
++                .await,
++            Err(ReceiptError::ForeignOwner)
++        );
++    }
++    // Releasing again is idempotent.
++    assert_eq!(
++        manager.release_completion_receipt(receipt_id, &owner).await,
++        Ok(())
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn terminate_process_cancels_before_killing() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let (receipt_id, owner) =
++        reserve_and_arm(manager, &session, &turn, "call-terminate", process_id).await;
++    let backend = GatedExecProcess::new(process_id);
++    backend.block_terminate.store(true, Ordering::SeqCst);
++    let process = gated_unified_process(Arc::clone(&backend)).await?;
++    insert_process_entry(
++        &session,
++        &turn,
++        process,
++        process_id,
++        "call-terminate",
++        "terminate-proof",
++        /*tty*/ false,
++    )
++    .await;
++
++    let terminate_session = Arc::clone(&session);
++    let terminate_task = tokio::spawn(async move {
++        terminate_session
++            .services
++            .unified_exec_manager
++            .terminate_process(process_id)
++            .await
++    });
++    await_flag(&backend.terminate_called).await;
++    // The kill is blocked inside the backend: cancellation precedes it.
++    assert_eq!(
++        manager.receipt_status(receipt_id, &owner),
++        Ok(ReceiptStatus::Cancelled {
++            reason: CancellationReason::OwnerStopped,
++        })
++    );
++    backend.release_terminate.notify_one();
++    assert!(
++        tokio::time::timeout(Duration::from_secs(5), terminate_task)
++            .await
++            .expect("terminate should finish")
++            .expect("terminate task should not panic"),
++        "terminate should succeed"
++    );
++    assert!(
++        !manager
++            .process_store
++            .lock()
++            .await
++            .processes
++            .contains_key(&process_id)
++    );
++    assert_eq!(manager.receipt_capacity_used().await?, 0);
++    assert_eq!(
++        manager.lease_pushed_completion(receipt_id, &owner),
++        Err(ReceiptError::Cancelled {
++            reason: CancellationReason::OwnerStopped,
++        })
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn interrupt_cancels_before_signalling() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let (receipt_id, owner) =
++        reserve_and_arm(manager, &session, &turn, "call-interrupt", process_id).await;
++    let backend = GatedExecProcess::new(process_id);
++    backend.block_signal.store(true, Ordering::SeqCst);
++    let process = gated_unified_process(Arc::clone(&backend)).await?;
++    insert_process_entry(
++        &session,
++        &turn,
++        process,
++        process_id,
++        "call-interrupt",
++        "interrupt-proof",
++        /*tty*/ false,
++    )
++    .await;
++
++    let stdin_session = Arc::clone(&session);
++    let stdin_turn = Arc::clone(&turn);
++    let stdin_task = tokio::spawn(async move {
++        write_stdin_for_hooks(
++            &stdin_session,
++            &stdin_turn,
++            process_id,
++            "\u{3}",
++            /*yield_time_ms*/ 250,
++        )
++        .await
++    });
++    await_flag(&backend.signal_called).await;
++    // The signal is blocked inside the backend: cancellation precedes it.
++    assert_eq!(
++        manager.receipt_status(receipt_id, &owner),
++        Ok(ReceiptStatus::Cancelled {
++            reason: CancellationReason::Interrupted,
++        })
++    );
++    backend.release_signal.notify_one();
++    let response = tokio::time::timeout(Duration::from_secs(5), stdin_task)
++        .await
++        .expect("write_stdin should finish")
++        .expect("write_stdin task should not panic")?;
++    assert_eq!(response.process_id, Some(process_id));
++    assert_eq!(
++        manager.lease_pushed_completion(receipt_id, &owner),
++        Err(ReceiptError::Cancelled {
++            reason: CancellationReason::Interrupted,
++        })
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn shutdown_cancels_all_receipts_and_frees_slots() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let mut backends = Vec::new();
++    let mut bound = Vec::new();
++    for (index, call_id) in ["call-shutdown-a", "call-shutdown-b"]
++        .into_iter()
++        .enumerate()
++    {
++        let process_id = manager.allocate_process_id().await;
++        bound.push(reserve_and_arm(manager, &session, &turn, call_id, process_id).await);
++        let backend = GatedExecProcess::new(process_id);
++        let process = gated_unified_process(Arc::clone(&backend)).await?;
++        insert_process_entry(
++            &session,
++            &turn,
++            process,
++            process_id,
++            call_id,
++            &format!("shutdown-proof-{index}"),
++            /*tty*/ false,
++        )
++        .await;
++        backends.push(backend);
++    }
++    let (sampled_id, sampled_owner) = sampled_output_receipt(
++        &session,
++        &turn,
++        "call-shutdown-sampled",
++        /*process_id*/ -6000,
++        b"shutdown-sampled",
++    )
++    .await?;
++    assert_eq!(manager.receipt_capacity_used().await?, 3);
++
++    manager.terminate_all_processes().await;
++
++    for backend in &backends {
++        await_flag(&backend.terminate_called).await;
++    }
++    for (receipt_id, owner) in &bound {
++        assert_eq!(
++            manager.receipt_status(*receipt_id, owner),
++            Ok(ReceiptStatus::Cancelled {
++                reason: CancellationReason::Shutdown,
++            })
++        );
++    }
++    assert_eq!(manager.receipt_capacity_used().await?, 0);
++    assert_eq!(
++        manager
++            .read_retained_output(sampled_id, &sampled_owner)
++            .await,
++        Err(ReceiptError::AlreadyConsumed)
++    );
++    for index in 0..MAX_COMPLETION_RECEIPTS {
++        let context = test_context(&session, &turn, &format!("call-shutdown-fill-{index}"));
++        let owner = manager.receipt_owner_for(&context)?;
++        manager
++            .reserve_completion_receipt(owner, -(7000 + index as i32))
++            .await?;
++    }
++    Ok(())
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn default_launches_reserve_no_receipts() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++    let (session, turn, _rx_event) = hook_test_session().await;
++    for index in 0..70 {
++        let response = exec_command_for_hooks(
++            &session,
++            &turn,
++            &format!("call-default-{index}"),
++            &format!("echo default-{index}"),
++            /*yield_time_ms*/ 5_000,
++            ExecCompletionMode::Default,
++        )
++        .await?;
++        assert_eq!(response.process_id, None);
++        assert_eq!(response.exit_code, Some(0));
++    }
++
++    let manager = &session.services.unified_exec_manager;
++    // A live default launch binds no receipt either: inline delivery frees
++    // slots, so only a yielded process distinguishes default from opted-in.
++    let live = exec_command_for_hooks(
++        &session,
++        &turn,
++        "call-default-live",
++        "sleep 30",
++        /*yield_time_ms*/ 250,
++        ExecCompletionMode::Default,
++    )
++    .await?;
++    let live_pid = live.process_id.expect("live default process should yield");
++    assert!(
++        manager.receipt_for_process(live_pid).await.is_none(),
++        "default launch must not bind a receipt"
++    );
++    assert!(manager.terminate_process(live_pid).await);
++
++    assert_eq!(manager.receipt_capacity_used().await?, 0);
++    for index in 0..MAX_COMPLETION_RECEIPTS {
++        let context = test_context(&session, &turn, &format!("call-default-fill-{index}"));
++        let owner = manager.receipt_owner_for(&context)?;
++        manager
++            .reserve_completion_receipt(owner, -(8000 + index as i32))
++            .await?;
++    }
++    Ok(())
++}
+diff --git a/codex-rs/core/src/unified_exec/receipt_output.rs b/codex-rs/core/src/unified_exec/receipt_output.rs
+new file mode 100644
+index 0000000000..cb84385902
+--- /dev/null
++++ b/codex-rs/core/src/unified_exec/receipt_output.rs
+@@ -0,0 +1,196 @@
++//! Per-receipt retained terminal output for opted-in exec completions.
++//!
++//! Retained output survives removal of the process-store entry on exit and is
++//! readable by receipt id. Storage is bounded: up to 1 MiB is kept verbatim,
++//! larger transcripts are kept as head + tail with an explicit truncation
++//! indicator and the omitted byte count.
++//
++// Lookup and snapshot types serve the later exec_notification story and are
++// covered by tests until then.
++#![allow(dead_code)]
++
++use std::collections::HashMap;
++
++use super::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
++use super::completion_receipt::ReceiptId;
++use super::completion_receipt::ReceiptOwner;
++
++/// Snapshot of retained terminal output returned to a matching owner.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) struct RetainedOutputSnapshot {
++    /// Retained bytes: the full transcript, or head ++ tail when truncated.
++    pub(crate) bytes: Vec<u8>,
++    /// True when middle bytes were omitted to fit the cap.
++    pub(crate) truncated: bool,
++    /// Number of transcript bytes omitted from the middle.
++    pub(crate) omitted_bytes: usize,
++}
++
++/// Outcome of an owner-checked retention lookup.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) enum RetentionLookup {
++    Present {
++        bytes: Vec<u8>,
++        omitted_bytes: usize,
++    },
++    Retired,
++    Absent,
++    ForeignOwner,
++}
++
++struct PendingOutput {
++    owner: ReceiptOwner,
++    bytes: Vec<u8>,
++    omitted_bytes: usize,
++}
++
++struct SampledOutput {
++    owner: ReceiptOwner,
++    bytes: Vec<u8>,
++    omitted_bytes: usize,
++    sampled_seq: u64,
++}
++
++struct RetiredMarker {
++    owner: ReceiptOwner,
++}
++
++/// Retention state for one runtime generation, owned by the process manager.
++///
++/// Output is inserted while its receipt is unsampled (queued or leased) and
++/// moves to `sampled` when the single claim is acknowledged. A sampled entry
++/// keeps holding its capacity slot until release or least-recently-sampled
++/// retirement; retired entries keep only their owner so reads report
++/// `Retired` explicitly instead of succeeding or looking unknown.
++#[derive(Default)]
++pub(crate) struct RetentionState {
++    pending: HashMap<ReceiptId, PendingOutput>,
++    sampled: HashMap<ReceiptId, SampledOutput>,
++    retired: HashMap<ReceiptId, RetiredMarker>,
++}
++
++impl RetentionState {
++    /// Inserts terminal output for an unsampled receipt, enforcing the cap.
++    ///
++    /// The snapshot source is already capped in the common case; oversized
++    /// input is still reduced to head + tail here so retained bytes never
++    /// exceed the cap and the omitted count stays exact.
++    pub(crate) fn insert_pending(
++        &mut self,
++        receipt_id: ReceiptId,
++        owner: ReceiptOwner,
++        bytes: Vec<u8>,
++        omitted_bytes: usize,
++    ) {
++        let (bytes, omitted_bytes) = enforce_retention_cap(bytes, omitted_bytes);
++        self.pending.insert(
++            receipt_id,
++            PendingOutput {
++                owner,
++                bytes,
++                omitted_bytes,
++            },
++        );
++    }
++
++    /// Moves pending output to sampled holding its slot. False if none.
++    pub(crate) fn move_to_sampled(&mut self, receipt_id: ReceiptId, sampled_seq: u64) -> bool {
++        let Some(pending) = self.pending.remove(&receipt_id) else {
++            return false;
++        };
++        self.sampled.insert(
++            receipt_id,
++            SampledOutput {
++                owner: pending.owner,
++                bytes: pending.bytes,
++                omitted_bytes: pending.omitted_bytes,
++                sampled_seq,
++            },
++        );
++        true
++    }
++
++    /// Drops retained output (or a retired marker) in every state.
++    pub(crate) fn drop(&mut self, receipt_id: ReceiptId) -> bool {
++        let mut removed = self.pending.remove(&receipt_id).is_some();
++        removed |= self.sampled.remove(&receipt_id).is_some();
++        removed |= self.retired.remove(&receipt_id).is_some();
++        removed
++    }
++
++    /// Retires the least-recently-sampled output to free its slot.
++    pub(crate) fn retire_least_recently_sampled(&mut self) -> Option<ReceiptId> {
++        let victim = self
++            .sampled
++            .iter()
++            .min_by_key(|(_, output)| output.sampled_seq)
++            .map(|(receipt_id, _)| *receipt_id)?;
++        let output = self.sampled.remove(&victim)?;
++        self.retired.insert(
++            victim,
++            RetiredMarker {
++                owner: output.owner,
++            },
++        );
++        Some(victim)
++    }
++
++    /// Looks up retained output, refusing foreign owners in every state.
++    pub(crate) fn lookup(&self, receipt_id: ReceiptId, owner: &ReceiptOwner) -> RetentionLookup {
++        if let Some(pending) = self.pending.get(&receipt_id) {
++            return if pending.owner == *owner {
++                RetentionLookup::Present {
++                    bytes: pending.bytes.clone(),
++                    omitted_bytes: pending.omitted_bytes,
++                }
++            } else {
++                RetentionLookup::ForeignOwner
++            };
++        }
++        if let Some(sampled) = self.sampled.get(&receipt_id) {
++            return if sampled.owner == *owner {
++                RetentionLookup::Present {
++                    bytes: sampled.bytes.clone(),
++                    omitted_bytes: sampled.omitted_bytes,
++                }
++            } else {
++                RetentionLookup::ForeignOwner
++            };
++        }
++        if let Some(retired) = self.retired.get(&receipt_id) {
++            return if retired.owner == *owner {
++                RetentionLookup::Retired
++            } else {
++                RetentionLookup::ForeignOwner
++            };
++        }
++        RetentionLookup::Absent
++    }
++
++    pub(crate) fn sampled_count(&self) -> usize {
++        self.sampled.len()
++    }
++
++    pub(crate) fn clear(&mut self) {
++        self.pending.clear();
++        self.sampled.clear();
++        self.retired.clear();
++    }
++}
++
++fn enforce_retention_cap(bytes: Vec<u8>, omitted_bytes: usize) -> (Vec<u8>, usize) {
++    if bytes.len() <= UNIFIED_EXEC_OUTPUT_MAX_BYTES {
++        return (bytes, omitted_bytes);
++    }
++    let head_budget = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 2;
++    let tail_budget = UNIFIED_EXEC_OUTPUT_MAX_BYTES.saturating_sub(head_budget);
++    let mut capped = Vec::with_capacity(UNIFIED_EXEC_OUTPUT_MAX_BYTES);
++    capped.extend_from_slice(&bytes[..head_budget]);
++    capped.extend_from_slice(&bytes[bytes.len().saturating_sub(tail_budget)..]);
++    let omitted_bytes = omitted_bytes.saturating_add(bytes.len() - UNIFIED_EXEC_OUTPUT_MAX_BYTES);
++    (capped, omitted_bytes)
++}
++
++#[cfg(test)]
++#[path = "receipt_output_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/unified_exec/receipt_output_tests.rs b/codex-rs/core/src/unified_exec/receipt_output_tests.rs
+new file mode 100644
+index 0000000000..73bff6c62f
+--- /dev/null
++++ b/codex-rs/core/src/unified_exec/receipt_output_tests.rs
+@@ -0,0 +1,211 @@
++use super::*;
++use crate::unified_exec::completion_receipt::CompletionReceiptStore;
++use codex_protocol::ThreadId;
++use pretty_assertions::assert_eq;
++
++fn test_owner(call_id: &str) -> ReceiptOwner {
++    ReceiptOwner::new(
++        ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_00a1),
++        /*runtime_generation*/ 7,
++        call_id.to_string(),
++    )
++    .expect("test owner should be valid")
++}
++
++fn reserve_id(store: &CompletionReceiptStore, owner: &ReceiptOwner) -> ReceiptId {
++    store
++        .reserve(owner.clone())
++        .expect("reservation should succeed")
++}
++
++#[test]
++fn retained_output_within_cap_is_verbatim() {
++    let store = CompletionReceiptStore::default();
++    let owner = test_owner("call-verbatim");
++    let receipt_id = reserve_id(&store, &owner);
++    let mut retention = RetentionState::default();
++
++    retention.insert_pending(
++        receipt_id,
++        owner.clone(),
++        b"verbatim-bytes".to_vec(),
++        /*omitted_bytes*/ 0,
++    );
++
++    assert_eq!(
++        retention.lookup(receipt_id, &owner),
++        RetentionLookup::Present {
++            bytes: b"verbatim-bytes".to_vec(),
++            omitted_bytes: 0,
++        }
++    );
++    assert_eq!(retention.sampled_count(), 0);
++}
++
++#[test]
++fn retained_output_over_cap_keeps_head_tail_and_omitted_count() {
++    let store = CompletionReceiptStore::default();
++    let owner = test_owner("call-head-tail");
++    let receipt_id = reserve_id(&store, &owner);
++    let mut retention = RetentionState::default();
++    let mut oversized = vec![b'H'; UNIFIED_EXEC_OUTPUT_MAX_BYTES / 2];
++    oversized.extend(vec![b'M'; UNIFIED_EXEC_OUTPUT_MAX_BYTES]);
++    oversized.extend(vec![b'T'; UNIFIED_EXEC_OUTPUT_MAX_BYTES / 2]);
++
++    retention.insert_pending(
++        receipt_id,
++        owner.clone(),
++        oversized,
++        /*omitted_bytes*/ 100,
++    );
++
++    let RetentionLookup::Present {
++        bytes,
++        omitted_bytes,
++    } = retention.lookup(receipt_id, &owner)
++    else {
++        panic!("oversized output should be retained as capped head and tail");
++    };
++    assert_eq!(bytes.len(), UNIFIED_EXEC_OUTPUT_MAX_BYTES);
++    assert_eq!(&bytes[..8], b"HHHHHHHH");
++    assert_eq!(&bytes[bytes.len() - 8..], b"TTTTTTTT");
++    assert_eq!(
++        omitted_bytes,
++        100 + UNIFIED_EXEC_OUTPUT_MAX_BYTES,
++        "middle bytes plus the incoming omitted count stay exact"
++    );
++}
++
++#[test]
++fn retained_bytes_never_exceed_cap() {
++    let store = CompletionReceiptStore::default();
++    for (index, size) in [
++        UNIFIED_EXEC_OUTPUT_MAX_BYTES,
++        UNIFIED_EXEC_OUTPUT_MAX_BYTES + 1,
++        3 * UNIFIED_EXEC_OUTPUT_MAX_BYTES,
++    ]
++    .into_iter()
++    .enumerate()
++    {
++        let owner = test_owner(&format!("call-cap-{index}"));
++        let receipt_id = reserve_id(&store, &owner);
++        let mut retention = RetentionState::default();
++        retention.insert_pending(
++            receipt_id,
++            owner.clone(),
++            vec![b'x'; size],
++            /*omitted_bytes*/ 0,
++        );
++        let RetentionLookup::Present {
++            bytes,
++            omitted_bytes,
++        } = retention.lookup(receipt_id, &owner)
++        else {
++            panic!("output of {size} bytes should be retained");
++        };
++        assert!(bytes.len() <= UNIFIED_EXEC_OUTPUT_MAX_BYTES);
++        assert_eq!(
++            bytes.len() + omitted_bytes,
++            size,
++            "retained plus omitted must account for every byte"
++        );
++    }
++}
++
++#[test]
++fn pending_output_moves_to_sampled_and_retires_least_recently_sampled() {
++    let store = CompletionReceiptStore::default();
++    let first_owner = test_owner("call-first");
++    let second_owner = test_owner("call-second");
++    let first_id = reserve_id(&store, &first_owner);
++    let second_id = reserve_id(&store, &second_owner);
++    let mut retention = RetentionState::default();
++    retention.insert_pending(first_id, first_owner.clone(), b"first".to_vec(), 0);
++    retention.insert_pending(second_id, second_owner.clone(), b"second".to_vec(), 0);
++
++    assert!(retention.move_to_sampled(first_id, /*sampled_seq*/ 1));
++    assert!(retention.move_to_sampled(second_id, /*sampled_seq*/ 2));
++    assert!(!retention.move_to_sampled(first_id, /*sampled_seq*/ 3));
++    assert_eq!(retention.sampled_count(), 2);
++
++    assert_eq!(retention.retire_least_recently_sampled(), Some(first_id));
++    assert_eq!(retention.sampled_count(), 1);
++    assert_eq!(
++        retention.lookup(first_id, &first_owner),
++        RetentionLookup::Retired
++    );
++    assert_eq!(
++        retention.lookup(second_id, &second_owner),
++        RetentionLookup::Present {
++            bytes: b"second".to_vec(),
++            omitted_bytes: 0,
++        }
++    );
++    assert_eq!(retention.retire_least_recently_sampled(), Some(second_id));
++    assert_eq!(retention.retire_least_recently_sampled(), None);
++}
++
++#[test]
++fn retention_lookup_refuses_foreign_owners_in_every_state() {
++    let store = CompletionReceiptStore::default();
++    let owner = test_owner("call-owned");
++    let foreign = ReceiptOwner::new(
++        ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_00b2),
++        /*runtime_generation*/ 7,
++        "call-owned",
++    )
++    .expect("foreign owner should be valid");
++    let receipt_id = reserve_id(&store, &owner);
++    let mut retention = RetentionState::default();
++    retention.insert_pending(receipt_id, owner.clone(), b"owned".to_vec(), 0);
++
++    assert_eq!(
++        retention.lookup(receipt_id, &foreign),
++        RetentionLookup::ForeignOwner
++    );
++    assert!(retention.move_to_sampled(receipt_id, /*sampled_seq*/ 1));
++    assert_eq!(
++        retention.lookup(receipt_id, &foreign),
++        RetentionLookup::ForeignOwner
++    );
++    assert_eq!(retention.retire_least_recently_sampled(), Some(receipt_id));
++    assert_eq!(
++        retention.lookup(receipt_id, &foreign),
++        RetentionLookup::ForeignOwner
++    );
++    assert_eq!(
++        retention.lookup(receipt_id, &owner),
++        RetentionLookup::Retired
++    );
++}
++
++#[test]
++fn retention_drop_removes_output_in_every_state() {
++    let store = CompletionReceiptStore::default();
++    let mut retention = RetentionState::default();
++    let pending_owner = test_owner("call-pending");
++    let sampled_owner = test_owner("call-sampled");
++    let retired_owner = test_owner("call-retired");
++    let pending_id = reserve_id(&store, &pending_owner);
++    let sampled_id = reserve_id(&store, &sampled_owner);
++    let retired_id = reserve_id(&store, &retired_owner);
++    retention.insert_pending(pending_id, pending_owner.clone(), b"p".to_vec(), 0);
++    retention.insert_pending(sampled_id, sampled_owner.clone(), b"s".to_vec(), 0);
++    retention.insert_pending(retired_id, retired_owner.clone(), b"r".to_vec(), 0);
++    assert!(retention.move_to_sampled(sampled_id, /*sampled_seq*/ 1));
++    assert!(retention.move_to_sampled(retired_id, /*sampled_seq*/ 2));
++    assert_eq!(retention.retire_least_recently_sampled(), Some(sampled_id));
++
++    assert!(retention.drop(pending_id));
++    assert!(retention.drop(sampled_id));
++    assert!(retention.drop(retired_id));
++    assert!(!retention.drop(pending_id));
++    for (receipt_id, owner) in [
++        (pending_id, &pending_owner),
++        (sampled_id, &sampled_owner),
++        (retired_id, &retired_owner),
++    ] {
++        assert_eq!(retention.lookup(receipt_id, owner), RetentionLookup::Absent);
++    }
++    assert_eq!(retention.sampled_count(), 0);
++}

@@ -1,0 +1,98 @@
+[
+  {
+    "ac": 1,
+    "name": "ac1-publish-on-exit-token-before-drain",
+    "patch": "--- a/codex-rs/core/src/unified_exec/async_watcher.rs\n+++ b/codex-rs/core/src/unified_exec/async_watcher.rs\n@@ -182,3 +182,12 @@\n     tokio::spawn(async move {\n         exit_token.cancelled().await;\n+        if let Some(hook) = receipt_hook.as_ref() {\n+            let completion = TerminalCompletion {\n+                exit_code: process.exit_code(),\n+                timed_out: process.timed_out(),\n+            };\n+            let _ = hook\n+                .store\n+                .publish_exit(hook.receipt_id, &hook.owner, completion);\n+        }\n         output_drained.notified().await;\n",
+    "test": "receipt_exit_publishes_only_after_drain_denial_and_classification"
+  },
+  {
+    "ac": 1,
+    "name": "ac1-failed-exit-reports-minus-one",
+    "patch": "--- a/codex-rs/core/src/unified_exec/async_watcher.rs\n+++ b/codex-rs/core/src/unified_exec/async_watcher.rs\n@@ -199,5 +199,5 @@\n             let completion = match failure_message.as_ref() {\n                 Some(_) => TerminalCompletion {\n-                    exit_code: None,\n+                    exit_code: Some(-1),\n                     timed_out: process.timed_out(),\n                 },\n",
+    "test": "receipt_failed_exit_maps_to_failed_completion"
+  },
+  {
+    "ac": 1,
+    "name": "ac1-timed-out-dropped-to-false",
+    "patch": "--- a/codex-rs/core/src/unified_exec/async_watcher.rs\n+++ b/codex-rs/core/src/unified_exec/async_watcher.rs\n@@ -204,4 +204,4 @@\n                 None => TerminalCompletion {\n                     exit_code: process.exit_code(),\n-                    timed_out: process.timed_out(),\n+                    timed_out: false,\n                 },\n",
+    "test": "receipt_exit_preserves_timed_out"
+  },
+  {
+    "ac": 2,
+    "name": "ac2-success-inline-weakened-to-arm",
+    "patch": "--- a/codex-rs/core/src/unified_exec/process_manager.rs\n+++ b/codex-rs/core/src/unified_exec/process_manager.rs\n@@ -873,14 +873,10 @@\n                     )\n                     .await;\n                     if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {\n-                        self.settle_opted_in_inline(\n-                            *receipt_id,\n-                            owner,\n-                            TerminalCompletion {\n-                                exit_code,\n-                                timed_out: process.timed_out(),\n-                            },\n-                        )\n-                        .await;\n+                        let _ = self.receipt_store.resolve_initial_response(\n+                            *receipt_id,\n+                            owner,\n+                            InitialResponseDecision::Arm,\n+                        );\n                     }\n                     (None, exit_code)\n@@ -924,14 +924,10 @@\n             }\n             let exit_code = process.exit_code();\n             if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {\n-                self.settle_opted_in_inline(\n-                    *receipt_id,\n-                    owner,\n-                    TerminalCompletion {\n-                        exit_code,\n-                        timed_out: process.timed_out(),\n-                    },\n-                )\n-                .await;\n+                let _ = self.receipt_store.resolve_initial_response(\n+                    *receipt_id,\n+                    owner,\n+                    InitialResponseDecision::Arm,\n+                );\n             }\n             let exit = exit_code.unwrap_or(-1);\n",
+    "test": "opted_in_exit_before_decision_returns_inline_and_frees_slot"
+  },
+  {
+    "ac": 2,
+    "name": "ac2-capacity-refusal-proceeds-as-default",
+    "patch": "--- a/codex-rs/core/src/unified_exec/process_manager.rs\n+++ b/codex-rs/core/src/unified_exec/process_manager.rs\n@@ -570,6 +570,6 @@\n                     Ok(receipt_id) => Some((receipt_id, owner)),\n                     Err(ReceiptError::CapacityExceeded { capacity }) => {\n-                        self.release_process_id(request.process_id).await;\n-                        return Err(UnifiedExecError::ReceiptCapacityExceeded { capacity });\n+                        let _ = capacity;\n+                        None\n                     }\n                     Err(err) => {\n",
+    "test": "opted_in_exec_refuses_65th_before_spawning"
+  },
+  {
+    "ac": 3,
+    "name": "ac3-retention-cap-doubled",
+    "patch": "--- a/codex-rs/core/src/unified_exec/receipt_output.rs\n+++ b/codex-rs/core/src/unified_exec/receipt_output.rs\n@@ -181,9 +181,9 @@\n fn enforce_retention_cap(bytes: Vec<u8>, omitted_bytes: usize) -> (Vec<u8>, usize) {\n-    if bytes.len() <= UNIFIED_EXEC_OUTPUT_MAX_BYTES {\n+    if bytes.len() <= 2 * UNIFIED_EXEC_OUTPUT_MAX_BYTES {\n         return (bytes, omitted_bytes);\n     }\n-    let head_budget = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 2;\n-    let tail_budget = UNIFIED_EXEC_OUTPUT_MAX_BYTES.saturating_sub(head_budget);\n+    let head_budget = UNIFIED_EXEC_OUTPUT_MAX_BYTES;\n+    let tail_budget = UNIFIED_EXEC_OUTPUT_MAX_BYTES;\n     let mut capped = Vec::with_capacity(UNIFIED_EXEC_OUTPUT_MAX_BYTES);\n     capped.extend_from_slice(&bytes[..head_budget]);\n     capped.extend_from_slice(&bytes[bytes.len().saturating_sub(tail_budget)..]);\n",
+    "test": "retained_output_over_cap_keeps_head_tail_and_omitted_count"
+  },
+  {
+    "ac": 3,
+    "name": "ac3-omitted-count-subtracted",
+    "patch": "--- a/codex-rs/core/src/unified_exec/receipt_output.rs\n+++ b/codex-rs/core/src/unified_exec/receipt_output.rs\n@@ -189,3 +189,3 @@\n     capped.extend_from_slice(&bytes[bytes.len().saturating_sub(tail_budget)..]);\n-    let omitted_bytes = omitted_bytes.saturating_add(bytes.len() - UNIFIED_EXEC_OUTPUT_MAX_BYTES);\n+    let omitted_bytes = omitted_bytes.saturating_sub(bytes.len() - UNIFIED_EXEC_OUTPUT_MAX_BYTES);\n     (capped, omitted_bytes)\n",
+    "test": "retained_output_over_cap_keeps_head_tail_and_omitted_count"
+  },
+  {
+    "ac": 4,
+    "name": "ac4-retire-most-recently-sampled",
+    "patch": "--- a/codex-rs/core/src/unified_exec/receipt_output.rs\n+++ b/codex-rs/core/src/unified_exec/receipt_output.rs\n@@ -123,5 +123,5 @@\n         let victim = self\n             .sampled\n             .iter()\n-            .min_by_key(|(_, output)| output.sampled_seq)\n+            .max_by_key(|(_, output)| output.sampled_seq)\n             .map(|(receipt_id, _)| *receipt_id)?;\n",
+    "test": "new_reservation_retires_least_recently_sampled_output"
+  },
+  {
+    "ac": 4,
+    "name": "ac4-capacity-counts-active-only",
+    "patch": "--- a/codex-rs/core/src/unified_exec/receipt_hooks.rs\n+++ b/codex-rs/core/src/unified_exec/receipt_hooks.rs\n@@ -151,3 +151,3 @@\n         let mut hooks = self.receipt_hooks.lock().await;\n-        let used = self.receipt_store.active_len()? + hooks.retention.sampled_count();\n+        let used = self.receipt_store.active_len()?;\n         if used >= MAX_COMPLETION_RECEIPTS\n",
+    "test": "new_reservation_retires_least_recently_sampled_output"
+  },
+  {
+    "ac": 5,
+    "name": "ac5-stdin-claim-leases-without-acknowledge",
+    "patch": "--- a/codex-rs/core/src/unified_exec/receipt_hooks.rs\n+++ b/codex-rs/core/src/unified_exec/receipt_hooks.rs\n@@ -332,13 +332,9 @@\n         let Ok(lease) = self.receipt_store.lease_for_sampling(\n             receipt_id,\n             &owner,\n             SamplingSource::TerminalStdinOutput,\n         ) else {\n             return;\n         };\n-        let Ok(_) = self.receipt_store.acknowledge_sampled(&lease) else {\n-            return;\n-        };\n-        let sampled_seq = hooks.next_sample_seq();\n-        hooks.retention.move_to_sampled(receipt_id, sampled_seq);\n+        let _ = lease;\n     }\n",
+    "test": "terminal_stdin_claim_consumes_the_single_claim_first"
+  },
+  {
+    "ac": 6,
+    "name": "ac6-terminate-cancels-with-released",
+    "patch": "--- a/codex-rs/core/src/unified_exec/process_manager.rs\n+++ b/codex-rs/core/src/unified_exec/process_manager.rs\n@@ -2011,5 +2011,5 @@\n             (Arc::clone(&entry.process), entry.process.has_exited())\n         };\n \n-        self.cancel_receipt_for_process(process_id, CancellationReason::OwnerStopped)\n+        self.cancel_receipt_for_process(process_id, CancellationReason::Released)\n             .await;\n         if !already_exited && process.terminate_confirmed().await.is_err() {\n",
+    "test": "terminate_process_cancels_before_killing"
+  },
+  {
+    "ac": 6,
+    "name": "ac6-interrupt-cancels-with-released",
+    "patch": "--- a/codex-rs/core/src/unified_exec/process_manager.rs\n+++ b/codex-rs/core/src/unified_exec/process_manager.rs\n@@ -1128,4 +1128,4 @@\n                 if request.input == INTERRUPT {\n-                    self.cancel_receipt_for_process(process_id, CancellationReason::Interrupted)\n+                    self.cancel_receipt_for_process(process_id, CancellationReason::Released)\n                         .await;\n                     process.interrupt().await?;\n",
+    "test": "interrupt_cancels_before_signalling"
+  },
+  {
+    "ac": 6,
+    "name": "ac6-shutdown-cancels-with-released",
+    "patch": "--- a/codex-rs/core/src/unified_exec/process_manager.rs\n+++ b/codex-rs/core/src/unified_exec/process_manager.rs\n@@ -1956,4 +1956,4 @@\n     pub(crate) async fn terminate_all_processes(&self) {\n-        self.cancel_all_completion_receipts(CancellationReason::Shutdown)\n+        self.cancel_all_completion_receipts(CancellationReason::Released)\n             .await;\n         let entries: Vec<ProcessEntry> = {\n",
+    "test": "shutdown_cancels_all_receipts_and_frees_slots"
+  },
+  {
+    "ac": 6,
+    "name": "ac6-release-cancels-with-owner-stopped",
+    "patch": "--- a/codex-rs/core/src/unified_exec/receipt_hooks.rs\n+++ b/codex-rs/core/src/unified_exec/receipt_hooks.rs\n@@ -261,4 +261,4 @@\n         match self\n             .receipt_store\n-            .cancel(receipt_id, owner, CancellationReason::Released)\n+            .cancel(receipt_id, owner, CancellationReason::OwnerStopped)\n         {\n",
+    "test": "release_cancels_receipt_and_keeps_process_running"
+  },
+  {
+    "ac": 6,
+    "name": "ac6-release-leaks-retained-output",
+    "patch": "--- a/codex-rs/core/src/unified_exec/receipt_hooks.rs\n+++ b/codex-rs/core/src/unified_exec/receipt_hooks.rs\n@@ -251,4 +251,3 @@\n             RetentionLookup::Present { .. } | RetentionLookup::Retired => {\n-                hooks.retention.drop(receipt_id);\n                 hooks.remove_binding(receipt_id);\n                 true\n             }\n",
+    "test": "release_frees_active_and_sampled_slots"
+  },
+  {
+    "ac": 7,
+    "name": "ac7-default-launch-forced-opt-in",
+    "patch": "--- a/codex-rs/core/src/unified_exec/process_manager.rs\n+++ b/codex-rs/core/src/unified_exec/process_manager.rs\n@@ -540,4 +540,10 @@\n     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {\n-        self.exec_command_inner(request, context, /*completion*/ None, completion_mode)\n+        let _ = completion_mode;\n+        self.exec_command_inner(\n+            request,\n+            context,\n+            /*completion*/ None,\n+            ExecCompletionMode::NotifyOnExit,\n+        )\n             .await\n     }\n",
+    "test": "default_launches_reserve_no_receipts"
+  }
+]
