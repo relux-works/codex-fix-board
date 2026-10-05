@@ -1,0 +1,3091 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index bae7604074..14fbb710c8 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -2923,6 +2923,7 @@ dependencies = [
+  "codex-feedback",
+  "codex-file-system",
+  "codex-git-utils",
++ "codex-goal-extension",
+  "codex-guardian-context",
+  "codex-guardian-reviewer",
+  "codex-history",
+@@ -3002,6 +3003,7 @@ dependencies = [
+  "sha1 0.10.6",
+  "shlex",
+  "similar",
++ "sqlx",
+  "tempfile",
+  "test-case",
+  "test-log",
+@@ -3501,6 +3503,7 @@ dependencies = [
+  "pretty_assertions",
+  "serde",
+  "serde_json",
++ "sqlx",
+  "tempfile",
+  "tokio",
+  "tracing",
+diff --git a/codex-rs/app-server/tests/suite/v2/goal_activity_tests.rs b/codex-rs/app-server/tests/suite/v2/goal_activity_tests.rs
+new file mode 100644
+index 0000000000..2ed37f378f
+--- /dev/null
++++ b/codex-rs/app-server/tests/suite/v2/goal_activity_tests.rs
+@@ -0,0 +1,98 @@
++use anyhow::Result;
++use app_test_support::MockResponsesConfig;
++use app_test_support::TestAppServer;
++use codex_app_server_protocol::ThreadStartParams;
++use codex_app_server_protocol::ThreadStartResponse;
++use codex_app_server_protocol::TurnCompletedNotification;
++use codex_app_server_protocol::TurnStartParams;
++use codex_app_server_protocol::TurnStartResponse;
++use codex_app_server_protocol::UserInput;
++use codex_features::Feature;
++use core_test_support::responses;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++use tempfile::TempDir;
++
++#[test_case::test_case(true; "created")]
++#[test_case::test_case(false; "refused")]
++#[tokio::test]
++async fn v2_create_goal_exposes_sleep_only_after_committed_success(success: bool) -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let mock = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse(vec![
++                responses::ev_function_call(
++                    "create",
++                    "create_goal",
++                    &json!({"objective": if success {"work"} else {""}}).to_string(),
++                ),
++                responses::ev_completed("r1"),
++            ]),
++            responses::sse(vec![
++                responses::ev_function_call("complete", "update_goal", r#"{"status":"complete"}"#),
++                responses::ev_completed("r2"),
++            ]),
++            responses::sse(vec![responses::ev_completed("r3")]),
++        ],
++    )
++    .await;
++    let home = TempDir::new()?;
++    let mut catalog = codex_models_manager::bundled_models_response()?;
++    let model = catalog
++        .models
++        .iter_mut()
++        .find(|m| m.slug == "gpt-5.5")
++        .expect("model");
++    model.experimental_supported_tools.retain(|t| t != "clock");
++    let path = home.path().join("models.json");
++    std::fs::write(&path, serde_json::to_vec(&catalog)?)?;
++    MockResponsesConfig::new(&server.uri())
++        .with_model("gpt-5.5")
++        .enable_feature(Feature::Goals)
++        .disable_feature(Feature::CurrentTimeReminder)
++        .with_root_config(&format!(
++            "model_catalog_json = {}",
++            serde_json::to_string(&path)?
++        ))
++        .write(home.path())?;
++    let mut app = TestAppServer::builder()
++        .with_codex_home(home.path())
++        .without_managed_config()
++        .build_initialized()
++        .await?;
++    let request = app
++        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
++        .await?;
++    let ThreadStartResponse { thread, .. } = app.read_response(request).await?;
++    let request = app
++        .send_turn_start_request(TurnStartParams {
++            thread_id: thread.id,
++            input: vec![UserInput::Text {
++                text: "create then complete".to_string(),
++                text_elements: Vec::new(),
++            }],
++            ..Default::default()
++        })
++        .await?;
++    let _: TurnStartResponse = app.read_response(request).await?;
++    let _: TurnCompletedNotification = app.read_notification("turn/completed").await?;
++    let requests = mock.requests();
++    assert_eq!(
++        requests
++            .iter()
++            .map(|r| r.tool_by_name("clock", "sleep").is_some())
++            .collect::<Vec<_>>(),
++        [false, success, false]
++    );
++    let output = requests[1]
++        .function_call_output_text("create")
++        .expect("create result");
++    assert_eq!(
++        serde_json::from_str::<serde_json::Value>(&output)
++            .ok()
++            .map(|v| v["goal"]["status"].clone()),
++        success.then(|| json!("active"))
++    );
++    Ok(())
++}
+diff --git a/codex-rs/app-server/tests/suite/v2/mod.rs b/codex-rs/app-server/tests/suite/v2/mod.rs
+index d248969036..d93cd76866 100644
+--- a/codex-rs/app-server/tests/suite/v2/mod.rs
++++ b/codex-rs/app-server/tests/suite/v2/mod.rs
+@@ -56,6 +56,8 @@ mod fs;
+ #[path = "gateway_oauth_tests.rs"]
+ mod gateway_oauth;
+ mod git_attribution;
++#[path = "goal_activity_tests.rs"]
++mod goal_activity;
+ mod guardian_v2;
+ mod history_notes_extension;
+ mod hooks_list;
+diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
+index 6b4eb94cfd..469a7716dd 100644
+--- a/codex-rs/core/Cargo.toml
++++ b/codex-rs/core/Cargo.toml
+@@ -140,6 +140,7 @@ openssl-sys = { workspace = true, features = ["vendored"] }
+ codex-shell-escalation = { workspace = true }
+ 
+ [dev-dependencies]
++codex-goal-extension = { workspace = true }
+ assert_cmd = { workspace = true }
+ assert_matches = { workspace = true }
+ codex-exec-server-test-support = { workspace = true }
+@@ -163,6 +164,7 @@ opentelemetry_sdk = { workspace = true, features = [
+     "metrics",
+ ] }
+ serial_test = { workspace = true }
++sqlx = { workspace = true }
+ tempfile = { workspace = true }
+ test-log = { workspace = true }
+ tracing-opentelemetry = { workspace = true }
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index bb1474feb5..f824a0dd9e 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -62,6 +62,7 @@ use crate::tools::router::ToolRouter;
+ use crate::tools::tool_namespaces_info::collect_tool_namespaces_info;
+ use codex_connectors::apps_config_from_layer_stack;
+ use codex_extension_api::ExtensionData;
++use codex_extension_api::GoalActivity;
+ use codex_features::Feature;
+ use codex_features::SleepToolMode;
+ use codex_login::AuthManager;
+@@ -110,6 +111,7 @@ struct CoreToolPlanContext<'a> {
+     tool_policy: &'a codex_extension_api::ToolPolicy,
+     turn_context: &'a TurnContext,
+     model_info: &'a ModelInfo,
++    goal_activity_present: bool,
+     environments: &'a TurnEnvironmentSnapshot,
+     mcp: &'a codex_mcp::McpBinding,
+     tool_suggest_candidates: Option<&'a crate::tools::router::ToolSuggestCandidates>,
+@@ -140,6 +142,11 @@ pub(crate) fn build_tool_router(
+         tool_policy: &session.tool_policy,
+         turn_context,
+         model_info,
++        goal_activity_present: session
++            .services
++            .thread_extension_data
++            .get::<GoalActivity>()
++            .is_some(),
+         environments,
+         mcp,
+         tool_suggest_candidates,
+@@ -285,6 +292,7 @@ pub(crate) fn build_core_tool_registry(
+         tool_policy: &Default::default(),
+         turn_context,
+         model_info,
++        goal_activity_present: false,
+         environments,
+         mcp,
+         tool_suggest_candidates,
+@@ -1242,7 +1250,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+                         .as_ref()
+                         .is_some_and(|config| config.sleep_tool)
+                 } else {
+-                    model_has_clock
++                    model_has_clock || context.goal_activity_present
+                 }
+             }
+         }
+diff --git a/codex-rs/core/tests/suite/current_time_reminder.rs b/codex-rs/core/tests/suite/current_time_reminder.rs
+index 72c79031c2..89f94d842d 100644
+--- a/codex-rs/core/tests/suite/current_time_reminder.rs
++++ b/codex-rs/core/tests/suite/current_time_reminder.rs
+@@ -18,9 +18,12 @@ use codex_core::TimeFuture;
+ use codex_core::TimeProvider;
+ use codex_core::TurnInputRequest;
+ use codex_core::config::CurrentTimeReminderConfig;
++use codex_extension_api::GoalActivity;
++use codex_extension_api::GoalActivityState;
+ use codex_features::CurrentTimeReminderDeliveryMode;
+ use codex_features::CurrentTimeSource;
+ use codex_features::Feature;
++use codex_features::SleepToolMode;
+ use codex_model_provider_info::built_in_model_providers;
+ use codex_protocol::ThreadId;
+ use codex_protocol::models::PermissionProfile;
+@@ -45,6 +48,7 @@ use core_test_support::skip_if_no_network;
+ use core_test_support::test_codex::test_codex;
+ use core_test_support::wait_for_event;
+ use pretty_assertions::assert_eq;
++use serde_json::Value;
+ use serde_json::json;
+ use test_case::test_case;
+ 
+@@ -131,6 +135,38 @@ fn current_time_reminders(request: &ResponsesRequest) -> Vec<String> {
+         .collect()
+ }
+ 
++fn goal_activity(state: GoalActivityState, revision: u64) -> GoalActivity {
++    GoalActivity {
++        goal_id: "goal-1".to_string(),
++        revision,
++        state,
++    }
++}
++
++fn tool_catalog_without_sleep(request: &ResponsesRequest) -> Vec<Value> {
++    let mut tools = request.body_json()["tools"]
++        .as_array()
++        .expect("request should contain tools")
++        .clone();
++    for tool in &mut tools {
++        if tool.get("type").and_then(Value::as_str) == Some("namespace")
++            && tool.get("name").and_then(Value::as_str) == Some("clock")
++            && let Some(children) = tool.get_mut("tools").and_then(Value::as_array_mut)
++        {
++            children.retain(|child| child.get("name").and_then(Value::as_str) != Some("sleep"));
++        }
++    }
++    tools.retain(|tool| {
++        tool.get("type").and_then(Value::as_str) != Some("namespace")
++            || tool.get("name").and_then(Value::as_str) != Some("clock")
++            || tool
++                .get("tools")
++                .and_then(Value::as_array)
++                .is_some_and(|children| !children.is_empty())
++    });
++    tools
++}
++
+ fn enable_current_time_reminder(
+     config: &mut codex_core::config::Config,
+     interval: u64,
+@@ -556,6 +592,210 @@ async fn sleep_tool_configuration_controls_registration(
+     Ok(())
+ }
+ 
++#[test_case(false; "direct_tools")]
++#[test_case(true; "code_mode")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn goal_activity_controls_model_driven_sleep_on_each_sampling_request(
++    code_mode: bool,
++) -> Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let responses = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
++            sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
++            sse(vec![ev_response_created("resp-3"), ev_completed("resp-3")]),
++            sse(vec![ev_response_created("resp-4"), ev_completed("resp-4")]),
++        ],
++    )
++    .await;
++    let test = test_codex()
++        .with_model_info_override("gpt-5.5", |model_info| {
++            model_info
++                .experimental_supported_tools
++                .retain(|tool| tool != "clock");
++        })
++        .with_config(move |config| {
++            config.model_reasoning_effort = Some(ReasoningEffort::High);
++            config
++                .features
++                .disable(Feature::CurrentTimeReminder)
++                .expect("test config should allow disabling current-time reminders");
++            config.sleep_tool_mode = SleepToolMode::ModelDriven;
++            if code_mode {
++                config
++                    .features
++                    .enable(Feature::CodeMode)
++                    .expect("test config should allow code mode");
++            }
++        })
++        .build_with_auto_env(&server)
++        .await?;
++
++    let thread_data = test.codex.thread_extension_data();
++    assert!(
++        thread_data
++            .insert("unrelated extension data".to_string())
++            .is_none()
++    );
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    assert!(
++        thread_data
++            .insert(goal_activity(
++                GoalActivityState::Active,
++                /*revision*/ 1
++            ))
++            .is_none()
++    );
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    assert!(
++        thread_data
++            .insert(goal_activity(
++                GoalActivityState::BudgetLimited,
++                /*revision*/ 2
++            ))
++            .is_some()
++    );
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    assert!(thread_data.remove::<GoalActivity>().is_some());
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    let requests = responses.requests();
++    assert_eq!(requests.len(), 4);
++    assert_eq!(
++        requests
++            .iter()
++            .map(|request| request.tool_by_name("clock", "sleep").is_some())
++            .collect::<Vec<_>>(),
++        [false, true, true, false]
++    );
++    let baseline_tools = tool_catalog_without_sleep(&requests[0]);
++    assert!(
++        requests
++            .iter()
++            .all(|request| tool_catalog_without_sleep(request) == baseline_tools)
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn disabled_sleep_tool_feature_wins_over_goal_activity() -> Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let responses = mount_sse_once(
++        &server,
++        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
++    )
++    .await;
++    let test = test_codex()
++        .with_model_info_override("gpt-5.5", |model_info| {
++            model_info
++                .experimental_supported_tools
++                .retain(|tool| tool != "clock");
++        })
++        .with_config(|config| {
++            config.model_reasoning_effort = Some(ReasoningEffort::High);
++            config
++                .features
++                .disable(Feature::CurrentTimeReminder)
++                .expect("test config should allow disabling current-time reminders");
++            config
++                .features
++                .disable(Feature::SleepTool)
++                .expect("test config should allow disabling the sleep tool");
++            config.sleep_tool_mode = SleepToolMode::ModelDriven;
++        })
++        .build_with_auto_env(&server)
++        .await?;
++    assert!(
++        test.codex
++            .thread_extension_data()
++            .insert(goal_activity(
++                GoalActivityState::Active,
++                /*revision*/ 1
++            ))
++            .is_none()
++    );
++
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    assert!(
++        responses
++            .single_request()
++            .tool_by_name("clock", "sleep")
++            .is_none()
++    );
++    Ok(())
++}
++
++#[test_case(Some(false), false; "explicit_false")]
++#[test_case(None, false; "missing_config")]
++#[test_case(Some(true), true; "explicit_true")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn current_time_reminder_sleep_setting_overrides_goal_activity(
++    sleep_tool: Option<bool>,
++    expected_sleep: bool,
++) -> Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let responses = mount_sse_once(
++        &server,
++        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
++    )
++    .await;
++    let test = test_codex()
++        .with_model_info_override("gpt-5.5", |model_info| {
++            model_info
++                .experimental_supported_tools
++                .retain(|tool| tool != "clock");
++        })
++        .with_config(move |config| {
++            config.model_reasoning_effort = Some(ReasoningEffort::High);
++            config
++                .features
++                .enable(Feature::CurrentTimeReminder)
++                .expect("test config should allow current-time reminders");
++            config.current_time_reminder = sleep_tool.map(|sleep_tool| CurrentTimeReminderConfig {
++                sleep_tool,
++                ..CurrentTimeReminderConfig::default()
++            });
++            config.sleep_tool_mode = SleepToolMode::ModelDriven;
++        })
++        .build_with_auto_env(&server)
++        .await?;
++    assert!(
++        test.codex
++            .thread_extension_data()
++            .insert(goal_activity(
++                GoalActivityState::Active,
++                /*revision*/ 1
++            ))
++            .is_none()
++    );
++
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    let request = responses.single_request();
++    assert_eq!(
++        ["curr_time", "sleep"].map(|name| request.tool_by_name("clock", name).is_some()),
++        [true, expected_sleep]
++    );
++    Ok(())
++}
++
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn current_time_reminder_is_refreshed_after_compaction() -> Result<()> {
+     skip_if_no_network!(Ok(()));
+diff --git a/codex-rs/core/tests/suite/goal_activity_tests.rs b/codex-rs/core/tests/suite/goal_activity_tests.rs
+new file mode 100644
+index 0000000000..c561a35736
+--- /dev/null
++++ b/codex-rs/core/tests/suite/goal_activity_tests.rs
+@@ -0,0 +1,841 @@
++//! Goal publisher integration through the real tools and sampling router.
++use anyhow::Result;
++use codex_analytics::AnalyticsEventsClient;
++use codex_core::config::Config;
++use codex_extension_api::ExtensionData;
++use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::GoalActivity;
++use codex_extension_api::ThreadStartInput;
++use codex_extension_api::ToolFinishInput;
++use codex_extension_api::ToolLifecycleContributor;
++use codex_extension_api::ToolLifecycleFuture;
++use codex_features::Feature;
++use codex_features::SleepToolMode;
++use codex_goal_extension::GoalExtensionConfig;
++use codex_goal_extension::GoalObjectiveUpdate;
++use codex_goal_extension::GoalRuntimeHandle;
++use codex_goal_extension::GoalService;
++use codex_goal_extension::GoalSetRequest;
++use codex_goal_extension::GoalTokenBudgetUpdate;
++use codex_goal_extension::install_with_backend;
++use codex_protocol::protocol::SessionSource;
++use codex_protocol::protocol::ThreadGoalStatus;
++use core_test_support::responses::{self};
++use core_test_support::test_codex::TestCodex;
++use core_test_support::test_codex::test_codex;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++use std::sync::Arc;
++use std::sync::Weak;
++use tempfile::TempDir;
++use tokio::sync::Notify;
++
++#[derive(Default)]
++struct FinishLatch {
++    entered: Notify,
++    release: Notify,
++}
++impl ToolLifecycleContributor for FinishLatch {
++    fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
++        Box::pin(async move {
++            if input.tool_name.name == "create_goal" {
++                self.entered.notify_one();
++                self.release.notified().await;
++            }
++        })
++    }
++}
++
++async fn tool_steps(
++    server: &wiremock::MockServer,
++    steps: &[(&str, &str)],
++) -> responses::ResponseMock {
++    let scripts = steps
++        .iter()
++        .enumerate()
++        .map(|(index, (name, arguments))| {
++            let id = format!("response-{index}");
++            let mut events = vec![responses::ev_response_created(&id)];
++            if !name.is_empty() {
++                events.push(responses::ev_function_call(name, name, arguments));
++            }
++            events.push(responses::ev_completed_with_tokens(
++                &id, /*total_tokens*/ 10,
++            ));
++            responses::sse(events)
++        })
++        .collect();
++    responses::mount_sse_sequence(server, scripts).await
++}
++
++fn install(
++    registry: &mut ExtensionRegistryBuilder<Config>,
++    db: &Arc<codex_state::StateRuntime>,
++    service: &Arc<GoalService>,
++    manager: Weak<codex_core::ThreadManager>,
++) {
++    install_with_backend(
++        registry,
++        db.clone(),
++        AnalyticsEventsClient::disabled(),
++        /*metrics_client*/ None,
++        manager,
++        service.clone(),
++        |c: &Config| GoalExtensionConfig {
++            enabled: c.features.enabled(Feature::Goals),
++            max_goal_token_budget: c.max_goal_token_budget,
++        },
++    );
++}
++
++/// Drives the production Goals enablement hook against the live thread store.
++/// `refresh_runtime_config` keeps `Feature::Goals` session-static (only
++/// MCP-related flags are copied), so flipping Goals there never notifies
++/// config contributors. Instead, build the same production
++/// `GoalExtension<Config>` the fixture installed and invoke its
++/// `ConfigContributor::on_config_changed` with previous/new configs, exactly
++/// as the session would if enablement changed.
++fn notify_goals_enabled(
++    test: &TestCodex,
++    db: &Arc<codex_state::StateRuntime>,
++    service: &Arc<GoalService>,
++    previous_enabled: bool,
++    new_enabled: bool,
++) -> Result<()> {
++    let mut previous = test.config.clone();
++    if previous_enabled {
++        previous.features.enable(Feature::Goals)?;
++    } else {
++        previous.features.disable(Feature::Goals)?;
++    }
++    let mut new = test.config.clone();
++    if new_enabled {
++        new.features.enable(Feature::Goals)?;
++    } else {
++        new.features.disable(Feature::Goals)?;
++    }
++    let mut registry = ExtensionRegistryBuilder::<Config>::new();
++    install(
++        &mut registry,
++        db,
++        service,
++        Arc::downgrade(&test.thread_manager),
++    );
++    let session_store = ExtensionData::new(test.session_configured.session_id.to_string());
++    for contributor in registry.build().config_contributors() {
++        contributor.on_config_changed(
++            &session_store,
++            test.codex.thread_extension_data(),
++            &previous,
++            &new,
++        );
++    }
++    Ok(())
++}
++
++async fn fixture(
++    server: &wiremock::MockServer,
++    latch: Option<Arc<FinishLatch>>,
++) -> Result<(TestCodex, Arc<codex_state::StateRuntime>, Arc<GoalService>)> {
++    let home = Arc::new(TempDir::new()?);
++    let mut config = core_test_support::load_default_config_for_test(&home).await;
++    config.features.disable(Feature::CurrentTimeReminder)?;
++    config.sleep_tool_mode = SleepToolMode::ModelDriven;
++    let db = codex_core::init_state_db(&config)
++        .await
++        .expect("state database");
++    let service = Arc::new(GoalService::new());
++    let mut registry = ExtensionRegistryBuilder::<Config>::new();
++    if let Some(latch) = latch {
++        registry.tool_lifecycle_contributor(latch);
++    }
++    install(&mut registry, &db, &service, Weak::new());
++    let test = test_codex()
++        .with_home(home)
++        .with_extensions(Arc::new(registry.build()))
++        .with_model_info_override("gpt-5.5", |m| {
++            m.experimental_supported_tools.retain(|t| t != "clock")
++        })
++        .with_config(|c| {
++            c.features
++                .disable(Feature::CurrentTimeReminder)
++                .expect("feature");
++            c.sleep_tool_mode = SleepToolMode::ModelDriven;
++        })
++        .build_with_auto_env(server)
++        .await?;
++    // TestCodex creates its manager after accepting the extension registry.
++    // Bind the installed goal runtime to that live manager via the production
++    // thread-start hook before driving any tool or turn.
++    test.codex
++        .thread_extension_data()
++        .remove::<GoalRuntimeHandle>();
++    let mut bound = ExtensionRegistryBuilder::<Config>::new();
++    install(
++        &mut bound,
++        &db,
++        &service,
++        Arc::downgrade(&test.thread_manager),
++    );
++    for c in bound.build().thread_lifecycle_contributors() {
++        c.on_thread_start(ThreadStartInput {
++            config: &test.config,
++            session_source: &SessionSource::Cli,
++            persistent_thread_state_available: true,
++            environments: &[],
++            mcp_resource_client: None,
++            extension_metrics: None,
++            session_store: &ExtensionData::new(test.session_configured.session_id.to_string()),
++            thread_store: test.codex.thread_extension_data(),
++        })
++        .await;
++    }
++    Ok((test, db, service))
++}
++
++#[test_case::test_case(true, "complete"; "complete")]
++#[test_case::test_case(true, "paused"; "paused")]
++#[test_case::test_case(true, "blocked"; "blocked")]
++#[test_case::test_case(false, "complete"; "refused")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn create_goal_changes_the_next_sampling_tools(
++    success: bool,
++    stop_status: &str,
++) -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let create = json!({"objective": if success {"work"} else {""}}).to_string();
++    let stop = json!({"status": stop_status}).to_string();
++    let mock = tool_steps(
++        &server,
++        &[("create_goal", &create), ("update_goal", &stop), ("", "")],
++    )
++    .await;
++    let (test, _, _) = fixture(&server, /*latch*/ None).await?;
++    test.submit_text_turn("create a goal, then complete it")
++        .await?;
++    let requests = mock.requests();
++    assert_eq!(
++        requests
++            .iter()
++            .map(|r| r.tool_by_name("clock", "sleep").is_some())
++            .collect::<Vec<_>>(),
++        [false, success, false]
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn disable_mid_turn_removes_sleep_from_next_request() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let mock = tool_steps(
++        &server,
++        &[("create_goal", r#"{"objective":"work"}"#), ("", "")],
++    )
++    .await;
++    let latch = Arc::new(FinishLatch::default());
++    let (test, db, service) = fixture(&server, Some(latch.clone())).await?;
++    let (turn, disable) = tokio::join!(test.submit_text_turn("create"), async {
++        latch.entered.notified().await;
++        assert!(
++            test.codex
++                .thread_extension_data()
++                .get::<GoalActivity>()
++                .is_some()
++        );
++        notify_goals_enabled(
++            &test, &db, &service, /*previous_enabled*/ true, /*new_enabled*/ false,
++        )?;
++        assert_eq!(
++            test.codex.thread_extension_data().get::<GoalActivity>(),
++            None
++        );
++        latch.release.notify_one();
++        Ok::<_, anyhow::Error>(())
++    });
++    turn?;
++    disable?;
++    assert_eq!(
++        mock.requests()
++            .iter()
++            .map(|r| r.tool_by_name("clock", "sleep").is_some())
++            .collect::<Vec<_>>(),
++        [false, false]
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn clear_revokes_before_late_create_finish_and_stale_set_effects() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let mock = tool_steps(
++        &server,
++        &[("create_goal", r#"{"objective":"work"}"#), ("", "")],
++    )
++    .await;
++    let latch = Arc::new(FinishLatch::default());
++    let (test, db, service) = fixture(&server, Some(latch.clone())).await?;
++    let (turn, clear) = tokio::join!(test.submit_text_turn("create"), async {
++        latch.entered.notified().await;
++        let activity = test
++            .codex
++            .thread_extension_data()
++            .get::<GoalActivity>()
++            .expect("create publishes before its finish callback");
++        let outcome = service
++            .set_thread_goal(
++                &db,
++                GoalSetRequest {
++                    thread_id: test.session_configured.session_id.into(),
++                    objective: GoalObjectiveUpdate::Keep,
++                    status: Some(ThreadGoalStatus::Active),
++                    token_budget: GoalTokenBudgetUpdate::Keep,
++                    max_goal_token_budget: None,
++                },
++            )
++            .await?;
++        notify_goals_enabled(
++            &test, &db, &service, /*previous_enabled*/ true, /*new_enabled*/ false,
++        )?;
++        // The committed goal is still Active, so absence here proves the
++        // disable hook actually ran; a no-op disable would leave Some.
++        assert_eq!(
++            test.codex.thread_extension_data().get::<GoalActivity>(),
++            None
++        );
++        // Attack unconditional clear independently of disable's revocation.
++        test.codex
++            .thread_extension_data()
++            .insert(activity.as_ref().clone());
++        assert!(
++            service
++                .clear_thread_goal(&db, test.session_configured.session_id.into())
++                .await?
++        );
++        assert_eq!(
++            test.codex.thread_extension_data().get::<GoalActivity>(),
++            None
++        );
++        outcome.apply_runtime_effects(&service).await;
++        notify_goals_enabled(
++            &test, &db, &service, /*previous_enabled*/ false, /*new_enabled*/ true,
++        )?;
++        outcome.apply_runtime_effects(&service).await;
++        assert_eq!(
++            test.codex.thread_extension_data().get::<GoalActivity>(),
++            None
++        );
++        latch.release.notify_one();
++        Ok::<_, anyhow::Error>(())
++    });
++    turn?;
++    clear?;
++    assert_eq!(
++        mock.requests()
++            .iter()
++            .map(|r| r.tool_by_name("clock", "sleep").is_some())
++            .collect::<Vec<_>>(),
++        [false, false]
++    );
++    Ok(())
++}
++
++#[test_case::test_case(ThreadGoalStatus::Active, true; "active")]
++#[test_case::test_case(ThreadGoalStatus::BudgetLimited, true; "budget_limited")]
++#[test_case::test_case(ThreadGoalStatus::Paused, false; "paused")]
++#[test_case::test_case(ThreadGoalStatus::Blocked, false; "blocked")]
++#[test_case::test_case(ThreadGoalStatus::Complete, false; "complete")]
++#[test_case::test_case(ThreadGoalStatus::UsageLimited, false; "usage_limited")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn external_set_and_resume_reconcile_first_request(
++    status: ThreadGoalStatus,
++    sleep: bool,
++) -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let mock = tool_steps(
++        &server,
++        &[("update_goal", r#"{"status":"complete"}"#), ("", "")],
++    )
++    .await;
++    let (test, db, service) = fixture(&server, /*latch*/ None).await?;
++    let outcome = service
++        .set_thread_goal(
++            &db,
++            GoalSetRequest {
++                thread_id: test.session_configured.session_id.into(),
++                objective: GoalObjectiveUpdate::Set("work"),
++                status: Some(status),
++                token_budget: GoalTokenBudgetUpdate::Keep,
++                max_goal_token_budget: None,
++            },
++        )
++        .await?;
++    core_test_support::submit_thread_settings(
++        &test.codex,
++        codex_protocol::protocol::ThreadSettingsOverrides {
++            collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
++                mode: codex_protocol::config_types::ModeKind::Plan,
++                settings: codex_protocol::config_types::Settings {
++                    model: "gpt-5.5".to_string(),
++                    reasoning_effort: None,
++                    developer_instructions: None,
++                },
++            }),
++            ..Default::default()
++        },
++    )
++    .await?;
++    test.codex.thread_extension_data().remove::<GoalActivity>();
++    outcome.apply_runtime_effects(&service).await;
++    assert_eq!(
++        test.codex
++            .thread_extension_data()
++            .get::<GoalActivity>()
++            .is_some(),
++        sleep
++    );
++    test.codex.thread_extension_data().remove::<GoalActivity>();
++    service
++        .restore_thread_runtime_after_resume(test.session_configured.session_id.into())
++        .await?;
++    assert_eq!(
++        test.codex
++            .thread_extension_data()
++            .get::<GoalActivity>()
++            .is_some(),
++        sleep
++    );
++    test.submit_text_turn("inspect goal tools").await?;
++    assert_eq!(
++        mock.requests()[0].tool_by_name("clock", "sleep").is_some(),
++        sleep
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn accounting_budget_keeps_sleep_without_automatic_continuation() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let mock = tool_steps(
++        &server,
++        &[
++            ("create_goal", r#"{"objective":"work","token_budget":1}"#),
++            ("get_goal", "{}"),
++            ("", ""),
++        ],
++    )
++    .await;
++    let (test, db, _) = fixture(&server, /*latch*/ None).await?;
++    test.submit_text_turn("work until the budget limit").await?;
++    assert_eq!(
++        db.thread_goals()
++            .get_thread_goal(test.session_configured.session_id.into())
++            .await?
++            .expect("goal")
++            .status,
++        codex_state::ThreadGoalStatus::BudgetLimited
++    );
++    test.codex
++        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
++        .await;
++    assert!(
++        tokio::time::timeout(
++            std::time::Duration::from_millis(250),
++            core_test_support::wait_for_event(&test.codex, |e| matches!(
++                e,
++                codex_protocol::protocol::EventMsg::TurnStarted(_)
++            ))
++        )
++        .await
++        .is_err(),
++        "budget-limited goal must not admit a new turn"
++    );
++    assert_eq!(
++        mock.requests()
++            .iter()
++            .map(|r| r.tool_by_name("clock", "sleep").is_some())
++            .collect::<Vec<_>>(),
++        [false, true, true]
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn turn_start_before_missing_baseline_and_plan_then_removes_cleared_goal() -> Result<()> {
++    use codex_protocol::config_types::CollaborationMode;
++    use codex_protocol::config_types::ModeKind;
++    use codex_protocol::config_types::Settings;
++    let server = responses::start_mock_server().await;
++    let mock = tool_steps(&server, &[("", ""), ("", "")]).await;
++    let (test, db, service) = fixture(&server, /*latch*/ None).await?;
++    let id = test.session_configured.session_id.into();
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    let mode = CollaborationMode {
++        mode: ModeKind::Plan,
++        settings: Settings {
++            model: "gpt-5.5".to_string(),
++            reasoning_effort: None,
++            developer_instructions: None,
++        },
++    };
++    let mut registry = ExtensionRegistryBuilder::<Config>::new();
++    install(
++        &mut registry,
++        &db,
++        &service,
++        Arc::downgrade(&test.thread_manager),
++    );
++    for c in registry.build().turn_lifecycle_contributors() {
++        c.on_turn_start(codex_extension_api::TurnStartInput {
++            turn_id: "without-baseline",
++            collaboration_mode: &mode,
++            token_usage_at_turn_start: None,
++            session_store: &ExtensionData::new("session"),
++            thread_store: test.codex.thread_extension_data(),
++            turn_store: &ExtensionData::new("without-baseline"),
++        })
++        .await;
++    }
++    assert!(
++        test.codex
++            .thread_extension_data()
++            .get::<GoalActivity>()
++            .is_some()
++    );
++    core_test_support::submit_thread_settings(
++        &test.codex,
++        codex_protocol::protocol::ThreadSettingsOverrides {
++            collaboration_mode: Some(mode),
++            ..Default::default()
++        },
++    )
++    .await?;
++    test.submit_text_turn("plan").await?;
++    db.thread_goals().delete_thread_goal(id).await?;
++    test.submit_text_turn("goal was cleared").await?;
++    assert_eq!(
++        mock.requests()
++            .iter()
++            .map(|r| r.tool_by_name("clock", "sleep").is_some())
++            .collect::<Vec<_>>(),
++        [true, false]
++    );
++    Ok(())
++}
++
++/// Drives the production turn-start hook against the live thread store without
++/// a model turn, following the direct-contributor pattern of
++/// `turn_start_before_missing_baseline_and_plan_then_removes_cleared_goal`.
++async fn start_live_turn(
++    test: &TestCodex,
++    db: &Arc<codex_state::StateRuntime>,
++    service: &Arc<GoalService>,
++    turn_id: &str,
++    mode: codex_protocol::config_types::ModeKind,
++) -> Result<()> {
++    use codex_protocol::config_types::CollaborationMode;
++    use codex_protocol::config_types::Settings;
++    let mut registry = ExtensionRegistryBuilder::<Config>::new();
++    install(
++        &mut registry,
++        db,
++        service,
++        Arc::downgrade(&test.thread_manager),
++    );
++    let collaboration_mode = CollaborationMode {
++        mode,
++        settings: Settings {
++            model: "gpt-5.5".to_string(),
++            reasoning_effort: None,
++            developer_instructions: None,
++        },
++    };
++    let usage = codex_protocol::protocol::TokenUsage::default();
++    for c in registry.build().turn_lifecycle_contributors() {
++        c.on_turn_start(codex_extension_api::TurnStartInput {
++            turn_id,
++            collaboration_mode: &collaboration_mode,
++            token_usage_at_turn_start: Some(&usage),
++            session_store: &ExtensionData::new(test.session_configured.session_id.to_string()),
++            thread_store: test.codex.thread_extension_data(),
++            turn_store: &ExtensionData::new(turn_id),
++        })
++        .await;
++    }
++    Ok(())
++}
++
++/// Records token usage against the live thread store so the turn carries an
++/// accountable progress snapshot.
++async fn record_live_usage(
++    test: &TestCodex,
++    db: &Arc<codex_state::StateRuntime>,
++    service: &Arc<GoalService>,
++    turn_id: &str,
++) -> Result<()> {
++    use codex_protocol::protocol::TokenUsage;
++    use codex_protocol::protocol::TokenUsageInfo;
++    let mut registry = ExtensionRegistryBuilder::<Config>::new();
++    install(
++        &mut registry,
++        db,
++        service,
++        Arc::downgrade(&test.thread_manager),
++    );
++    let total = TokenUsage {
++        input_tokens: 20,
++        cached_input_tokens: 5,
++        output_tokens: 8,
++        reasoning_output_tokens: 2,
++        total_tokens: 30,
++        ..TokenUsage::default()
++    };
++    let info = TokenUsageInfo {
++        total_token_usage: total,
++        last_token_usage: TokenUsage::default(),
++        model_context_window: None,
++    };
++    for c in registry.build().token_usage_contributors() {
++        c.on_token_usage(
++            &ExtensionData::new(test.session_configured.session_id.to_string()),
++            test.codex.thread_extension_data(),
++            &ExtensionData::new(turn_id),
++            &info,
++        )
++        .await;
++    }
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn external_set_get_failure_revokes_activity_and_next_turn_recovers() -> Result<()> {
++    use codex_protocol::config_types::ModeKind;
++    let server = responses::start_mock_server().await;
++    let (test, db, service) = fixture(&server, /*latch*/ None).await?;
++    let id = test.session_configured.session_id.into();
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    // Plan mode reconciles the marker but disables turn accounting, so
++    // external-set preparation deterministically short-circuits and the
++    // injected failure lands in the set's goal read.
++    start_live_turn(&test, &db, &service, "turn-1", ModeKind::Plan).await?;
++    let previous = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalActivity>()
++        .expect("active marker");
++    let pool = db
++        .sqlite()
++        .open_read_write_pool(&db.sqlite().goals_db_path())
++        .await?;
++    // A malformed committed row exercises the actual GoalStore read failure
++    // through the external-set path.
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 9223372036854775807 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    assert!(db.thread_goals().get_thread_goal(id).await.is_err());
++    // Status-only branch (no objective).
++    let error = service
++        .set_thread_goal(
++            &db,
++            GoalSetRequest {
++                thread_id: id,
++                objective: GoalObjectiveUpdate::Keep,
++                status: Some(ThreadGoalStatus::Active),
++                token_budget: GoalTokenBudgetUpdate::Keep,
++                max_goal_token_budget: None,
++            },
++        )
++        .await
++        .expect_err("set must report the read failure");
++    assert!(
++        error.to_string().contains("failed to read thread goal"),
++        "unexpected error: {error}"
++    );
++    assert_eq!(
++        test.codex.thread_extension_data().get::<GoalActivity>(),
++        None
++    );
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 0 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    start_live_turn(&test, &db, &service, "turn-2", ModeKind::Plan).await?;
++    let recovered = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalActivity>()
++        .expect("reconciled again");
++    assert_eq!(recovered.goal_id, previous.goal_id);
++    assert_eq!(recovered.state, previous.state);
++    assert!(recovered.revision > previous.revision);
++    // Objective branch.
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 9223372036854775807 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    service
++        .set_thread_goal(
++            &db,
++            GoalSetRequest {
++                thread_id: id,
++                objective: GoalObjectiveUpdate::Set("work-2"),
++                status: Some(ThreadGoalStatus::Active),
++                token_budget: GoalTokenBudgetUpdate::Keep,
++                max_goal_token_budget: None,
++            },
++        )
++        .await
++        .expect_err("set must report the read failure");
++    assert_eq!(
++        test.codex.thread_extension_data().get::<GoalActivity>(),
++        None
++    );
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 0 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    start_live_turn(&test, &db, &service, "turn-3", ModeKind::Plan).await?;
++    assert!(
++        test.codex
++            .thread_extension_data()
++            .get::<GoalActivity>()
++            .is_some()
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn external_set_prepare_failure_revokes_activity_and_next_turn_recovers() -> Result<()> {
++    use codex_protocol::config_types::ModeKind;
++    let server = responses::start_mock_server().await;
++    let (test, db, service) = fixture(&server, /*latch*/ None).await?;
++    let id = test.session_configured.session_id.into();
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    start_live_turn(&test, &db, &service, "turn-1", ModeKind::Default).await?;
++    record_live_usage(&test, &db, &service, "turn-1").await?;
++    let previous = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalActivity>()
++        .expect("active marker");
++    let pool = db
++        .sqlite()
++        .open_read_write_pool(&db.sqlite().goals_db_path())
++        .await?;
++    // Fail goal-table writes while leaving reads intact, so external-set
++    // preparation fails in progress accounting before the set's own read.
++    sqlx::query("CREATE TRIGGER fail_goal_updates BEFORE UPDATE ON thread_goals BEGIN SELECT RAISE(ABORT, 'injected goal write failure'); END")
++        .execute(&pool)
++        .await?;
++    let error = service
++        .set_thread_goal(
++            &db,
++            GoalSetRequest {
++                thread_id: id,
++                objective: GoalObjectiveUpdate::Keep,
++                status: Some(ThreadGoalStatus::Active),
++                token_budget: GoalTokenBudgetUpdate::Keep,
++                max_goal_token_budget: None,
++            },
++        )
++        .await
++        .expect_err("set must report the storage failure");
++    assert!(
++        error.to_string().contains("failed to update thread goal"),
++        "unexpected error: {error}"
++    );
++    assert_eq!(
++        test.codex.thread_extension_data().get::<GoalActivity>(),
++        None
++    );
++    sqlx::query("DROP TRIGGER fail_goal_updates")
++        .execute(&pool)
++        .await?;
++    start_live_turn(&test, &db, &service, "turn-2", ModeKind::Default).await?;
++    let recovered = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalActivity>()
++        .expect("reconciled again");
++    assert_eq!(recovered.goal_id, previous.goal_id);
++    assert_eq!(recovered.state, previous.state);
++    assert!(recovered.revision > previous.revision);
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn fork_flush_read_failure_revokes_activity_and_next_turn_recovers() -> Result<()> {
++    use codex_protocol::config_types::ModeKind;
++    let server = responses::start_mock_server().await;
++    let (test, db, service) = fixture(&server, /*latch*/ None).await?;
++    let id = test.session_configured.session_id.into();
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    start_live_turn(&test, &db, &service, "turn-1", ModeKind::Default).await?;
++    record_live_usage(&test, &db, &service, "turn-1").await?;
++    let previous = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalActivity>()
++        .expect("active marker");
++    let pool = db
++        .sqlite()
++        .open_read_write_pool(&db.sqlite().goals_db_path())
++        .await?;
++    // A malformed committed row exercises the actual GoalStore read failure
++    // through the fork-flush preparation path.
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 9223372036854775807 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    assert!(db.thread_goals().get_thread_goal(id).await.is_err());
++    service
++        .flush_thread_goal_progress_for_fork(id)
++        .await
++        .expect_err("flush must report the read failure");
++    assert_eq!(
++        test.codex.thread_extension_data().get::<GoalActivity>(),
++        None
++    );
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 0 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    start_live_turn(&test, &db, &service, "turn-2", ModeKind::Default).await?;
++    let recovered = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalActivity>()
++        .expect("reconciled again");
++    assert_eq!(recovered.goal_id, previous.goal_id);
++    assert_eq!(recovered.state, previous.state);
++    assert!(recovered.revision > previous.revision);
++    Ok(())
++}
+diff --git a/codex-rs/core/tests/suite/mod.rs b/codex-rs/core/tests/suite/mod.rs
+index 50f965cd5f..5545a57410 100644
+--- a/codex-rs/core/tests/suite/mod.rs
++++ b/codex-rs/core/tests/suite/mod.rs
+@@ -82,6 +82,8 @@ mod extension_sandbox;
+ mod external_auth;
+ mod fork_thread;
+ mod git_enrichment;
++#[path = "goal_activity_tests.rs"]
++mod goal_activity;
+ mod guardian_authorization;
+ mod guardian_authorization_refresh;
+ #[path = "guardian_cached_score_tests.rs"]
+diff --git a/codex-rs/ext/extension-api/src/goal_activity.rs b/codex-rs/ext/extension-api/src/goal_activity.rs
+new file mode 100644
+index 0000000000..121fdafd15
+--- /dev/null
++++ b/codex-rs/ext/extension-api/src/goal_activity.rs
+@@ -0,0 +1,27 @@
++/// Describes the goal whose work is currently active on a thread.
++///
++/// Extensions publish this as typed, thread-scoped data so core capabilities
++/// can respond to goal activity without depending on a goal implementation.
++/// The marker is ephemeral and is not persisted. Publishers should reconcile
++/// it with committed goal state and advance `revision` when that state changes,
++/// allowing consumers to distinguish fresh state from stale callbacks.
++/// Presence grants goal-related tool capability, not permission to admit an
++/// automatic continuation; consumers must still apply their own feature gates.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct GoalActivity {
++    /// Stable identity of the active goal.
++    pub goal_id: String,
++    /// Publisher revision for the authoritative goal snapshot.
++    pub revision: u64,
++    /// Whether the goal is active or awaiting recovery from a budget limit.
++    pub state: GoalActivityState,
++}
++
++/// Goal states that retain active work on a thread.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum GoalActivityState {
++    /// The goal can continue normally.
++    Active,
++    /// The goal remains present while continuation is limited by its budget.
++    BudgetLimited,
++}
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index c8436c8feb..0fa79cfb44 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -1,5 +1,6 @@
+ mod capabilities;
+ mod contributors;
++mod goal_activity;
+ mod registry;
+ mod session_isolation;
+ mod state;
+@@ -7,6 +8,8 @@ mod tool_policy;
+ mod turn_admission;
+ mod user_instructions;
+ 
++pub use goal_activity::GoalActivity;
++pub use goal_activity::GoalActivityState;
+ pub use session_isolation::IsolatedSessionExtensions;
+ pub use session_isolation::SessionIsolation;
+ pub use tool_policy::ToolPolicy;
+diff --git a/codex-rs/ext/extension-api/tests/state.rs b/codex-rs/ext/extension-api/tests/state.rs
+index 6e7720c913..4180ad128b 100644
+--- a/codex-rs/ext/extension-api/tests/state.rs
++++ b/codex-rs/ext/extension-api/tests/state.rs
+@@ -5,8 +5,23 @@ use std::sync::atomic::AtomicUsize;
+ use std::sync::atomic::Ordering;
+ 
+ use codex_extension_api::ExtensionData;
++use codex_extension_api::GoalActivity;
++use codex_extension_api::GoalActivityState;
+ use pretty_assertions::assert_eq;
+ 
++#[test]
++fn goal_activity_can_be_inserted_as_typed_thread_data() {
++    let data = ExtensionData::new("thread-1");
++    let marker = GoalActivity {
++        goal_id: "goal-1".to_string(),
++        revision: 4,
++        state: GoalActivityState::BudgetLimited,
++    };
++
++    assert_eq!(data.insert(marker.clone()), None);
++    assert_eq!(data.get::<GoalActivity>().as_deref(), Some(&marker));
++}
++
+ #[test]
+ fn typed_values_can_be_inserted_replaced_and_removed() {
+     let data = ExtensionData::new("thread-1");
+diff --git a/codex-rs/ext/goal/BUILD.bazel b/codex-rs/ext/goal/BUILD.bazel
+index c8f3c96c84..a6e16ab057 100644
+--- a/codex-rs/ext/goal/BUILD.bazel
++++ b/codex-rs/ext/goal/BUILD.bazel
+@@ -8,6 +8,7 @@ codex_rust_crate(
+     crate_name = "codex_goal_extension",
+     integration_compile_data_extra = [
+         "src/accounting.rs",
++        "src/activity.rs",
+         "src/steering.rs",
+     ] + glob(["templates/**"]),
+ )
+diff --git a/codex-rs/ext/goal/Cargo.toml b/codex-rs/ext/goal/Cargo.toml
+index 3939da1ab7..57956dac87 100644
+--- a/codex-rs/ext/goal/Cargo.toml
++++ b/codex-rs/ext/goal/Cargo.toml
+@@ -30,6 +30,7 @@ tokio = { workspace = true, features = ["sync"] }
+ tracing = { workspace = true }
+ 
+ [dev-dependencies]
++sqlx = { workspace = true }
+ anyhow = { workspace = true }
+ chrono = { workspace = true }
+ codex-utils-absolute-path = { workspace = true }
+diff --git a/codex-rs/ext/goal/src/activity.rs b/codex-rs/ext/goal/src/activity.rs
+new file mode 100644
+index 0000000000..4776260039
+--- /dev/null
++++ b/codex-rs/ext/goal/src/activity.rs
+@@ -0,0 +1,136 @@
++//! The sole writer of the live goal capability. Database reads are serialized
++//! with goal mutations; the publication revision also invalidates reads across
++//! synchronous feature changes and teardown.
++
++use std::sync::Arc;
++use std::sync::Mutex;
++use std::sync::PoisonError;
++
++use codex_extension_api::ExtensionData;
++use codex_extension_api::GoalActivity;
++use codex_extension_api::GoalActivityState;
++use codex_state::ThreadGoal;
++use codex_state::ThreadGoalStatus;
++
++#[derive(Debug, PartialEq, Eq)]
++enum ReconciledGoal {
++    Unknown,
++    Known(Option<ThreadGoal>),
++}
++
++struct Publication {
++    enabled: bool,
++    stopped: bool,
++    revision: u64,
++    goal: ReconciledGoal,
++}
++
++pub(crate) struct GoalActivityPublisher(Mutex<Publication>);
++
++impl GoalActivityPublisher {
++    pub(crate) fn new(enabled: bool) -> Self {
++        Self(Mutex::new(Publication {
++            enabled,
++            stopped: false,
++            revision: 0,
++            goal: ReconciledGoal::Unknown,
++        }))
++    }
++
++    pub(crate) fn revision(&self) -> u64 {
++        self.0
++            .lock()
++            .unwrap_or_else(PoisonError::into_inner)
++            .revision
++    }
++
++    pub(crate) fn set_enabled(&self, enabled: bool, store: &ExtensionData) {
++        let mut publication = self.0.lock().unwrap_or_else(PoisonError::into_inner);
++        if publication.enabled != enabled {
++            publication.enabled = enabled;
++            publication.revision += 1;
++            publication.goal = ReconciledGoal::Unknown;
++            store.remove::<GoalActivity>();
++        }
++        if !enabled {
++            store.remove::<GoalActivity>();
++        }
++    }
++
++    pub(crate) fn stop(&self, store: &ExtensionData) {
++        let mut publication = self.0.lock().unwrap_or_else(PoisonError::into_inner);
++        publication.stopped = true;
++        publication.revision += 1;
++        publication.goal = ReconciledGoal::Unknown;
++        store.remove::<GoalActivity>();
++    }
++
++    pub(crate) fn publish(
++        &self,
++        store: &ExtensionData,
++        read_revision: u64,
++        goal: Result<Option<ThreadGoal>, String>,
++    ) -> Result<Option<ThreadGoal>, String> {
++        let mut publication = self.0.lock().unwrap_or_else(PoisonError::into_inner);
++        if publication.revision != read_revision || publication.stopped || !publication.enabled {
++            return Err("goal activity reconciliation invalidated by lifecycle change".to_string());
++        }
++        let goal = match goal {
++            Ok(goal) => goal,
++            Err(error) => {
++                publication.revision += 1;
++                publication.goal = ReconciledGoal::Unknown;
++                store.remove::<GoalActivity>();
++                tracing::warn!(%error, "goal activity reconciliation is unknown");
++                return Err(error);
++            }
++        };
++        let reconciled = ReconciledGoal::Known(goal.clone());
++        if publication.goal != reconciled {
++            publication.revision += 1;
++            publication.goal = reconciled;
++        }
++        match &goal {
++            Some(goal)
++                if matches!(
++                    goal.status,
++                    ThreadGoalStatus::Active | ThreadGoalStatus::BudgetLimited
++                ) =>
++            {
++                store.insert(GoalActivity {
++                    goal_id: goal.goal_id.clone(),
++                    revision: publication.revision,
++                    state: if goal.status == ThreadGoalStatus::Active {
++                        GoalActivityState::Active
++                    } else {
++                        GoalActivityState::BudgetLimited
++                    },
++                });
++            }
++            Some(_) | None => {
++                store.remove::<GoalActivity>();
++            }
++        }
++        Ok(goal)
++    }
++
++    pub(crate) fn clear(&self, store: &ExtensionData) {
++        let mut publication = self.0.lock().unwrap_or_else(PoisonError::into_inner);
++        publication.revision += 1;
++        publication.goal = ReconciledGoal::Known(None);
++        store.remove::<GoalActivity>();
++    }
++}
++
++// Automatic start awaits a before-registration lifecycle callback on the
++// session loop. Share ownership of its read permit with that callback rather
++// than reacquiring the same semaphore. The lease cannot authorize mutations.
++pub(crate) struct GoalTurnStartPermit(pub(crate) Arc<tokio::sync::OwnedSemaphorePermit>);
++
++pub(crate) struct GoalTurnStartLease<'a>(pub(crate) &'a ExtensionData);
++
++impl Drop for GoalTurnStartLease<'_> {
++    fn drop(&mut self) {
++        self.0.remove::<GoalTurnStartPermit>();
++    }
++}
+diff --git a/codex-rs/ext/goal/src/api.rs b/codex-rs/ext/goal/src/api.rs
+index b414e9ccfb..2d9780400b 100644
+--- a/codex-rs/ext/goal/src/api.rs
++++ b/codex-rs/ext/goal/src/api.rs
+@@ -118,14 +118,18 @@ impl GoalService {
+         let Some(runtime) = self.runtime_for_thread(thread_id) else {
+             return Ok(());
+         };
+-        let _goal_state_permit = runtime
++        let goal_state_permit = runtime
+             .goal_state_permit()
+             .await
+             .map_err(GoalServiceError::Internal)?;
+-        runtime
+-            .prepare_external_goal_mutation()
++        if let Err(err) = runtime
++            .prepare_external_goal_mutation_locked(&goal_state_permit)
+             .await
+-            .map_err(GoalServiceError::Internal)
++        {
++            runtime.revoke_live_activity_on_read_failure(&err).await;
++            return Err(GoalServiceError::Internal(err));
++        }
++        Ok(())
+     }
+ 
+     pub async fn get_thread_goal(
+@@ -176,7 +180,7 @@ impl GoalService {
+         let runtime = self.runtime_for_thread(thread_id);
+         // Hold this through the prepare/write window so idle continuation cannot
+         // launch from goal state that this external mutation is about to change.
+-        let _goal_state_permit = match runtime.as_ref() {
++        let goal_state_permit = match runtime.as_ref() {
+             Some(runtime) => Some(
+                 runtime
+                     .goal_state_permit()
+@@ -186,19 +190,16 @@ impl GoalService {
+             None => None,
+         };
+         if let Some(runtime) = runtime.as_ref()
+-            && let Err(err) = runtime.prepare_external_goal_mutation().await
++            && let Some(permit) = goal_state_permit.as_ref()
++            && let Err(err) = runtime.prepare_external_goal_mutation_locked(permit).await
+         {
+             tracing::warn!("failed to prepare external goal mutation: {err}");
++            runtime.revoke_live_activity_on_read_failure(&err).await;
+         }
+ 
+         let (goal, previous_goal) = if let Some(objective) = objective {
+-            let existing_goal = state_db
+-                .thread_goals()
+-                .get_thread_goal(thread_id)
+-                .await
+-                .map_err(|err| {
+-                    GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+-                })?;
++            let existing_goal =
++                Self::read_thread_goal_for_set(runtime.as_ref(), state_db, thread_id).await?;
+             if let Some(existing_goal) = existing_goal.as_ref() {
+                 let previous_goal = PreviousGoalSnapshot::from(existing_goal);
+                 state_db
+@@ -238,18 +239,14 @@ impl GoalService {
+                     .map(|goal| (goal, None))?
+             }
+         } else {
+-            let existing_goal = state_db
+-                .thread_goals()
+-                .get_thread_goal(thread_id)
+-                .await
+-                .map_err(|err| {
+-                    GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+-                })?
+-                .ok_or_else(|| {
+-                    GoalServiceError::InvalidRequest(format!(
+-                        "cannot update goal for thread {thread_id}: no goal exists"
+-                    ))
+-                })?;
++            let existing_goal =
++                Self::read_thread_goal_for_set(runtime.as_ref(), state_db, thread_id)
++                    .await?
++                    .ok_or_else(|| {
++                        GoalServiceError::InvalidRequest(format!(
++                            "cannot update goal for thread {thread_id}: no goal exists"
++                        ))
++                    })?;
+             let previous_goal = PreviousGoalSnapshot::from(&existing_goal);
+             let expected_goal_id = existing_goal.goal_id.clone();
+             state_db
+@@ -275,7 +272,13 @@ impl GoalService {
+                 .map(|goal| (goal, Some(previous_goal)))?
+         };
+ 
+-        if let Some(runtime) = runtime.as_ref() {
++        if let Some(runtime) = runtime.as_ref()
++            && let Some(permit) = goal_state_permit.as_ref()
++        {
++            runtime
++                .reconcile_live_activity(permit)
++                .await
++                .map_err(GoalServiceError::Internal)?;
+             runtime.clear_pending_turn_start_options().await;
+         }
+ 
+@@ -307,7 +310,8 @@ impl GoalService {
+             None => None,
+         };
+         if let Some(runtime) = runtime.as_ref()
+-            && let Err(err) = runtime.prepare_external_goal_mutation().await
++            && let Some(permit) = goal_state_permit.as_ref()
++            && let Err(err) = runtime.prepare_external_goal_mutation_locked(permit).await
+         {
+             tracing::warn!("failed to prepare external goal mutation: {err}");
+         }
+@@ -319,6 +323,12 @@ impl GoalService {
+             .map_err(|err| {
+                 GoalServiceError::Internal(format!("failed to clear thread goal: {err}"))
+             })?;
++        if let Some(runtime) = runtime.as_ref()
++            && let Some(permit) = goal_state_permit.as_ref()
++        {
++            // A committed clear revokes capability even while Goals is disabled.
++            runtime.clear_activity(permit).await;
++        }
+         let cleared = cleared_goal.is_some();
+         if cleared && let Some(runtime) = runtime.as_ref() {
+             runtime.clear_pending_turn_start_options().await;
+@@ -335,6 +345,26 @@ impl GoalService {
+         Ok(cleared)
+     }
+ 
++    /// Reads the committed goal for an external set. A read failure revokes
++    /// the live marker through the sole publisher before it is reported, so a
++    /// previously published marker never survives an unverified read.
++    async fn read_thread_goal_for_set(
++        runtime: Option<&Arc<GoalRuntimeHandle>>,
++        state_db: &codex_state::StateRuntime,
++        thread_id: ThreadId,
++    ) -> Result<Option<codex_state::ThreadGoal>, GoalServiceError> {
++        match state_db.thread_goals().get_thread_goal(thread_id).await {
++            Ok(goal) => Ok(goal),
++            Err(err) => {
++                let message = format!("failed to read thread goal: {err}");
++                if let Some(runtime) = runtime {
++                    runtime.revoke_live_activity_on_read_failure(&message).await;
++                }
++                Err(GoalServiceError::Internal(message))
++            }
++        }
++    }
++
+     pub(crate) fn register_runtime(&self, runtime: &Arc<GoalRuntimeHandle>) {
+         self.runtimes()
+             .insert(runtime.thread_id().to_string(), Arc::downgrade(runtime));
+diff --git a/codex-rs/ext/goal/src/extension.rs b/codex-rs/ext/goal/src/extension.rs
+index 1ec9ee6378..677c414041 100644
+--- a/codex-rs/ext/goal/src/extension.rs
++++ b/codex-rs/ext/goal/src/extension.rs
+@@ -38,6 +38,7 @@ use codex_protocol::protocol::TokenUsageInfo;
+ 
+ use crate::accounting::BudgetLimitedGoalDisposition;
+ use crate::accounting::GoalAccountingState;
++use crate::activity::GoalTurnStartPermit;
+ use crate::analytics::GoalAnalytics;
+ use crate::api::GoalService;
+ use crate::events::GoalEventEmitter;
+@@ -157,7 +158,7 @@ where
+                     },
+                 )
+             });
+-            runtime.set_enabled(enabled);
++            runtime.set_enabled(enabled, input.thread_store);
+             self.goal_service.register_runtime(&runtime);
+         })
+     }
+@@ -168,7 +169,16 @@ where
+                 return;
+             };
+ 
+-            if let Err(err) = runtime.restore_after_resume().await {
++            let restored = async {
++                let permit = runtime.goal_state_permit().await?;
++                runtime
++                    .reconcile_activity(input.thread_store, &permit)
++                    .await?;
++                drop(permit);
++                runtime.restore_after_resume().await
++            }
++            .await;
++            if let Err(err) = restored {
+                 tracing::warn!(
+                     "failed to restore goal runtime after thread resume for {}: {err}",
+                     runtime.thread_id()
+@@ -195,6 +205,7 @@ where
+     fn on_thread_stop<'a>(&'a self, input: ThreadStopInput<'a>) -> ExtensionFuture<'a, ()> {
+         Box::pin(async move {
+             if let Some(runtime) = goal_runtime_handle(input.thread_store) {
++                runtime.stop(input.thread_store);
+                 self.goal_service.unregister_runtime(&runtime);
+             }
+         })
+@@ -216,7 +227,7 @@ where
+         let enabled = config.enabled;
+         thread_store.insert(config);
+         if let Some(runtime) = goal_runtime_handle(thread_store) {
+-            runtime.set_enabled(enabled);
++            runtime.set_enabled(enabled, thread_store);
+         }
+     }
+ }
+@@ -234,6 +245,28 @@ where
+                 return;
+             }
+ 
++            let goal = {
++                let permit =
++                    if let Some(shared) = input.thread_store.remove::<GoalTurnStartPermit>() {
++                        Arc::clone(&shared.0)
++                    } else {
++                        let Ok(permit) = runtime.goal_state_permit().await else {
++                            return;
++                        };
++                        Arc::new(permit)
++                    };
++                match runtime
++                    .reconcile_activity(input.thread_store, &permit)
++                    .await
++                {
++                    Ok(goal) => goal,
++                    Err(err) => {
++                        runtime.accounting_state().clear_active_goal();
++                        tracing::warn!("failed to reconcile goal at turn start: {err}");
++                        return;
++                    }
++                }
++            };
+             let Some(token_usage_at_turn_start) = input.token_usage_at_turn_start else {
+                 tracing::warn!("skipping goal turn accounting: token baseline unavailable");
+                 return;
+@@ -261,14 +294,6 @@ where
+                 accounting.clear_current_turn_goal();
+                 return;
+             }
+-            let Ok(goal) = self
+-                .state_dbs
+-                .thread_goals()
+-                .get_thread_goal(runtime.thread_id())
+-                .await
+-            else {
+-                return;
+-            };
+             if let Some(goal) = goal
+                 && matches!(
+                     goal.status,
+@@ -317,6 +342,7 @@ where
+                     )
+                     .await
+             {
++                runtime.revoke_activity_on_read_failure(input.thread_store, &err);
+                 input.thread_store.remove::<TurnStartOptions>();
+                 tracing::warn!(
+                     "failed to stop active goal after repeated execution failures for {turn_id}: {err}"
+@@ -327,6 +353,7 @@ where
+                 .stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::EmptyResponse)
+                 .await
+             {
++                runtime.revoke_activity_on_read_failure(input.thread_store, &err);
+                 input.thread_store.remove::<TurnStartOptions>();
+                 tracing::warn!("failed to stop goal after empty responses for {turn_id}: {err}");
+                 return;
+@@ -340,6 +367,7 @@ where
+                 )
+                 .await
+             {
++                runtime.revoke_activity_on_read_failure(input.thread_store, &err);
+                 input.thread_store.remove::<TurnStartOptions>();
+                 tracing::warn!(
+                     "failed to account active goal progress at turn stop for {turn_id}: {err}"
+@@ -385,6 +413,7 @@ where
+                 )
+                 .await
+             {
++                runtime.revoke_activity_on_read_failure(input.thread_store, &err);
+                 tracing::warn!(
+                     "failed to account active goal progress after turn abort for {turn_id}: {err}"
+                 );
+@@ -417,6 +446,13 @@ where
+                     "failed to stop active goal after turn error: {err}"
+                 );
+             }
++            if let Ok(permit) = runtime.goal_state_permit().await
++                && let Err(err) = runtime
++                    .reconcile_activity(input.thread_store, &permit)
++                    .await
++            {
++                tracing::warn!("failed to reconcile goal after turn error: {err}");
++            }
+         })
+     }
+ }
+@@ -462,6 +498,19 @@ where
+             if !runtime.is_enabled() {
+                 return;
+             }
++            {
++                let Ok(permit) = runtime.goal_state_permit().await else {
++                    return;
++                };
++                if let Err(err) = runtime
++                    .reconcile_activity(input.thread_store, &permit)
++                    .await
++                {
++                    runtime.accounting_state().clear_active_goal();
++                    tracing::warn!("failed to reconcile goal after tool finish: {err}");
++                    return;
++                }
++            }
+             runtime.accounting_state().record_tool_outcome(
+                 input.turn_id,
+                 input.tool_name,
+@@ -504,12 +553,25 @@ where
+                 Ok(Some(progress)) => progress,
+                 Ok(None) => return,
+                 Err(err) => {
++                    runtime.revoke_activity_on_read_failure(input.thread_store, &err);
+                     tracing::warn!(
+                         "failed to account active goal progress after tool finish for {turn_id}: {err}"
+                     );
+                     return;
+                 }
+             };
++            {
++                let Ok(permit) = runtime.goal_state_permit().await else {
++                    return;
++                };
++                if let Err(err) = runtime
++                    .reconcile_activity(input.thread_store, &permit)
++                    .await
++                {
++                    tracing::warn!("failed to reconcile accounted goal: {err}");
++                    return;
++                }
++            }
+             let goal = progress.goal;
+             if goal.status != ThreadGoalStatus::BudgetLimited {
+                 return;
+@@ -549,26 +611,23 @@ where
+ 
+         let tools = [
+             GoalToolExecutor::get(
+-                runtime.thread_id(),
++                runtime.as_ref().clone(),
+                 Arc::clone(&self.state_dbs),
+-                runtime.accounting_state(),
+                 self.analytics.clone(),
+                 self.event_emitter.clone(),
+                 self.metrics.clone(),
+             ),
+             GoalToolExecutor::create(
+-                runtime.thread_id(),
++                runtime.as_ref().clone(),
+                 Arc::clone(&self.state_dbs),
+-                runtime.accounting_state(),
+                 self.analytics.clone(),
+                 self.event_emitter.clone(),
+                 self.metrics.clone(),
+                 max_goal_token_budget,
+             ),
+             GoalToolExecutor::update(
+-                runtime.thread_id(),
++                runtime.as_ref().clone(),
+                 Arc::clone(&self.state_dbs),
+-                runtime.accounting_state(),
+                 self.analytics.clone(),
+                 self.event_emitter.clone(),
+                 self.metrics.clone(),
+diff --git a/codex-rs/ext/goal/src/lib.rs b/codex-rs/ext/goal/src/lib.rs
+index ccd091affc..9000ab2feb 100644
+--- a/codex-rs/ext/goal/src/lib.rs
++++ b/codex-rs/ext/goal/src/lib.rs
+@@ -1,6 +1,7 @@
+ //! Extension crate for the `/goal` feature.
+ 
+ mod accounting;
++mod activity;
+ mod analytics;
+ mod api;
+ mod events;
+diff --git a/codex-rs/ext/goal/src/runtime.rs b/codex-rs/ext/goal/src/runtime.rs
+index 7d826ac238..2ca2a4f6db 100644
+--- a/codex-rs/ext/goal/src/runtime.rs
++++ b/codex-rs/ext/goal/src/runtime.rs
+@@ -8,12 +8,16 @@ use codex_core::ThreadManager;
+ use codex_core::TurnInput;
+ use codex_core::TurnInputRequest;
+ use codex_core::TurnStartOptions;
++use codex_extension_api::ExtensionData;
+ use codex_protocol::ThreadId;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::protocol::ThreadGoal;
+ 
+ use crate::accounting::BudgetLimitedGoalDisposition;
+ use crate::accounting::GoalAccountingState;
++use crate::activity::GoalActivityPublisher;
++use crate::activity::GoalTurnStartLease;
++use crate::activity::GoalTurnStartPermit;
+ use crate::analytics::GoalAnalytics;
+ use crate::analytics::GoalEventAttribution;
+ use crate::events::GoalEventEmitter;
+@@ -21,8 +25,8 @@ use crate::metrics::GoalMetrics;
+ use crate::steering::continuation_steering_item;
+ use crate::steering::objective_updated_steering_item;
+ use crate::tool::protocol_goal_from_state;
++use tokio::sync::OwnedSemaphorePermit;
+ use tokio::sync::Semaphore;
+-use tokio::sync::SemaphorePermit;
+ 
+ #[derive(Clone)]
+ pub struct GoalRuntimeHandle {
+@@ -56,7 +60,8 @@ struct GoalRuntimeInner {
+     enabled: AtomicBool,
+     tools_available_for_thread: bool,
+     tools_visible_for_thread: bool,
+-    goal_state_lock: Semaphore,
++    goal_state_lock: Arc<Semaphore>,
++    activity: GoalActivityPublisher,
+ }
+ 
+ pub(crate) struct AccountedGoalProgress {
+@@ -110,13 +115,104 @@ impl GoalRuntimeHandle {
+                 enabled: AtomicBool::new(config.enabled),
+                 tools_available_for_thread: config.tools_available_for_thread,
+                 tools_visible_for_thread: config.tools_visible_for_thread,
+-                goal_state_lock: Semaphore::new(/*permits*/ 1),
++                goal_state_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
++                activity: GoalActivityPublisher::new(config.enabled),
+             }),
+         }
+     }
+ 
+-    pub(crate) fn set_enabled(&self, enabled: bool) {
++    pub(crate) fn set_enabled(&self, enabled: bool, store: &ExtensionData) {
+         self.inner.enabled.store(enabled, Ordering::Relaxed);
++        self.inner.activity.set_enabled(enabled, store);
++        if !enabled {
++            self.inner.accounting_state.clear_active_goal();
++            store.remove::<TurnStartOptions>();
++            store.remove::<GoalTurnStartPermit>();
++        }
++    }
++
++    pub(crate) fn stop(&self, store: &ExtensionData) {
++        self.inner.enabled.store(false, Ordering::Relaxed);
++        self.inner.activity.stop(store);
++        self.inner.accounting_state.clear_active_goal();
++        store.remove::<TurnStartOptions>();
++        store.remove::<GoalTurnStartPermit>();
++    }
++
++    // Callers hold the goal-state permit across the committed mutation/read and
++    // publication. Always re-read: delayed tool/API callbacks are not authority.
++    pub(crate) async fn reconcile_activity(
++        &self,
++        store: &ExtensionData,
++        _permit: &OwnedSemaphorePermit,
++    ) -> Result<Option<codex_state::ThreadGoal>, String> {
++        if !self.is_enabled() {
++            return Ok(None);
++        }
++        let revision = self.inner.activity.revision();
++        let goal = self
++            .inner
++            .state_dbs
++            .thread_goals()
++            .get_thread_goal(self.thread_id())
++            .await
++            .map_err(|err| err.to_string());
++        self.inner.activity.publish(store, revision, goal)
++    }
++
++    pub(crate) async fn reconcile_live_activity(
++        &self,
++        _permit: &OwnedSemaphorePermit,
++    ) -> Result<Option<codex_state::ThreadGoal>, String> {
++        let revision = self.inner.activity.revision();
++        let goal = self
++            .inner
++            .state_dbs
++            .thread_goals()
++            .get_thread_goal(self.thread_id())
++            .await
++            .map_err(|err| err.to_string());
++        if self.is_enabled()
++            && let Some(manager) = self.inner.thread_manager.upgrade()
++            && let Ok(thread) = manager.get_thread(self.thread_id()).await
++        {
++            return self
++                .inner
++                .activity
++                .publish(thread.thread_extension_data(), revision, goal);
++        }
++        goal
++    }
++
++    pub(crate) async fn clear_activity(&self, _permit: &OwnedSemaphorePermit) {
++        if let Some(manager) = self.inner.thread_manager.upgrade()
++            && let Ok(thread) = manager.get_thread(self.thread_id()).await
++        {
++            self.inner.activity.clear(thread.thread_extension_data());
++        }
++    }
++
++    /// Revoke the marker through the sole publisher after a goal-store read
++    /// failure observed outside reconciliation. Records Unknown and reports
++    /// the error; the next legitimate lifecycle event reconciles again.
++    pub(crate) fn revoke_activity_on_read_failure(&self, store: &ExtensionData, error: &str) {
++        let revision = self.inner.activity.revision();
++        let _ = self
++            .inner
++            .activity
++            .publish(store, revision, Err(error.to_string()));
++    }
++
++    /// Revoke the live marker after a goal-store read failure observed on a
++    /// path without direct access to the thread store (external set, fork
++    /// flush). Records Unknown and reports the error; the next legitimate
++    /// lifecycle event reconciles again.
++    pub(crate) async fn revoke_live_activity_on_read_failure(&self, error: &str) {
++        if let Some(manager) = self.inner.thread_manager.upgrade()
++            && let Ok(thread) = manager.get_thread(self.thread_id()).await
++        {
++            self.revoke_activity_on_read_failure(thread.thread_extension_data(), error);
++        }
+     }
+ 
+     pub(crate) fn is_enabled(&self) -> bool {
+@@ -153,15 +249,24 @@ impl GoalRuntimeHandle {
+         thread.thread_extension_data().remove::<TurnStartOptions>();
+     }
+ 
+-    pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
++    pub(crate) async fn goal_state_permit(&self) -> Result<OwnedSemaphorePermit, String> {
+         self.inner
+             .goal_state_lock
+-            .acquire()
++            .clone()
++            .acquire_owned()
+             .await
+             .map_err(|err| err.to_string())
+     }
+ 
+     pub async fn prepare_external_goal_mutation(&self) -> Result<(), String> {
++        let permit = self.goal_state_permit().await?;
++        self.prepare_external_goal_mutation_locked(&permit).await
++    }
++
++    pub(crate) async fn prepare_external_goal_mutation_locked(
++        &self,
++        permit: &OwnedSemaphorePermit,
++    ) -> Result<(), String> {
+         if !self.is_enabled() {
+             return Ok(());
+         }
+@@ -169,7 +274,8 @@ impl GoalRuntimeHandle {
+         self.inner.accounting_state.reset_empty_responses();
+ 
+         if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {
+-            self.account_active_goal_progress(
++            self.account_active_goal_progress_locked(
++                permit,
+                 turn_id.as_str(),
+                 &format!("{turn_id}:external-goal-mutation"),
+                 codex_state::GoalAccountingMode::ActiveOnly,
+@@ -180,6 +286,7 @@ impl GoalRuntimeHandle {
+         }
+ 
+         self.account_idle_goal_progress(
++            permit,
+             &format!("{}:external-goal-mutation", self.inner.thread_id),
+             codex_state::GoalAccountingMode::ActiveOnly,
+             BudgetLimitedGoalDisposition::ClearActive,
+@@ -193,10 +300,17 @@ impl GoalRuntimeHandle {
+         goal: codex_state::ThreadGoal,
+         previous_goal: Option<PreviousGoalSnapshot>,
+     ) -> Result<(), String> {
++        let permit = self.goal_state_permit().await?;
++        let committed = self.reconcile_live_activity(&permit).await?;
+         if !self.is_enabled() {
+             return Ok(());
+         }
+-
++        let Some(committed) = committed else {
++            return Ok(());
++        };
++        if committed != goal {
++            return Ok(());
++        }
+         self.inner.accounting_state.reset_empty_responses();
+         let replaced_existing_goal = previous_goal
+             .as_ref()
+@@ -238,6 +352,7 @@ impl GoalRuntimeHandle {
+                     let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
+                     self.inject_active_turn_steering(item).await;
+                 }
++                drop(permit);
+                 self.continue_if_idle().await?;
+             }
+             codex_state::ThreadGoalStatus::BudgetLimited => {
+@@ -259,12 +374,12 @@ impl GoalRuntimeHandle {
+         &self,
+         goal: codex_state::ThreadGoal,
+     ) -> Result<(), String> {
+-        if !self.is_enabled() {
+-            return Ok(());
+-        }
+-
++        let permit = self.goal_state_permit().await?;
++        let committed = self.reconcile_live_activity(&permit).await?;
+         self.inner.analytics.cleared(&goal);
+-        self.inner.accounting_state.clear_active_goal();
++        if committed.is_none() {
++            self.inner.accounting_state.clear_active_goal();
++        }
+         Ok(())
+     }
+ 
+@@ -285,7 +400,7 @@ impl GoalRuntimeHandle {
+ 
+         // Hold this through accounting and the status update so external goal
+         // mutations and idle continuation cannot interleave between them.
+-        let _goal_state_permit = self.goal_state_permit().await?;
++        let goal_state_permit = self.goal_state_permit().await?;
+         let Some(accounting_goal_id) = self
+             .inner
+             .accounting_state
+@@ -329,7 +444,8 @@ impl GoalRuntimeHandle {
+                 Some(expected_goal_id),
+             ),
+         };
+-        self.account_active_goal_progress(
++        self.account_active_goal_progress_locked(
++            &goal_state_permit,
+             turn_id,
+             &format!("{turn_id}:{event_name}-progress"),
+             codex_state::GoalAccountingMode::ActiveOnly,
+@@ -380,6 +496,7 @@ impl GoalRuntimeHandle {
+         else {
+             return Ok(());
+         };
++        self.reconcile_live_activity(&goal_state_permit).await?;
+         self.inner
+             .metrics
+             .record_terminal_if_status_changed(previous_status, &goal);
+@@ -399,17 +516,12 @@ impl GoalRuntimeHandle {
+     }
+ 
+     pub async fn restore_after_resume(&self) -> Result<(), String> {
++        let permit = self.goal_state_permit().await?;
++        let goal = self.reconcile_live_activity(&permit).await?;
+         if !self.is_enabled() {
+             return Ok(());
+         }
+ 
+-        let goal = self
+-            .inner
+-            .state_dbs
+-            .thread_goals()
+-            .get_thread_goal(self.thread_id())
+-            .await
+-            .map_err(|err| err.to_string())?;
+         match goal {
+             Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
+                 self.inner
+@@ -429,8 +541,9 @@ impl GoalRuntimeHandle {
+         }
+         // Hold this through the read/start window so external set/clear cannot
+         // change the goal after we read it but before the continuation launches.
+-        let _goal_state_permit = self.goal_state_permit().await?;
++        let goal_state_permit = Arc::new(self.goal_state_permit().await?);
+ 
++        let goal = self.reconcile_live_activity(&goal_state_permit).await?;
+         if self
+             .inner
+             .state_dbs
+@@ -451,14 +564,7 @@ impl GoalRuntimeHandle {
+             return Ok(());
+         };
+ 
+-        let Some(goal) = self
+-            .inner
+-            .state_dbs
+-            .thread_goals()
+-            .get_thread_goal(self.thread_id())
+-            .await
+-            .map_err(|err| err.to_string())?
+-        else {
++        let Some(goal) = goal else {
+             self.inner.accounting_state.clear_active_goal();
+             return Ok(());
+         };
+@@ -476,6 +582,10 @@ impl GoalRuntimeHandle {
+             thread.config().await.update_plan_enabled,
+         );
+ 
++        thread
++            .thread_extension_data()
++            .insert(GoalTurnStartPermit(Arc::clone(&goal_state_permit)));
++        let _start_lease = GoalTurnStartLease(thread.thread_extension_data());
+         match thread
+             .start_turn_if_idle(
+                 TurnInputRequest::new(TurnInput::ResponseItem(item)).on_start(TurnStartOptions {
+@@ -542,6 +652,25 @@ impl GoalRuntimeHandle {
+         event_id: &str,
+         mode: codex_state::GoalAccountingMode,
+         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
++    ) -> Result<Option<AccountedGoalProgress>, String> {
++        let permit = self.goal_state_permit().await?;
++        self.account_active_goal_progress_locked(
++            &permit,
++            turn_id,
++            event_id,
++            mode,
++            budget_limited_goal_disposition,
++        )
++        .await
++    }
++
++    async fn account_active_goal_progress_locked(
++        &self,
++        permit: &OwnedSemaphorePermit,
++        turn_id: &str,
++        event_id: &str,
++        mode: codex_state::GoalAccountingMode,
++        budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
+     ) -> Result<Option<AccountedGoalProgress>, String> {
+         let accounting = self.accounting_state();
+         let _accounting_permit = accounting
+@@ -567,6 +696,7 @@ impl GoalRuntimeHandle {
+             )
+             .await
+             .map_err(|err| err.to_string())?;
++        self.reconcile_live_activity(permit).await?;
+         Ok(match outcome {
+             codex_state::GoalAccountingOutcome::Updated(goal) => {
+                 let goal_id = goal.goal_id.clone();
+@@ -601,6 +731,7 @@ impl GoalRuntimeHandle {
+ 
+     async fn account_idle_goal_progress(
+         &self,
++        permit: &OwnedSemaphorePermit,
+         event_id: &str,
+         mode: codex_state::GoalAccountingMode,
+         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
+@@ -629,6 +760,7 @@ impl GoalRuntimeHandle {
+             )
+             .await
+             .map_err(|err| err.to_string())?;
++        self.reconcile_live_activity(permit).await?;
+         Ok(match outcome {
+             codex_state::GoalAccountingOutcome::Updated(goal) => {
+                 let goal_id = goal.goal_id.clone();
+diff --git a/codex-rs/ext/goal/src/tool.rs b/codex-rs/ext/goal/src/tool.rs
+index 5f4e6c32bd..282ddb142c 100644
+--- a/codex-rs/ext/goal/src/tool.rs
++++ b/codex-rs/ext/goal/src/tool.rs
+@@ -20,6 +20,7 @@ use crate::analytics::GoalAnalytics;
+ use crate::analytics::GoalEventAttribution;
+ use crate::events::GoalEventEmitter;
+ use crate::metrics::GoalMetrics;
++use crate::runtime::GoalRuntimeHandle;
+ use crate::spec::CREATE_GOAL_TOOL_NAME;
+ use crate::spec::GET_GOAL_TOOL_NAME;
+ use crate::spec::UPDATE_GOAL_TOOL_NAME;
+@@ -38,6 +39,7 @@ pub(crate) struct GoalToolExecutor {
+     event_emitter: GoalEventEmitter,
+     metrics: GoalMetrics,
+     max_goal_token_budget: Option<i64>,
++    runtime: GoalRuntimeHandle,
+ }
+ 
+ #[derive(Clone, Copy)]
+@@ -80,9 +82,8 @@ enum CompletionBudgetReport {
+ 
+ impl GoalToolExecutor {
+     pub(crate) fn get(
+-        thread_id: ThreadId,
++        runtime: GoalRuntimeHandle,
+         state_db: Arc<codex_state::StateRuntime>,
+-        accounting_state: Arc<GoalAccountingState>,
+         analytics: GoalAnalytics,
+         event_emitter: GoalEventEmitter,
+         metrics: GoalMetrics,
+@@ -90,9 +91,10 @@ impl GoalToolExecutor {
+         Self {
+             kind: GoalToolKind::Get,
+             execution_allowed: true,
+-            thread_id,
++            thread_id: runtime.thread_id(),
+             state_db,
+-            accounting_state,
++            accounting_state: runtime.accounting_state(),
++            runtime,
+             analytics,
+             event_emitter,
+             metrics,
+@@ -101,9 +103,8 @@ impl GoalToolExecutor {
+     }
+ 
+     pub(crate) fn create(
+-        thread_id: ThreadId,
++        runtime: GoalRuntimeHandle,
+         state_db: Arc<codex_state::StateRuntime>,
+-        accounting_state: Arc<GoalAccountingState>,
+         analytics: GoalAnalytics,
+         event_emitter: GoalEventEmitter,
+         metrics: GoalMetrics,
+@@ -112,9 +113,10 @@ impl GoalToolExecutor {
+         Self {
+             kind: GoalToolKind::Create,
+             execution_allowed: true,
+-            thread_id,
++            thread_id: runtime.thread_id(),
+             state_db,
+-            accounting_state,
++            accounting_state: runtime.accounting_state(),
++            runtime,
+             analytics,
+             event_emitter,
+             metrics,
+@@ -123,9 +125,8 @@ impl GoalToolExecutor {
+     }
+ 
+     pub(crate) fn update(
+-        thread_id: ThreadId,
++        runtime: GoalRuntimeHandle,
+         state_db: Arc<codex_state::StateRuntime>,
+-        accounting_state: Arc<GoalAccountingState>,
+         analytics: GoalAnalytics,
+         event_emitter: GoalEventEmitter,
+         metrics: GoalMetrics,
+@@ -133,9 +134,10 @@ impl GoalToolExecutor {
+         Self {
+             kind: GoalToolKind::Update,
+             execution_allowed: true,
+-            thread_id,
++            thread_id: runtime.thread_id(),
+             state_db,
+-            accounting_state,
++            accounting_state: runtime.accounting_state(),
++            runtime,
+             analytics,
+             event_emitter,
+             metrics,
+@@ -169,16 +171,28 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
+         'call: 'a,
+     {
+         Box::pin(async move {
+-            if !self.execution_allowed {
++            if !self.execution_allowed || !self.runtime.is_enabled() {
+                 return Err(FunctionCallError::RespondToModel(
+                     "Goal tools require a persistent thread.".to_string(),
+                 ));
+             }
+-            match self.kind {
++            let permit = self
++                .runtime
++                .goal_state_permit()
++                .await
++                .map_err(FunctionCallError::Fatal)?;
++            let result = match self.kind {
+                 GoalToolKind::Get => self.handle_get(invocation).await,
+                 GoalToolKind::Create => self.handle_create(invocation).await,
+-                GoalToolKind::Update => self.handle_update(invocation).await,
+-            }
++                GoalToolKind::Update => self.handle_update(invocation, &permit).await,
++            };
++            // Publish before the result is observed. Refused and failed tools
++            // also reconcile, so a failure never advertises uncommitted state.
++            self.runtime
++                .reconcile_live_activity(&permit)
++                .await
++                .map_err(FunctionCallError::RespondToModel)?;
++            result
+         })
+     }
+ }
+@@ -247,6 +261,7 @@ impl GoalToolExecutor {
+     async fn handle_update(
+         &self,
+         invocation: ToolCall<'_>,
++        permit: &tokio::sync::OwnedSemaphorePermit,
+     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+         let args: UpdateGoalArgs = parse_arguments(invocation.function_arguments()?)?;
+         if !matches!(
+@@ -260,6 +275,7 @@ impl GoalToolExecutor {
+         }
+ 
+         self.account_active_goal_progress(
++            permit,
+             match args.status {
+                 ThreadGoalStatus::Complete => codex_state::GoalAccountingMode::ActiveOrComplete,
+                 ThreadGoalStatus::Blocked | ThreadGoalStatus::Paused => {
+@@ -329,6 +345,7 @@ impl GoalToolExecutor {
+ 
+     async fn account_active_goal_progress(
+         &self,
++        permit: &tokio::sync::OwnedSemaphorePermit,
+         mode: codex_state::GoalAccountingMode,
+         event_id: &str,
+         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
+@@ -365,6 +382,10 @@ impl GoalToolExecutor {
+             .map_err(|err| {
+                 FunctionCallError::RespondToModel(format!("failed to account goal progress: {err}"))
+             })?;
++        self.runtime
++            .reconcile_live_activity(permit)
++            .await
++            .map_err(FunctionCallError::RespondToModel)?;
+         Ok(match outcome {
+             codex_state::GoalAccountingOutcome::Updated(goal) => {
+                 self.metrics
+diff --git a/codex-rs/ext/goal/tests/activity_publisher.rs b/codex-rs/ext/goal/tests/activity_publisher.rs
+new file mode 100644
+index 0000000000..4f1a5f50c2
+--- /dev/null
++++ b/codex-rs/ext/goal/tests/activity_publisher.rs
+@@ -0,0 +1,88 @@
++#![allow(dead_code)]
++#![allow(clippy::expect_used)]
++
++#[path = "../src/activity.rs"]
++mod activity;
++
++use activity::GoalActivityPublisher;
++use codex_extension_api::ExtensionData;
++use codex_extension_api::GoalActivity;
++use codex_extension_api::GoalActivityState;
++use codex_protocol::ThreadId;
++use pretty_assertions::assert_eq;
++
++#[test]
++fn publisher_refuses_stale_revision_and_recovers_unknown_state() {
++    let store = ExtensionData::new("thread");
++    let publisher = GoalActivityPublisher::new(/*enabled*/ true);
++    let goal = codex_state::ThreadGoal {
++        thread_id: ThreadId::new(),
++        goal_id: "live-goal".to_string(),
++        objective: "work".to_string(),
++        status: codex_state::ThreadGoalStatus::Active,
++        token_budget: None,
++        tokens_used: 0,
++        time_used_seconds: 0,
++        created_at: chrono::Utc::now(),
++        updated_at: chrono::Utc::now(),
++    };
++    publisher
++        .publish(&store, publisher.revision(), Ok(Some(goal.clone())))
++        .expect("publish");
++    let observed = publisher.revision();
++    let expected = GoalActivity {
++        goal_id: goal.goal_id.clone(),
++        revision: observed,
++        state: GoalActivityState::Active,
++    };
++    assert_eq!(store.get::<GoalActivity>().as_deref(), Some(&expected));
++    // Duplicate delivery of the same committed snapshot preserves its revision.
++    publisher
++        .publish(&store, observed, Ok(Some(goal.clone())))
++        .expect("duplicate");
++    assert_eq!(publisher.revision(), observed);
++    publisher.clear(&store);
++    assert!(
++        publisher
++            .publish(&store, observed, Ok(Some(goal.clone())))
++            .is_err()
++    );
++    assert_eq!(store.get::<GoalActivity>(), None);
++    publisher
++        .publish(&store, publisher.revision(), Ok(Some(goal.clone())))
++        .expect("new read");
++    let before_failure = publisher.revision();
++    assert!(
++        publisher
++            .publish(&store, before_failure, Err("store read failed".to_string()))
++            .is_err()
++    );
++    assert_eq!(store.get::<GoalActivity>(), None);
++    assert!(
++        publisher
++            .publish(&store, before_failure, Ok(Some(goal.clone())))
++            .is_err()
++    );
++    publisher
++        .publish(&store, publisher.revision(), Ok(Some(goal.clone())))
++        .expect("recover");
++    let before_disable = publisher.revision();
++    publisher.set_enabled(/*enabled*/ false, &store);
++    publisher.set_enabled(/*enabled*/ true, &store);
++    assert!(
++        publisher
++            .publish(&store, before_disable, Ok(Some(goal.clone())))
++            .is_err()
++    );
++    assert_eq!(store.get::<GoalActivity>(), None);
++    publisher
++        .publish(&store, publisher.revision(), Ok(Some(goal.clone())))
++        .expect("reenable from new read");
++    publisher.stop(&store);
++    assert!(
++        publisher
++            .publish(&store, publisher.revision(), Ok(Some(goal)))
++            .is_err()
++    );
++    assert_eq!(store.get::<GoalActivity>(), None);
++}
+diff --git a/codex-rs/ext/goal/tests/goal_extension_backend.rs b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+index ce161e6327..298298121b 100644
+--- a/codex-rs/ext/goal/tests/goal_extension_backend.rs
++++ b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+@@ -24,6 +24,7 @@ use codex_extension_api::ToolCallSource;
+ use codex_extension_api::ToolExecutor;
+ use codex_extension_api::ToolFinishInput;
+ use codex_extension_api::ToolPayload;
++use codex_extension_api::TurnAbortInput;
+ use codex_extension_api::TurnErrorInput;
+ use codex_extension_api::TurnStartInput;
+ use codex_extension_api::TurnStopInput;
+@@ -47,6 +48,7 @@ use codex_protocol::protocol::ThreadGoalStatus;
+ use codex_protocol::protocol::TokenUsage;
+ use codex_protocol::protocol::TokenUsageInfo;
+ use codex_protocol::protocol::TruncationPolicy;
++use codex_protocol::protocol::TurnAbortReason;
+ use pretty_assertions::assert_eq;
+ use serde_json::json;
+ use tempfile::TempDir;
+@@ -1721,7 +1723,7 @@ fn tool_names(tools: &[Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>]) -> Ve
+ }
+ 
+ struct GoalExtensionHarness {
+-    registry: Arc<codex_extension_api::ExtensionRegistry<()>>,
++    registry: Arc<codex_extension_api::ExtensionRegistry<bool>>,
+     session_store: ExtensionData,
+     thread_store: ExtensionData,
+     goal_service: Arc<GoalService>,
+@@ -1734,7 +1736,7 @@ impl GoalExtensionHarness {
+         thread_id: ThreadId,
+     ) -> anyhow::Result<Self> {
+         let sink = Arc::new(RecordingEventSink::default());
+-        let mut builder = ExtensionRegistryBuilder::<()>::with_event_sink(sink.clone());
++        let mut builder = ExtensionRegistryBuilder::<bool>::with_event_sink(sink.clone());
+         let goal_service = Arc::new(GoalService::new());
+         install_with_backend(
+             &mut builder,
+@@ -1743,8 +1745,8 @@ impl GoalExtensionHarness {
+             /*metrics_client*/ None,
+             Weak::new(),
+             Arc::clone(&goal_service),
+-            |_| GoalExtensionConfig {
+-                enabled: true,
++            |enabled| GoalExtensionConfig {
++                enabled: *enabled,
+                 max_goal_token_budget: None,
+             },
+         );
+@@ -1755,7 +1757,7 @@ impl GoalExtensionHarness {
+         for contributor in registry.thread_lifecycle_contributors() {
+             contributor
+                 .on_thread_start(ThreadStartInput {
+-                    config: &(),
++                    config: &true,
+                     session_source: &session_source,
+                     persistent_thread_state_available: true,
+                     environments: &[],
+@@ -1798,7 +1800,7 @@ impl GoalExtensionHarness {
+         for contributor in self.registry.thread_lifecycle_contributors() {
+             contributor
+                 .on_thread_start(ThreadStartInput {
+-                    config: &(),
++                    config: &true,
+                     session_source: &session_source,
+                     persistent_thread_state_available: true,
+                     environments: &[],
+@@ -1862,6 +1864,20 @@ impl GoalExtensionHarness {
+         }
+     }
+ 
++    async fn abort_turn(&self, turn_id: &str) {
++        let turn_store = ExtensionData::new(turn_id);
++        for contributor in self.registry.turn_lifecycle_contributors() {
++            contributor
++                .on_turn_abort(TurnAbortInput {
++                    reason: TurnAbortReason::Interrupted,
++                    session_store: &self.session_store,
++                    thread_store: &self.thread_store,
++                    turn_store: &turn_store,
++                })
++                .await;
++        }
++    }
++
+     async fn record_token_usage(&self, turn_id: &str, usage: &TokenUsage) {
+         self.record_token_usage_with_last(turn_id, usage, &TokenUsage::default())
+             .await;
+@@ -2123,3 +2139,6 @@ fn protocol_status(status: codex_state::ThreadGoalStatus) -> ThreadGoalStatus {
+         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
+     }
+ }
++
++#[path = "goal_extension_backend/goal_activity_tests.rs"]
++mod goal_activity;
+diff --git a/codex-rs/ext/goal/tests/goal_extension_backend/goal_activity_tests.rs b/codex-rs/ext/goal/tests/goal_extension_backend/goal_activity_tests.rs
+new file mode 100644
+index 0000000000..7716b93256
+--- /dev/null
++++ b/codex-rs/ext/goal/tests/goal_extension_backend/goal_activity_tests.rs
+@@ -0,0 +1,380 @@
++use super::*;
++use codex_extension_api::GoalActivity;
++use codex_extension_api::GoalActivityState;
++use pretty_assertions::assert_eq;
++
++#[tokio::test]
++async fn tool_finish_reconciles_committed_state_independently_of_tool_name() -> anyhow::Result<()> {
++    let db = test_runtime().await?;
++    let id = test_thread_id()?;
++    seed_thread_metadata(&db, id).await?;
++    let h = GoalExtensionHarness::new(db.clone(), id).await?;
++    h.start_turn("turn-1", &TokenUsage::default()).await;
++    h.notify_tool_finish("turn-1", "forged-success", "create_goal")
++        .await;
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::BudgetLimited,
++            /*token_budget*/ None,
++        )
++        .await?;
++    h.notify_tool_finish("turn-1", "other-tool", "shell").await;
++    assert_eq!(
++        h.thread_store.get::<GoalActivity>().map(|a| a.state),
++        Some(GoalActivityState::BudgetLimited)
++    );
++    db.thread_goals().delete_thread_goal(id).await?;
++    h.notify_tool_finish("turn-1", "late-success", "create_goal")
++        .await;
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    Ok(())
++}
++
++#[tokio::test]
++async fn disable_and_stop_revoke_activity_and_pending_options() -> anyhow::Result<()> {
++    let db = test_runtime().await?;
++    let id = test_thread_id()?;
++    seed_thread_metadata(&db, id).await?;
++    let h = GoalExtensionHarness::new(db.clone(), id).await?;
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    h.resume_thread().await;
++    for c in h.registry.config_contributors() {
++        c.on_config_changed(&h.session_store, &h.thread_store, &true, &false);
++        c.on_config_changed(&h.session_store, &h.thread_store, &false, &true);
++    }
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    h.start_turn("reenabled", &TokenUsage::default()).await;
++    assert_eq!(
++        h.thread_store.get::<GoalActivity>().map(|a| a.state),
++        Some(GoalActivityState::Active)
++    );
++    h.thread_store
++        .insert(codex_core::TurnStartOptions::default());
++    for c in h.registry.config_contributors() {
++        c.on_config_changed(&h.session_store, &h.thread_store, &true, &false);
++    }
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    assert!(
++        h.thread_store
++            .get::<codex_core::TurnStartOptions>()
++            .is_none()
++    );
++    db.thread_goals().delete_thread_goal(id).await?;
++    for c in h.registry.config_contributors() {
++        c.on_config_changed(&h.session_store, &h.thread_store, &false, &true);
++    }
++    h.start_turn("turn-1", &TokenUsage::default()).await;
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "new",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    h.resume_thread().await;
++    h.thread_store
++        .insert(codex_core::TurnStartOptions::default());
++    h.stop_thread().await;
++    h.notify_tool_finish("turn-1", "late", "create_goal").await;
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    assert!(
++        h.thread_store
++            .get::<codex_core::TurnStartOptions>()
++            .is_none()
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn read_failure_revokes_activity_and_next_turn_recovers() -> anyhow::Result<()> {
++    let db = test_runtime().await?;
++    let id = test_thread_id()?;
++    seed_thread_metadata(&db, id).await?;
++    let h = GoalExtensionHarness::new(db.clone(), id).await?;
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    h.resume_thread().await;
++    let previous = h.thread_store.get::<GoalActivity>().expect("active");
++    let pool = db
++        .sqlite()
++        .open_read_write_pool(&db.sqlite().goals_db_path())
++        .await?;
++    // A malformed committed row exercises the actual GoalStore read failure,
++    // without a production test-only switch or replacing the publisher.
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 9223372036854775807 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    assert!(db.thread_goals().get_thread_goal(id).await.is_err());
++    h.start_turn("turn-1", &TokenUsage::default()).await;
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 0 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    h.start_turn("turn-2", &TokenUsage::default()).await;
++    let recovered = h
++        .thread_store
++        .get::<GoalActivity>()
++        .expect("reconciled again");
++    assert_eq!(
++        (&recovered.goal_id, recovered.state),
++        (&previous.goal_id, previous.state)
++    );
++    assert!(recovered.revision > previous.revision);
++    Ok(())
++}
++
++#[tokio::test]
++async fn turn_stop_accounting_read_failure_revokes_activity_and_next_turn_recovers()
++-> anyhow::Result<()> {
++    let db = test_runtime().await?;
++    let id = test_thread_id()?;
++    seed_thread_metadata(&db, id).await?;
++    let h = GoalExtensionHarness::new(db.clone(), id).await?;
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    h.start_turn("turn-1", &TokenUsage::default()).await;
++    h.record_token_usage(
++        "turn-1",
++        &token_usage(
++            /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
++            /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
++        ),
++    )
++    .await;
++    let previous = h.thread_store.get::<GoalActivity>().expect("active");
++    let pool = db
++        .sqlite()
++        .open_read_write_pool(&db.sqlite().goals_db_path())
++        .await?;
++    // A malformed committed row exercises the actual GoalStore read failure
++    // through the turn-stop progress-accounting path.
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 9223372036854775807 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    assert!(db.thread_goals().get_thread_goal(id).await.is_err());
++    h.stop_turn("turn-1").await;
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 0 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    h.start_turn("turn-2", &TokenUsage::default()).await;
++    let recovered = h
++        .thread_store
++        .get::<GoalActivity>()
++        .expect("reconciled again");
++    assert_eq!(
++        (&recovered.goal_id, recovered.state),
++        (&previous.goal_id, previous.state)
++    );
++    assert!(recovered.revision > previous.revision);
++    Ok(())
++}
++
++#[tokio::test]
++async fn turn_abort_accounting_read_failure_revokes_activity_and_next_turn_recovers()
++-> anyhow::Result<()> {
++    let db = test_runtime().await?;
++    let id = test_thread_id()?;
++    seed_thread_metadata(&db, id).await?;
++    let h = GoalExtensionHarness::new(db.clone(), id).await?;
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    h.start_turn("turn-1", &TokenUsage::default()).await;
++    h.record_token_usage(
++        "turn-1",
++        &token_usage(
++            /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
++            /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
++        ),
++    )
++    .await;
++    let previous = h.thread_store.get::<GoalActivity>().expect("active");
++    let pool = db
++        .sqlite()
++        .open_read_write_pool(&db.sqlite().goals_db_path())
++        .await?;
++    // A malformed committed row exercises the actual GoalStore read failure
++    // through the turn-abort progress-accounting path.
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 9223372036854775807 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    assert!(db.thread_goals().get_thread_goal(id).await.is_err());
++    h.abort_turn("turn-1").await;
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 0 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    h.start_turn("turn-2", &TokenUsage::default()).await;
++    let recovered = h
++        .thread_store
++        .get::<GoalActivity>()
++        .expect("reconciled again");
++    assert_eq!(
++        (&recovered.goal_id, recovered.state),
++        (&previous.goal_id, previous.state)
++    );
++    assert!(recovered.revision > previous.revision);
++    Ok(())
++}
++
++#[tokio::test]
++async fn tool_finish_accounting_failure_revokes_activity_and_next_turn_recovers()
++-> anyhow::Result<()> {
++    let db = test_runtime().await?;
++    let id = test_thread_id()?;
++    seed_thread_metadata(&db, id).await?;
++    let h = GoalExtensionHarness::new(db.clone(), id).await?;
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    h.start_turn("turn-1", &TokenUsage::default()).await;
++    h.record_token_usage(
++        "turn-1",
++        &token_usage(
++            /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
++            /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
++        ),
++    )
++    .await;
++    let previous = h.thread_store.get::<GoalActivity>().expect("active");
++    let pool = db
++        .sqlite()
++        .open_read_write_pool(&db.sqlite().goals_db_path())
++        .await?;
++    // Fail goal-table writes while leaving reads intact, so on_tool_finish
++    // reconciles successfully and then fails in progress accounting.
++    sqlx::query("CREATE TRIGGER fail_goal_updates BEFORE UPDATE ON thread_goals BEGIN SELECT RAISE(ABORT, 'injected goal write failure'); END")
++        .execute(&pool)
++        .await?;
++    h.notify_tool_finish("turn-1", "call-shell", "shell").await;
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    sqlx::query("DROP TRIGGER fail_goal_updates")
++        .execute(&pool)
++        .await?;
++    h.start_turn("turn-2", &TokenUsage::default()).await;
++    let recovered = h
++        .thread_store
++        .get::<GoalActivity>()
++        .expect("reconciled again");
++    assert_eq!(
++        (&recovered.goal_id, recovered.state),
++        (&previous.goal_id, previous.state)
++    );
++    assert!(recovered.revision > previous.revision);
++    Ok(())
++}
++
++#[tokio::test]
++async fn turn_error_read_failure_revokes_activity_and_next_turn_recovers() -> anyhow::Result<()> {
++    let db = test_runtime().await?;
++    let id = test_thread_id()?;
++    seed_thread_metadata(&db, id).await?;
++    let h = GoalExtensionHarness::new(db.clone(), id).await?;
++    db.thread_goals()
++        .replace_thread_goal(
++            id,
++            "work",
++            codex_state::ThreadGoalStatus::Active,
++            /*token_budget*/ None,
++        )
++        .await?;
++    h.start_turn("turn-1", &TokenUsage::default()).await;
++    let previous = h.thread_store.get::<GoalActivity>().expect("active");
++    let pool = db
++        .sqlite()
++        .open_read_write_pool(&db.sqlite().goals_db_path())
++        .await?;
++    // A malformed committed row exercises the actual GoalStore read failure
++    // through the turn-error stop path. The stop fails before any status
++    // mutation, so the handler must reconcile (revoking the marker) after it.
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 9223372036854775807 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    assert!(db.thread_goals().get_thread_goal(id).await.is_err());
++    h.notify_turn_error("turn-1", CodexErr::Fatal("test error".to_string()))
++        .await;
++    assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    sqlx::query("UPDATE thread_goals SET updated_at_ms = 0 WHERE thread_id = ?")
++        .bind(id.to_string())
++        .execute(&pool)
++        .await?;
++    h.start_turn("turn-2", &TokenUsage::default()).await;
++    let recovered = h
++        .thread_store
++        .get::<GoalActivity>()
++        .expect("reconciled again");
++    assert_eq!(
++        (&recovered.goal_id, recovered.state),
++        (&previous.goal_id, previous.state)
++    );
++    assert!(recovered.revision > previous.revision);
++    Ok(())
++}
++
++#[tokio::test]
++async fn automatic_stop_revokes_activity_for_error_and_usage_limit() -> anyhow::Result<()> {
++    let db = test_runtime().await?;
++    let id = test_thread_id()?;
++    seed_thread_metadata(&db, id).await?;
++    let h = GoalExtensionHarness::new(db.clone(), id).await?;
++    for error in [
++        CodexErr::Fatal("test error".to_string()),
++        CodexErr::UsageNotIncluded,
++    ] {
++        db.thread_goals()
++            .replace_thread_goal(
++                id,
++                "work",
++                codex_state::ThreadGoalStatus::Active,
++                /*token_budget*/ None,
++            )
++            .await?;
++        h.start_turn("turn-1", &TokenUsage::default()).await;
++        assert!(h.thread_store.get::<GoalActivity>().is_some());
++        h.notify_turn_error("turn-1", error).await;
++        assert_eq!(h.thread_store.get::<GoalActivity>(), None);
++    }
++    Ok(())
++}

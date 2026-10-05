@@ -1,0 +1,405 @@
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index bb1474feb5..f824a0dd9e 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -62,6 +62,7 @@ use crate::tools::router::ToolRouter;
+ use crate::tools::tool_namespaces_info::collect_tool_namespaces_info;
+ use codex_connectors::apps_config_from_layer_stack;
+ use codex_extension_api::ExtensionData;
++use codex_extension_api::GoalActivity;
+ use codex_features::Feature;
+ use codex_features::SleepToolMode;
+ use codex_login::AuthManager;
+@@ -110,6 +111,7 @@ struct CoreToolPlanContext<'a> {
+     tool_policy: &'a codex_extension_api::ToolPolicy,
+     turn_context: &'a TurnContext,
+     model_info: &'a ModelInfo,
++    goal_activity_present: bool,
+     environments: &'a TurnEnvironmentSnapshot,
+     mcp: &'a codex_mcp::McpBinding,
+     tool_suggest_candidates: Option<&'a crate::tools::router::ToolSuggestCandidates>,
+@@ -140,6 +142,11 @@ pub(crate) fn build_tool_router(
+         tool_policy: &session.tool_policy,
+         turn_context,
+         model_info,
++        goal_activity_present: session
++            .services
++            .thread_extension_data
++            .get::<GoalActivity>()
++            .is_some(),
+         environments,
+         mcp,
+         tool_suggest_candidates,
+@@ -285,6 +292,7 @@ pub(crate) fn build_core_tool_registry(
+         tool_policy: &Default::default(),
+         turn_context,
+         model_info,
++        goal_activity_present: false,
+         environments,
+         mcp,
+         tool_suggest_candidates,
+@@ -1242,7 +1250,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+                         .as_ref()
+                         .is_some_and(|config| config.sleep_tool)
+                 } else {
+-                    model_has_clock
++                    model_has_clock || context.goal_activity_present
+                 }
+             }
+         }
+diff --git a/codex-rs/core/tests/suite/current_time_reminder.rs b/codex-rs/core/tests/suite/current_time_reminder.rs
+index 72c79031c2..89f94d842d 100644
+--- a/codex-rs/core/tests/suite/current_time_reminder.rs
++++ b/codex-rs/core/tests/suite/current_time_reminder.rs
+@@ -18,9 +18,12 @@ use codex_core::TimeFuture;
+ use codex_core::TimeProvider;
+ use codex_core::TurnInputRequest;
+ use codex_core::config::CurrentTimeReminderConfig;
++use codex_extension_api::GoalActivity;
++use codex_extension_api::GoalActivityState;
+ use codex_features::CurrentTimeReminderDeliveryMode;
+ use codex_features::CurrentTimeSource;
+ use codex_features::Feature;
++use codex_features::SleepToolMode;
+ use codex_model_provider_info::built_in_model_providers;
+ use codex_protocol::ThreadId;
+ use codex_protocol::models::PermissionProfile;
+@@ -45,6 +48,7 @@ use core_test_support::skip_if_no_network;
+ use core_test_support::test_codex::test_codex;
+ use core_test_support::wait_for_event;
+ use pretty_assertions::assert_eq;
++use serde_json::Value;
+ use serde_json::json;
+ use test_case::test_case;
+ 
+@@ -131,6 +135,38 @@ fn current_time_reminders(request: &ResponsesRequest) -> Vec<String> {
+         .collect()
+ }
+ 
++fn goal_activity(state: GoalActivityState, revision: u64) -> GoalActivity {
++    GoalActivity {
++        goal_id: "goal-1".to_string(),
++        revision,
++        state,
++    }
++}
++
++fn tool_catalog_without_sleep(request: &ResponsesRequest) -> Vec<Value> {
++    let mut tools = request.body_json()["tools"]
++        .as_array()
++        .expect("request should contain tools")
++        .clone();
++    for tool in &mut tools {
++        if tool.get("type").and_then(Value::as_str) == Some("namespace")
++            && tool.get("name").and_then(Value::as_str) == Some("clock")
++            && let Some(children) = tool.get_mut("tools").and_then(Value::as_array_mut)
++        {
++            children.retain(|child| child.get("name").and_then(Value::as_str) != Some("sleep"));
++        }
++    }
++    tools.retain(|tool| {
++        tool.get("type").and_then(Value::as_str) != Some("namespace")
++            || tool.get("name").and_then(Value::as_str) != Some("clock")
++            || tool
++                .get("tools")
++                .and_then(Value::as_array)
++                .is_some_and(|children| !children.is_empty())
++    });
++    tools
++}
++
+ fn enable_current_time_reminder(
+     config: &mut codex_core::config::Config,
+     interval: u64,
+@@ -556,6 +592,210 @@ async fn sleep_tool_configuration_controls_registration(
+     Ok(())
+ }
+ 
++#[test_case(false; "direct_tools")]
++#[test_case(true; "code_mode")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn goal_activity_controls_model_driven_sleep_on_each_sampling_request(
++    code_mode: bool,
++) -> Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let responses = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
++            sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
++            sse(vec![ev_response_created("resp-3"), ev_completed("resp-3")]),
++            sse(vec![ev_response_created("resp-4"), ev_completed("resp-4")]),
++        ],
++    )
++    .await;
++    let test = test_codex()
++        .with_model_info_override("gpt-5.5", |model_info| {
++            model_info
++                .experimental_supported_tools
++                .retain(|tool| tool != "clock");
++        })
++        .with_config(move |config| {
++            config.model_reasoning_effort = Some(ReasoningEffort::High);
++            config
++                .features
++                .disable(Feature::CurrentTimeReminder)
++                .expect("test config should allow disabling current-time reminders");
++            config.sleep_tool_mode = SleepToolMode::ModelDriven;
++            if code_mode {
++                config
++                    .features
++                    .enable(Feature::CodeMode)
++                    .expect("test config should allow code mode");
++            }
++        })
++        .build_with_auto_env(&server)
++        .await?;
++
++    let thread_data = test.codex.thread_extension_data();
++    assert!(
++        thread_data
++            .insert("unrelated extension data".to_string())
++            .is_none()
++    );
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    assert!(
++        thread_data
++            .insert(goal_activity(
++                GoalActivityState::Active,
++                /*revision*/ 1
++            ))
++            .is_none()
++    );
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    assert!(
++        thread_data
++            .insert(goal_activity(
++                GoalActivityState::BudgetLimited,
++                /*revision*/ 2
++            ))
++            .is_some()
++    );
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    assert!(thread_data.remove::<GoalActivity>().is_some());
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    let requests = responses.requests();
++    assert_eq!(requests.len(), 4);
++    assert_eq!(
++        requests
++            .iter()
++            .map(|request| request.tool_by_name("clock", "sleep").is_some())
++            .collect::<Vec<_>>(),
++        [false, true, true, false]
++    );
++    let baseline_tools = tool_catalog_without_sleep(&requests[0]);
++    assert!(
++        requests
++            .iter()
++            .all(|request| tool_catalog_without_sleep(request) == baseline_tools)
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn disabled_sleep_tool_feature_wins_over_goal_activity() -> Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let responses = mount_sse_once(
++        &server,
++        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
++    )
++    .await;
++    let test = test_codex()
++        .with_model_info_override("gpt-5.5", |model_info| {
++            model_info
++                .experimental_supported_tools
++                .retain(|tool| tool != "clock");
++        })
++        .with_config(|config| {
++            config.model_reasoning_effort = Some(ReasoningEffort::High);
++            config
++                .features
++                .disable(Feature::CurrentTimeReminder)
++                .expect("test config should allow disabling current-time reminders");
++            config
++                .features
++                .disable(Feature::SleepTool)
++                .expect("test config should allow disabling the sleep tool");
++            config.sleep_tool_mode = SleepToolMode::ModelDriven;
++        })
++        .build_with_auto_env(&server)
++        .await?;
++    assert!(
++        test.codex
++            .thread_extension_data()
++            .insert(goal_activity(
++                GoalActivityState::Active,
++                /*revision*/ 1
++            ))
++            .is_none()
++    );
++
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    assert!(
++        responses
++            .single_request()
++            .tool_by_name("clock", "sleep")
++            .is_none()
++    );
++    Ok(())
++}
++
++#[test_case(Some(false), false; "explicit_false")]
++#[test_case(None, false; "missing_config")]
++#[test_case(Some(true), true; "explicit_true")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn current_time_reminder_sleep_setting_overrides_goal_activity(
++    sleep_tool: Option<bool>,
++    expected_sleep: bool,
++) -> Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let responses = mount_sse_once(
++        &server,
++        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
++    )
++    .await;
++    let test = test_codex()
++        .with_model_info_override("gpt-5.5", |model_info| {
++            model_info
++                .experimental_supported_tools
++                .retain(|tool| tool != "clock");
++        })
++        .with_config(move |config| {
++            config.model_reasoning_effort = Some(ReasoningEffort::High);
++            config
++                .features
++                .enable(Feature::CurrentTimeReminder)
++                .expect("test config should allow current-time reminders");
++            config.current_time_reminder = sleep_tool.map(|sleep_tool| CurrentTimeReminderConfig {
++                sleep_tool,
++                ..CurrentTimeReminderConfig::default()
++            });
++            config.sleep_tool_mode = SleepToolMode::ModelDriven;
++        })
++        .build_with_auto_env(&server)
++        .await?;
++    assert!(
++        test.codex
++            .thread_extension_data()
++            .insert(goal_activity(
++                GoalActivityState::Active,
++                /*revision*/ 1
++            ))
++            .is_none()
++    );
++
++    test.submit_text_turn("inspect available clock tools")
++        .await?;
++
++    let request = responses.single_request();
++    assert_eq!(
++        ["curr_time", "sleep"].map(|name| request.tool_by_name("clock", name).is_some()),
++        [true, expected_sleep]
++    );
++    Ok(())
++}
++
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn current_time_reminder_is_refreshed_after_compaction() -> Result<()> {
+     skip_if_no_network!(Ok(()));
+diff --git a/codex-rs/ext/extension-api/src/goal_activity.rs b/codex-rs/ext/extension-api/src/goal_activity.rs
+new file mode 100644
+index 0000000000..121fdafd15
+--- /dev/null
++++ b/codex-rs/ext/extension-api/src/goal_activity.rs
+@@ -0,0 +1,27 @@
++/// Describes the goal whose work is currently active on a thread.
++///
++/// Extensions publish this as typed, thread-scoped data so core capabilities
++/// can respond to goal activity without depending on a goal implementation.
++/// The marker is ephemeral and is not persisted. Publishers should reconcile
++/// it with committed goal state and advance `revision` when that state changes,
++/// allowing consumers to distinguish fresh state from stale callbacks.
++/// Presence grants goal-related tool capability, not permission to admit an
++/// automatic continuation; consumers must still apply their own feature gates.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct GoalActivity {
++    /// Stable identity of the active goal.
++    pub goal_id: String,
++    /// Publisher revision for the authoritative goal snapshot.
++    pub revision: u64,
++    /// Whether the goal is active or awaiting recovery from a budget limit.
++    pub state: GoalActivityState,
++}
++
++/// Goal states that retain active work on a thread.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum GoalActivityState {
++    /// The goal can continue normally.
++    Active,
++    /// The goal remains present while continuation is limited by its budget.
++    BudgetLimited,
++}
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index c8436c8feb..0fa79cfb44 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -1,5 +1,6 @@
+ mod capabilities;
+ mod contributors;
++mod goal_activity;
+ mod registry;
+ mod session_isolation;
+ mod state;
+@@ -7,6 +8,8 @@ mod tool_policy;
+ mod turn_admission;
+ mod user_instructions;
+ 
++pub use goal_activity::GoalActivity;
++pub use goal_activity::GoalActivityState;
+ pub use session_isolation::IsolatedSessionExtensions;
+ pub use session_isolation::SessionIsolation;
+ pub use tool_policy::ToolPolicy;
+diff --git a/codex-rs/ext/extension-api/tests/state.rs b/codex-rs/ext/extension-api/tests/state.rs
+index 6e7720c913..4180ad128b 100644
+--- a/codex-rs/ext/extension-api/tests/state.rs
++++ b/codex-rs/ext/extension-api/tests/state.rs
+@@ -5,8 +5,23 @@ use std::sync::atomic::AtomicUsize;
+ use std::sync::atomic::Ordering;
+ 
+ use codex_extension_api::ExtensionData;
++use codex_extension_api::GoalActivity;
++use codex_extension_api::GoalActivityState;
+ use pretty_assertions::assert_eq;
+ 
++#[test]
++fn goal_activity_can_be_inserted_as_typed_thread_data() {
++    let data = ExtensionData::new("thread-1");
++    let marker = GoalActivity {
++        goal_id: "goal-1".to_string(),
++        revision: 4,
++        state: GoalActivityState::BudgetLimited,
++    };
++
++    assert_eq!(data.insert(marker.clone()), None);
++    assert_eq!(data.get::<GoalActivity>().as_deref(), Some(&marker));
++}
++
+ #[test]
+ fn typed_values_can_be_inserted_replaced_and_removed() {
+     let data = ExtensionData::new("thread-1");

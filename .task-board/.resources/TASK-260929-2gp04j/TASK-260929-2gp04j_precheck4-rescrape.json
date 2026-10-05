@@ -1,0 +1,347 @@
+{
+  "SNAPSHOT": {
+    "run": "37222115113",
+    "lanes": {
+      "app-server": "success",
+      "small": "success",
+      "lint": "success",
+      "core": "success"
+    },
+    "fails": [],
+    "meaningful": []
+  },
+  "abort_read_failure_keeps_marker": {
+    "run": "37222128124",
+    "lanes": {
+      "core": "cancelled",
+      "lint": "success",
+      "app-server": "cancelled",
+      "small": "failure"
+    },
+    "fails": [
+      "turn_abort_accounting_read_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "meaningful": [
+      "turn_abort_accounting_read_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "killed": false
+  },
+  "budget_limited_admits_continuation": {
+    "run": "37222142771",
+    "lanes": {
+      "app-server": "success",
+      "small": "success",
+      "core": "failure",
+      "lint": "success"
+    },
+    "fails": [
+      "accounting_budget_keeps_sleep_without_automatic_continuation"
+    ],
+    "meaningful": [
+      "accounting_budget_keeps_sleep_without_automatic_continuation"
+    ],
+    "killed": false
+  },
+  "cleared_revision_accepts_old_read": {
+    "run": "37222157519",
+    "lanes": {
+      "lint": "success",
+      "app-server": "cancelled",
+      "core": "cancelled",
+      "small": "failure"
+    },
+    "fails": [
+      "publisher_refuses_stale_revision_and_recovers_unknown_state"
+    ],
+    "meaningful": [
+      "publisher_refuses_stale_revision_and_recovers_unknown_state"
+    ],
+    "killed": false
+  },
+  "complete_retains_sleep": {
+    "run": "37222172211",
+    "lanes": {
+      "core": "failure",
+      "small": "success",
+      "lint": "success",
+      "app-server": "failure"
+    },
+    "fails": [
+      "complete",
+      "created"
+    ],
+    "meaningful": [
+      "complete",
+      "created"
+    ],
+    "killed": false
+  },
+  "create_waits_for_finish": {
+    "run": "37222186460",
+    "lanes": {
+      "lint": "success",
+      "app-server": "success",
+      "small": "success",
+      "core": "failure"
+    },
+    "fails": [
+      "clear_revokes_before_late_create_finish_and_stale_set_effects",
+      "disable_mid_turn_removes_sleep_from_next_request"
+    ],
+    "meaningful": [
+      "clear_revokes_before_late_create_finish_and_stale_set_effects",
+      "disable_mid_turn_removes_sleep_from_next_request"
+    ],
+    "killed": false
+  },
+  "disable_preserves_active_marker": {
+    "run": "37222200837",
+    "lanes": {
+      "core": "cancelled",
+      "lint": "cancelled",
+      "app-server": "cancelled",
+      "small": "failure"
+    },
+    "fails": [
+      "disable_and_stop_revoke_activity_and_pending_options"
+    ],
+    "meaningful": [
+      "disable_and_stop_revoke_activity_and_pending_options"
+    ],
+    "killed": false
+  },
+  "disabled_clear_keeps_marker": {
+    "run": "37222213853",
+    "lanes": {
+      "lint": "success",
+      "small": "success",
+      "app-server": "success",
+      "core": "failure"
+    },
+    "fails": [
+      "clear_revokes_before_late_create_finish_and_stale_set_effects"
+    ],
+    "meaningful": [
+      "clear_revokes_before_late_create_finish_and_stale_set_effects"
+    ],
+    "killed": false
+  },
+  "external_set_get_failure_keeps_marker": {
+    "run": "37222226806",
+    "lanes": {
+      "small": "success",
+      "app-server": "success",
+      "core": "failure",
+      "lint": "success"
+    },
+    "fails": [
+      "external_set_get_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "meaningful": [
+      "external_set_get_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "killed": false
+  },
+  "external_set_prepare_failure_keeps_marker": {
+    "run": "37222240871",
+    "lanes": {
+      "lint": "success",
+      "small": "success",
+      "core": "failure",
+      "app-server": "success"
+    },
+    "fails": [
+      "external_set_prepare_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "meaningful": [
+      "external_set_prepare_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "killed": false
+  },
+  "external_set_skips_budget_limited": {
+    "run": "37222254580",
+    "lanes": {
+      "app-server": "success",
+      "core": "failure",
+      "lint": "success",
+      "small": "success"
+    },
+    "fails": [
+      "budget_limited"
+    ],
+    "meaningful": [
+      "budget_limited"
+    ],
+    "killed": false
+  },
+  "fork_flush_prepare_failure_keeps_marker": {
+    "run": "37222268363",
+    "lanes": {
+      "lint": "success",
+      "core": "failure",
+      "app-server": "success",
+      "small": "success"
+    },
+    "fails": [
+      "fork_flush_read_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "meaningful": [
+      "fork_flush_read_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "killed": false
+  },
+  "late_active_set_reinserts_cleared_goal": {
+    "run": "37222283603",
+    "lanes": {
+      "small": "success",
+      "app-server": "success",
+      "core": "failure",
+      "lint": "success"
+    },
+    "fails": [
+      "clear_revokes_before_late_create_finish_and_stale_set_effects"
+    ],
+    "meaningful": [
+      "clear_revokes_before_late_create_finish_and_stale_set_effects"
+    ],
+    "killed": false
+  },
+  "resume_skips_budget_limited": {
+    "run": "37222297485",
+    "lanes": {
+      "core": "failure",
+      "lint": "success",
+      "small": "success",
+      "app-server": "success"
+    },
+    "fails": [
+      "budget_limited"
+    ],
+    "meaningful": [
+      "budget_limited"
+    ],
+    "killed": false
+  },
+  "stop_preserves_active_marker": {
+    "run": "37222311043",
+    "lanes": {
+      "small": "failure",
+      "app-server": "cancelled",
+      "core": "cancelled",
+      "lint": "cancelled"
+    },
+    "fails": [
+      "disable_and_stop_revoke_activity_and_pending_options"
+    ],
+    "meaningful": [
+      "disable_and_stop_revoke_activity_and_pending_options"
+    ],
+    "killed": false
+  },
+  "timestamp_read_failure_keeps_known_marker": {
+    "run": "37222324282",
+    "lanes": {
+      "core": "cancelled",
+      "app-server": "cancelled",
+      "lint": "cancelled",
+      "small": "failure"
+    },
+    "fails": [
+      "read_failure_revokes_activity_and_next_turn_recovers",
+      "turn_abort_accounting_read_failure_revokes_activity_and_next_turn_recovers",
+      "turn_error_read_failure_revokes_activity_and_next_turn_recovers",
+      "turn_stop_accounting_read_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "meaningful": [
+      "read_failure_revokes_activity_and_next_turn_recovers",
+      "turn_abort_accounting_read_failure_revokes_activity_and_next_turn_recovers",
+      "turn_error_read_failure_revokes_activity_and_next_turn_recovers",
+      "turn_stop_accounting_read_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "killed": false
+  },
+  "tool_finish_accounting_failure_keeps_marker": {
+    "run": "37222337369",
+    "lanes": {
+      "core": "cancelled",
+      "small": "failure",
+      "lint": "cancelled",
+      "app-server": "cancelled"
+    },
+    "fails": [
+      "tool_finish_accounting_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "meaningful": [
+      "tool_finish_accounting_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "killed": false
+  },
+  "turn_error_skips_reconcile_after_stop_failure": {
+    "run": "37222351546",
+    "lanes": {
+      "lint": "cancelled",
+      "small": "failure",
+      "core": "cancelled",
+      "app-server": "cancelled"
+    },
+    "fails": [
+      "automatic_stop_revokes_activity_for_error_and_usage_limit",
+      "turn_error_read_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "meaningful": [
+      "automatic_stop_revokes_activity_for_error_and_usage_limit",
+      "turn_error_read_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "killed": false
+  },
+  "turn_start_requires_baseline": {
+    "run": "37222366509",
+    "lanes": {
+      "app-server": "success",
+      "core": "failure",
+      "small": "success",
+      "lint": "success"
+    },
+    "fails": [
+      "encrypted_parent_reply_survives_incremental_guardian_reviews",
+      "turn_start_before_missing_baseline_and_plan_then_removes_cleared_goal"
+    ],
+    "meaningful": [
+      "encrypted_parent_reply_survives_incremental_guardian_reviews",
+      "turn_start_before_missing_baseline_and_plan_then_removes_cleared_goal"
+    ],
+    "killed": false
+  },
+  "turn_stop_read_failure_keeps_marker": {
+    "run": "37222381228",
+    "lanes": {
+      "core": "cancelled",
+      "lint": "cancelled",
+      "small": "failure",
+      "app-server": "cancelled"
+    },
+    "fails": [
+      "turn_stop_accounting_read_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "meaningful": [
+      "turn_stop_accounting_read_failure_revokes_activity_and_next_turn_recovers"
+    ],
+    "killed": false
+  },
+  "usage_limit_retains_sleep": {
+    "run": "37222394888",
+    "lanes": {
+      "lint": "cancelled",
+      "core": "cancelled",
+      "small": "failure",
+      "app-server": "cancelled"
+    },
+    "fails": [
+      "automatic_stop_revokes_activity_for_error_and_usage_limit"
+    ],
+    "meaningful": [
+      "automatic_stop_revokes_activity_for_error_and_usage_limit"
+    ],
+    "killed": false
+  }
+}

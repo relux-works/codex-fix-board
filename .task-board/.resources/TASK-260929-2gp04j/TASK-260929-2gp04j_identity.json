@@ -1,0 +1,106 @@
+{
+  "head": "58042581a0b507ae62e7b1d8381c429baea1f689",
+  "candidate_identity_sha256": "5c9a3546cff6a38d546ed18a4f3be1af76bf03a31313cd7ce8fa34c5ebab4ada",
+  "candidate_identity_scheme": "sha256(head + '\\n' + 'path:sha256\\n' per listed file in order), UTF-8",
+  "files": [
+    {
+      "path": "codex-rs/Cargo.lock",
+      "sha256": "a1bf3a727c3f70238832688a933ff2bca8b2cf1b57b7456c7dd18c45a44731d4",
+      "lines": 18089
+    },
+    {
+      "path": "codex-rs/app-server/tests/suite/v2/goal_activity_tests.rs",
+      "sha256": "956453781db923d72ec1c78c66bd4c2280519a9aa54c369f1156fae96d0ee314",
+      "lines": 98
+    },
+    {
+      "path": "codex-rs/app-server/tests/suite/v2/mod.rs",
+      "sha256": "2665ba3211938089bd1dbee7208bf61aaa510a7b150c54899b78392d3a5a4bc5",
+      "lines": 166
+    },
+    {
+      "path": "codex-rs/core/Cargo.toml",
+      "sha256": "fe100bed4dc3ce7c6fa22dc8cd876defd45e15c2a5f30e5f196c5ed4d3acf394",
+      "lines": 178
+    },
+    {
+      "path": "codex-rs/core/tests/suite/goal_activity_tests.rs",
+      "sha256": "8a40d7e46b377c6fc625dca54dce8e03eb8aa5364cb66131ba53b708bbee6071",
+      "lines": 530
+    },
+    {
+      "path": "codex-rs/core/tests/suite/mod.rs",
+      "sha256": "68da4d64b504fe9bbe87ac69773a257a5a7314bb28cab0f45e1b751600475b44",
+      "lines": 251
+    },
+    {
+      "path": "codex-rs/ext/goal/BUILD.bazel",
+      "sha256": "4e68a10296265864b7345f68fb6fa512fcba2b63bda69fa30dd66efa4708fa40",
+      "lines": 14
+    },
+    {
+      "path": "codex-rs/ext/goal/Cargo.toml",
+      "sha256": "163f9de37b0980d55f2e087a345450beda3dcc0f059bac1d03bfc21d96f7d4a4",
+      "lines": 39
+    },
+    {
+      "path": "codex-rs/ext/goal/src/activity.rs",
+      "sha256": "292e7b7c474953c8199ab6badf8670297bb81974e99e4a4f59d536f4ba88796c",
+      "lines": 136
+    },
+    {
+      "path": "codex-rs/ext/goal/src/api.rs",
+      "sha256": "ee3d5b2974bd9a2c21eccd20f602094197d51e42b024aca1e4d2320d00d1a8fa",
+      "lines": 382
+    },
+    {
+      "path": "codex-rs/ext/goal/src/extension.rs",
+      "sha256": "d6e69aa33f6362d48278d09818c407f2423854b8e0221879a9bdd0c06083497c",
+      "lines": 685
+    },
+    {
+      "path": "codex-rs/ext/goal/src/lib.rs",
+      "sha256": "5eb2c59735d9878c888e39004a2273f59068c365db6585e6deade5d2c7cc9c64",
+      "lines": 29
+    },
+    {
+      "path": "codex-rs/ext/goal/src/runtime.rs",
+      "sha256": "417f46aa461f1608dbc9db7f18a236e6f314707ba4b7b491d4d25a6f5cd37998",
+      "lines": 792
+    },
+    {
+      "path": "codex-rs/ext/goal/src/tool.rs",
+      "sha256": "00192ada53dc4b1f6fda2037bc678f00d6b9a95d94a80c2cbaaa061888f66162",
+      "lines": 559
+    },
+    {
+      "path": "codex-rs/ext/goal/tests/activity_publisher.rs",
+      "sha256": "1c5d30ba11c0c2d9c5f5164d0e34872fc121851cba808d847ea2402976b5580e",
+      "lines": 88
+    },
+    {
+      "path": "codex-rs/ext/goal/tests/goal_extension_backend.rs",
+      "sha256": "8d4e9c8063bd6e8ecc9dddb9fdc6eb2b9aa1812f84151dfd65efe01fe7537d73",
+      "lines": 2128
+    },
+    {
+      "path": "codex-rs/ext/goal/tests/goal_extension_backend/goal_activity_tests.rs",
+      "sha256": "629cfecf015ffa7b98638b5e7e6cec726f195781936ebd12fe36f4e78328c3af",
+      "lines": 170
+    }
+  ],
+  "changed_lines": {
+    "insertions": 1309,
+    "deletions": 76,
+    "total": 1385
+  },
+  "platform": "macOS aarch64",
+  "rustc": "1.91.0",
+  "nextest": "0.9.146",
+  "test_environment": {
+    "NEXTEST_TEST_THREADS": "4",
+    "INSTA_UPDATE": "no",
+    "INSTA_WORKSPACE_ROOT": "/Users/iv/Developer/IV/codex/.temp/STORY-260929-bohnqb/worktree/codex-rs"
+  },
+  "ancestor_cargo_config_sha256": "f30df093e9a141d12348fea58cfe73aedf0a4ec4f06127f5c744a5c9caccc467"
+}

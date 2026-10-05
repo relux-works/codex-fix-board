@@ -1,10 +1,20 @@
 # TASK-260929-2gp04j: goal-activity-publisher-hooks
 
 ## Description
-Goal extension reconciles the marker on create, turn start, resume, update, clear, stop and feature disable; app-server create -> next sampling request test. Detailed AC before spawn.
+Goal-runtime publisher for the G1 GoalActivity marker (final plan section 4 transition table; verdict rev3 note 2; second leaf of STORY p2-goal-activity-sleep). One goal-runtime publisher reconciles the marker from committed goal state under the goal-state permit and is the only writer: insert GoalActivity{identity/revision, Active|BudgetLimited} for Active/BudgetLimited, remove for every other status, for a cleared goal, and on read failure. Hooks (re-locate the plan's 33a0f766a6 citations at your base): successful create_goal (after the database insert, before the tool result; on_tool_finish reconciles committed state, never by tool name); turn start BEFORE the missing-token-baseline and Plan-mode early returns; resume and external set (extend resume's Active-only branch; the external API runtime-effects path); update_goal / automatic stop / accounting limit after each committed status mutation; committed clear (unconditional, also when feature enablement is already off); thread stop and feature disable (remove marker and goal-owned wait/timer state; re-enable reconciles instead of reusing a stale marker). A late successful callback must not reinsert a goal after clear (revision check). Read failure removes the marker, records reconciliation as unknown and reports the error; the next legitimate lifecycle event reconciles again.
 
 ## Scope
-(define task scope)
+codex-rs/ext/goal (tool.rs, extension.rs, runtime.rs, api.rs hooks plus one small publisher module) and tests in ext/goal/tests, core/tests/suite and one app-server v2 test. No spec_plan or extension-api changes (G1 owns them); no automatic-continuation policy changes.
 
 ## Acceptance Criteria
-(define acceptance criteria)
+| # | Requirement | Driving test (production entry) | Negative/refusal |
+| - | ----------- | ------------------------------- | ---------------- |
+| 1 | A successful create_goal inserts Active before returning, so the NEXT sampling request exposes clock.sleep (ModelDriven, reminder feature off, model without clock) | core/tests/suite test (test_codex + mocked responses) asserting the second request's tool list | a failed create_goal (refused arguments or a failing store) leaves sleep absent from the next request |
+| 2 | Turn start reconciles before the missing-token-baseline and Plan-mode early returns | suite tests: resumed Active goal without an accounting baseline, and in Plan mode, both expose sleep | no committed goal at turn start removes a stale marker (sleep absent) |
+| 3 | Resume and external set insert for Active and BudgetLimited and remove for Paused, Blocked, Complete and UsageLimited | tests resuming a thread per status, and an external set through the goal API runtime-effects path | every non-Active/BudgetLimited status leaves sleep absent on the first request after resume/set |
+| 4 | update_goal, automatic stop and the accounting limit reconcile after each committed mutation; BudgetLimited keeps the marker | tests: update_goal(complete) then next request; token budget exhausted then next request | complete/blocked/paused remove sleep; BudgetLimited keeps sleep and admits no automatic continuation |
+| 5 | Committed clear removes the marker unconditionally, including when goal feature enablement is already off; a late create/update callback after clear does not reinsert | test holding a create callback with a latch across a clear | the marker is absent after both finish; the stale revision is refused |
+| 6 | Thread stop and feature disable remove the marker and goal-owned wait/timer state; re-enable reconciles from committed state | extension lifecycle tests | re-enable with no active goal leaves no marker; disable mid-turn leaves no sleep on the next request |
+| 7 | Read failure removes the marker, records reconciliation unknown, reports the error, and the next lifecycle event reconciles again | test with an injected goal-store read failure | marker absent after the failure (absence never authorizes continuation); recovers on the next turn start |
+| 8 | End to end through app-server v2: a turn whose create_goal succeeds exposes clock.sleep in the next model request | app-server test (TestAppServer + mocked responses) asserting the second /responses request tools | the same flow with create_goal refused has no sleep in the second request |
+

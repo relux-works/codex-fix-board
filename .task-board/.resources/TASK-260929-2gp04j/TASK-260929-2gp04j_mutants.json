@@ -1,0 +1,102 @@
+[
+  {
+    "name": "create_waits_for_finish",
+    "patch": "--- a/codex-rs/ext/goal/src/tool.rs\n+++ b/codex-rs/ext/goal/src/tool.rs\n@@ -188,10 +188,12 @@\n             };\n             // Publish before the result is observed. Refused and failed tools\n             // also reconcile, so a failure never advertises uncommitted state.\n-            self.runtime\n-                .reconcile_live_activity(&permit)\n-                .await\n-                .map_err(FunctionCallError::RespondToModel)?;\n+            if !matches!(self.kind, GoalToolKind::Create) {\n+                self.runtime\n+                    .reconcile_live_activity(&permit)\n+                    .await\n+                    .map_err(FunctionCallError::RespondToModel)?;\n+            }\n             result\n         })\n     }\n"
+  },
+  {
+    "name": "turn_start_requires_baseline",
+    "patch": "--- a/codex-rs/ext/goal/src/extension.rs\n+++ b/codex-rs/ext/goal/src/extension.rs\n@@ -245,6 +245,9 @@\n                 return;\n             }\n \n+            if input.token_usage_at_turn_start.is_none() {\n+                return;\n+            }\n             let goal = {\n                 let permit =\n                     if let Some(shared) = input.thread_store.remove::<GoalTurnStartPermit>() {\n"
+  },
+  {
+    "name": "resume_skips_budget_limited",
+    "patch": "--- a/codex-rs/ext/goal/src/runtime.rs\n+++ b/codex-rs/ext/goal/src/runtime.rs\n@@ -494,6 +494,17 @@\n \n     pub async fn restore_after_resume(&self) -> Result<(), String> {\n         let permit = self.goal_state_permit().await?;\n+        if self\n+            .inner\n+            .state_dbs\n+            .thread_goals()\n+            .get_thread_goal(self.thread_id())\n+            .await\n+            .map_err(|err| err.to_string())?\n+            .is_some_and(|goal| goal.status == codex_state::ThreadGoalStatus::BudgetLimited)\n+        {\n+            return Ok(());\n+        }\n         let goal = self.reconcile_live_activity(&permit).await?;\n         if !self.is_enabled() {\n             return Ok(());\n"
+  },
+  {
+    "name": "external_set_skips_budget_limited",
+    "patch": "--- a/codex-rs/ext/goal/src/runtime.rs\n+++ b/codex-rs/ext/goal/src/runtime.rs\n@@ -278,6 +278,9 @@\n         previous_goal: Option<PreviousGoalSnapshot>,\n     ) -> Result<(), String> {\n         let permit = self.goal_state_permit().await?;\n+        if goal.status == codex_state::ThreadGoalStatus::BudgetLimited {\n+            return Ok(());\n+        }\n         let committed = self.reconcile_live_activity(&permit).await?;\n         if !self.is_enabled() {\n             return Ok(());\n"
+  },
+  {
+    "name": "complete_retains_sleep",
+    "patch": "--- a/codex-rs/ext/goal/src/activity.rs\n+++ b/codex-rs/ext/goal/src/activity.rs\n@@ -94,7 +94,9 @@\n             Some(goal)\n                 if matches!(\n                     goal.status,\n-                    ThreadGoalStatus::Active | ThreadGoalStatus::BudgetLimited\n+                    ThreadGoalStatus::Active\n+                        | ThreadGoalStatus::BudgetLimited\n+                        | ThreadGoalStatus::Complete\n                 ) =>\n             {\n                 store.insert(GoalActivity {\n"
+  },
+  {
+    "name": "usage_limit_retains_sleep",
+    "patch": "--- a/codex-rs/ext/goal/src/activity.rs\n+++ b/codex-rs/ext/goal/src/activity.rs\n@@ -94,7 +94,9 @@\n             Some(goal)\n                 if matches!(\n                     goal.status,\n-                    ThreadGoalStatus::Active | ThreadGoalStatus::BudgetLimited\n+                    ThreadGoalStatus::Active\n+                        | ThreadGoalStatus::BudgetLimited\n+                        | ThreadGoalStatus::UsageLimited\n                 ) =>\n             {\n                 store.insert(GoalActivity {\n"
+  },
+  {
+    "name": "budget_limited_admits_continuation",
+    "patch": "--- a/codex-rs/ext/goal/src/runtime.rs\n+++ b/codex-rs/ext/goal/src/runtime.rs\n@@ -545,7 +545,10 @@\n             self.inner.accounting_state.clear_active_goal();\n             return Ok(());\n         };\n-        if goal.status != codex_state::ThreadGoalStatus::Active {\n+        if !matches!(\n+            goal.status,\n+            codex_state::ThreadGoalStatus::Active | codex_state::ThreadGoalStatus::BudgetLimited\n+        ) {\n             self.inner.accounting_state.clear_active_goal();\n             return Ok(());\n         }\n"
+  },
+  {
+    "name": "disabled_clear_keeps_marker",
+    "patch": "--- a/codex-rs/ext/goal/src/api.rs\n+++ b/codex-rs/ext/goal/src/api.rs\n@@ -331,7 +331,9 @@\n             && let Some(permit) = goal_state_permit.as_ref()\n         {\n             // A committed clear revokes capability even while Goals is disabled.\n-            runtime.clear_activity(permit).await;\n+            if runtime.is_enabled() {\n+                runtime.clear_activity(permit).await;\n+            }\n         }\n         let cleared = cleared_goal.is_some();\n         if cleared && let Some(runtime) = runtime.as_ref() {\n"
+  },
+  {
+    "name": "disable_preserves_active_marker",
+    "patch": "--- a/codex-rs/ext/goal/src/runtime.rs\n+++ b/codex-rs/ext/goal/src/runtime.rs\n@@ -123,7 +123,15 @@\n \n     pub(crate) fn set_enabled(&self, enabled: bool, store: &ExtensionData) {\n         self.inner.enabled.store(enabled, Ordering::Relaxed);\n-        self.inner.activity.set_enabled(enabled, store);\n+        if enabled\n+            || !store\n+                .get::<codex_extension_api::GoalActivity>()\n+                .is_some_and(|activity| {\n+                    activity.state == codex_extension_api::GoalActivityState::Active\n+                })\n+        {\n+            self.inner.activity.set_enabled(enabled, store);\n+        }\n         if !enabled {\n             self.inner.accounting_state.clear_active_goal();\n             store.remove::<TurnStartOptions>();\n"
+  },
+  {
+    "name": "stop_preserves_active_marker",
+    "patch": "--- a/codex-rs/ext/goal/src/runtime.rs\n+++ b/codex-rs/ext/goal/src/runtime.rs\n@@ -133,7 +133,14 @@\n \n     pub(crate) fn stop(&self, store: &ExtensionData) {\n         self.inner.enabled.store(false, Ordering::Relaxed);\n-        self.inner.activity.stop(store);\n+        if !store\n+            .get::<codex_extension_api::GoalActivity>()\n+            .is_some_and(|activity| {\n+                activity.state == codex_extension_api::GoalActivityState::Active\n+            })\n+        {\n+            self.inner.activity.stop(store);\n+        }\n         self.inner.accounting_state.clear_active_goal();\n         store.remove::<TurnStartOptions>();\n         store.remove::<GoalTurnStartPermit>();\n"
+  },
+  {
+    "name": "timestamp_read_failure_keeps_known_marker",
+    "patch": "--- a/codex-rs/ext/goal/src/activity.rs\n+++ b/codex-rs/ext/goal/src/activity.rs\n@@ -78,6 +78,9 @@\n         let goal = match goal {\n             Ok(goal) => goal,\n             Err(error) => {\n+                if error.contains(\"invalid unix timestamp millis\") {\n+                    return Err(error);\n+                }\n                 publication.revision += 1;\n                 publication.goal = ReconciledGoal::Unknown;\n                 store.remove::<GoalActivity>();\n"
+  },
+  {
+    "name": "cleared_revision_accepts_old_read",
+    "patch": "--- a/codex-rs/ext/goal/src/activity.rs\n+++ b/codex-rs/ext/goal/src/activity.rs\n@@ -72,7 +72,11 @@\n         goal: Result<Option<ThreadGoal>, String>,\n     ) -> Result<Option<ThreadGoal>, String> {\n         let mut publication = self.0.lock().unwrap_or_else(PoisonError::into_inner);\n-        if publication.revision != read_revision || publication.stopped || !publication.enabled {\n+        if (publication.revision != read_revision\n+            && !matches!(publication.goal, ReconciledGoal::Known(None)))\n+            || publication.stopped\n+            || !publication.enabled\n+        {\n             return Err(\"goal activity reconciliation invalidated by lifecycle change\".to_string());\n         }\n         let goal = match goal {\n"
+  },
+  {
+    "name": "late_active_set_reinserts_cleared_goal",
+    "patch": "--- a/codex-rs/ext/goal/src/runtime.rs\n+++ b/codex-rs/ext/goal/src/runtime.rs\n@@ -283,6 +283,16 @@\n             return Ok(());\n         }\n         let Some(committed) = committed else {\n+            if goal.status == codex_state::ThreadGoalStatus::Active\n+                && let Some(manager) = self.inner.thread_manager.upgrade()\n+                && let Ok(thread) = manager.get_thread(self.thread_id()).await\n+            {\n+                self.inner.activity.publish(\n+                    thread.thread_extension_data(),\n+                    self.inner.activity.revision(),\n+                    Ok(Some(goal)),\n+                )?;\n+            }\n             return Ok(());\n         };\n         if committed != goal {\n"
+  },
+  {
+    "name": "turn_stop_read_failure_keeps_marker",
+    "patch": "--- a/codex-rs/ext/goal/src/extension.rs\n+++ b/codex-rs/ext/goal/src/extension.rs\n@@ -342,7 +342,6 @@\n                     )\n                     .await\n             {\n-                runtime.revoke_activity_on_read_failure(input.thread_store, &err);\n                 input.thread_store.remove::<TurnStartOptions>();\n                 tracing::warn!(\n                     \"failed to stop active goal after repeated execution failures for {turn_id}: {err}\"\n@@ -353,7 +352,6 @@\n                 .stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::EmptyResponse)\n                 .await\n             {\n-                runtime.revoke_activity_on_read_failure(input.thread_store, &err);\n                 input.thread_store.remove::<TurnStartOptions>();\n                 tracing::warn!(\"failed to stop goal after empty responses for {turn_id}: {err}\");\n                 return;\n@@ -367,7 +365,6 @@\n                 )\n                 .await\n             {\n-                runtime.revoke_activity_on_read_failure(input.thread_store, &err);\n                 input.thread_store.remove::<TurnStartOptions>();\n                 tracing::warn!(\n                     \"failed to account active goal progress at turn stop for {turn_id}: {err}\"\n"
+  },
+  {
+    "name": "abort_read_failure_keeps_marker",
+    "patch": "--- a/codex-rs/ext/goal/src/extension.rs\n+++ b/codex-rs/ext/goal/src/extension.rs\n@@ -413,7 +413,6 @@\n                 )\n                 .await\n             {\n-                runtime.revoke_activity_on_read_failure(input.thread_store, &err);\n                 tracing::warn!(\n                     \"failed to account active goal progress after turn abort for {turn_id}: {err}\"\n                 );\n"
+  },
+  {
+    "name": "external_set_get_failure_keeps_marker",
+    "patch": "--- a/codex-rs/ext/goal/src/api.rs\n+++ b/codex-rs/ext/goal/src/api.rs\n@@ -357,10 +357,8 @@\n         match state_db.thread_goals().get_thread_goal(thread_id).await {\n             Ok(goal) => Ok(goal),\n             Err(err) => {\n                 let message = format!(\"failed to read thread goal: {err}\");\n-                if let Some(runtime) = runtime {\n-                    runtime.revoke_live_activity_on_read_failure(&message).await;\n-                }\n+                let _ = runtime;\n                 Err(GoalServiceError::Internal(message))\n             }\n         }\n"
+  },
+  {
+    "name": "external_set_prepare_failure_keeps_marker",
+    "patch": "--- a/codex-rs/ext/goal/src/api.rs\n+++ b/codex-rs/ext/goal/src/api.rs\n@@ -196,5 +196,4 @@\n             tracing::warn!(\"failed to prepare external goal mutation: {err}\");\n-            runtime.revoke_live_activity_on_read_failure(&err).await;\n         }\n \n         let (goal, previous_goal) = if let Some(objective) = objective {\n"
+  },
+  {
+    "name": "fork_flush_prepare_failure_keeps_marker",
+    "patch": "--- a/codex-rs/ext/goal/src/api.rs\n+++ b/codex-rs/ext/goal/src/api.rs\n@@ -125,7 +125,6 @@\n         if let Err(err) = runtime\n             .prepare_external_goal_mutation_locked(&goal_state_permit)\n             .await\n         {\n-            runtime.revoke_live_activity_on_read_failure(&err).await;\n             return Err(GoalServiceError::Internal(err));\n         }\n"
+  },
+  {
+    "name": "tool_finish_accounting_failure_keeps_marker",
+    "patch": "--- a/codex-rs/ext/goal/src/extension.rs\n+++ b/codex-rs/ext/goal/src/extension.rs\n@@ -553,7 +553,6 @@\n                 Ok(Some(progress)) => progress,\n                 Ok(None) => return,\n                 Err(err) => {\n-                    runtime.revoke_activity_on_read_failure(input.thread_store, &err);\n                     tracing::warn!(\n                         \"failed to account active goal progress after tool finish for {turn_id}: {err}\"\n                     );\n"
+  },
+  {
+    "name": "turn_error_skips_reconcile_after_stop_failure",
+    "patch": "--- a/codex-rs/ext/goal/src/extension.rs\n+++ b/codex-rs/ext/goal/src/extension.rs\n@@ -443,16 +443,9 @@\n             {\n                 tracing::warn!(\n                     error = ?input.error,\n                     \"failed to stop active goal after turn error: {err}\"\n                 );\n             }\n-            if let Ok(permit) = runtime.goal_state_permit().await\n-                && let Err(err) = runtime\n-                    .reconcile_activity(input.thread_store, &permit)\n-                    .await\n-            {\n-                tracing::warn!(\"failed to reconcile goal after turn error: {err}\");\n-            }\n         })\n     }\n }\n"
+  },
+  {
+    "name": "guard_skips_revocation_on_store_error",
+    "patch": "--- a/codex-rs/ext/goal/src/api.rs\n+++ b/codex-rs/ext/goal/src/api.rs\n@@ -393,11 +393,7 @@\n         match result {\n             Ok(value) => Ok(value),\n             Err(err) => {\n-                if let Some(runtime) = runtime {\n-                    runtime\n-                        .revoke_live_activity_on_read_failure(&err.to_string())\n-                        .await;\n-                }\n+                let _ = runtime;\n                 Err(err)\n             }\n         }\n"
+  },
+  {
+    "name": "set_status_update_bypasses_guard",
+    "patch": "--- a/codex-rs/ext/goal/src/api.rs\n+++ b/codex-rs/ext/goal/src/api.rs\n@@ -262,7 +262,7 @@\n             let previous_goal = PreviousGoalSnapshot::from(&existing_goal);\n             let expected_goal_id = existing_goal.goal_id.clone();\n             Self::guard_live_store_result(\n-                runtime.as_ref(),\n+                None,\n                 state_db\n                     .thread_goals()\n                     .update_thread_goal(\n"
+  },
+  {
+    "name": "set_objective_update_bypasses_guard",
+    "patch": "--- a/codex-rs/ext/goal/src/api.rs\n+++ b/codex-rs/ext/goal/src/api.rs\n@@ -203,7 +203,7 @@\n             if let Some(existing_goal) = existing_goal.as_ref() {\n                 let previous_goal = PreviousGoalSnapshot::from(existing_goal);\n                 Self::guard_live_store_result(\n-                    runtime.as_ref(),\n+                    None,\n                     state_db\n                         .thread_goals()\n                         .update_thread_goal(\n"
+  },
+  {
+    "name": "set_replace_bypasses_guard",
+    "patch": "--- a/codex-rs/ext/goal/src/api.rs\n+++ b/codex-rs/ext/goal/src/api.rs\n@@ -231,7 +231,7 @@\n                 .map(|goal| (goal, Some(previous_goal)))?\n             } else {\n                 Self::guard_live_store_result(\n-                    runtime.as_ref(),\n+                    None,\n                     state_db\n                         .thread_goals()\n                         .replace_thread_goal(\n"
+  },
+  {
+    "name": "clear_delete_bypasses_guard",
+    "patch": "--- a/codex-rs/ext/goal/src/api.rs\n+++ b/codex-rs/ext/goal/src/api.rs\n@@ -340,7 +340,7 @@\n         // fails, so any error revokes through the sole publisher instead of\n         // escaping past the settlement below.\n         let cleared_goal = Self::guard_live_store_result(\n-            runtime.as_ref(),\n+            None,\n             state_db\n                 .thread_goals()\n                 .delete_thread_goal(thread_id)\n"
+  }
+]

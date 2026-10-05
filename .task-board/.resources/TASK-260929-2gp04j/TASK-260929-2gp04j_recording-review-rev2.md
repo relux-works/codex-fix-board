@@ -1,0 +1,13 @@
+# TASK-260929-2gp04j — goal-activity-publisher-hooks: recording review revision 2
+
+Verdict: changes_requested. Candidate: d401bcff58f9724a36966053dde5386be1af7882.
+
+Read TASK-261002-1upm2g_panel-verdict.md, TASK-261002-1abmbj_panel-verdict.md and TASK-261002-3b2b07_panel-verdict.md plus the supplied merged verdict. All three request changes. Python exact field comparison passed: 3/3 panel finding records preserved, every note preserved, 1/1 surface row retained with worst result broken. No panel finding or surface row is missing. Supplied merge carries overlapping same-class records; their provenance and reproductions remain intact. Mechanical free_hunt serialization normalization preserves all original content and makes entries strings as the installed schema requires.
+
+No new review, runtime reproduction, Rust build/test, mutant execution or repository source edits. Hosted results remain panel-reused evidence; source witnesses are static only. The recording verdict is the supplied merged verdict, updated with ownership attestation; no new findings added.
+
+## Outcome-scoped logbook
+
+2026-10-02: project-management skill loaded. Initial status set to reviewing. Spawn goal reports not goal-bound. Materialized all four verdict inputs through resource get. Exact JSON comparison passed (merge-check-01.log). Initial reject_cr dry-run returned change_request_evidence_missing because the supplied resource predates this run and has no launch digest. Added reviewer attestation and updated via board resource CLI before recording. The remaining read-failure class concerns external set/fork-flush/tool-finish accounting; next producer needs named regressions and narrowing mutants in this leaf, followed by another reviewer cycle. Ordinary rework, no human decision required.
+
+Final recording: updated original evidence still refused ownership (change_request_evidence_missing). Created reviewer-owned TASK-260929-2gp04j_review-verdict-rev2-recorded.md. First recording attempt refused verdict_findings_invalid because third panel reproduction omitted pinned_blobs. Resolved the cited api/runtime/extension blobs against exact candidate with git rev-parse (exit 0) and added those digest pins without changing findings or reproduction claims. Updated reviewer-owned resource, then reject_cr revision=2 returned exit 0: CR changes_requested, task to-dev, reviewer RUN-261002-a1da59, three supplied finding records stamped, no loop signals. All panel findings remain in the supplied union; no substantive review added. Required next work remains real-entry regressions and narrowing mutants for the repeated read-failure class.

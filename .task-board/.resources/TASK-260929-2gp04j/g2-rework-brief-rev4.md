@@ -1,0 +1,7 @@
+# Rework brief: TASK-260929-2gp04j (G2), CR revision 4. Fix the read/write-failure class STRUCTURALLY
+
+Round 3 (`TASK-260929-2gp04j_review-verdict-rev3.md`, all three panels) found the same class at new sites. In `clear` (api.rs ~:311-331), a `delete_thread_goal` error escapes via `?` before `clear_activity`. In `set` (api.rs ~:205-279), `update_thread_goal` commits and then a read failure propagates before `reconcile_live_activity`. A metrics read error (runtime.rs ~:684) also escapes. Per-site fixes keep leaking.
+
+Required design: every operation that mutates or reconciles goal state (create, set/update, clear, flush/fork, accounting, turn hooks) must run under ONE mechanism that guarantees one of two outcomes. Either the publisher reconciles from committed state, or, on ANY error exit (including errors after a committed write), the marker is revoked, reconciliation is recorded as unknown, and the error is reported. Use a drop/scope guard or a single wrapper that the existing code paths go through. Do not hand-patch each `?`. Keep the publisher the only writer.
+
+Tests: drive errors at each stage, before the write, after the commit and during the post-write read, for clear and set, and assert revoke plus later recovery. Add narrowing mutants that bypass the guard, keep the existing 20, and update the sweep table to point at the guard. Fast lane only. Then add `HOSTED-PRECHECK-REQUESTED: precheck 7` and end the turn. If the guard makes the diff grow a lot, say so; the upstream split happens later.

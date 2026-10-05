@@ -1,0 +1,24 @@
+{
+  "base_oid": "ea8899e6f97aea64136159286840c28c955243e8",
+  "local_trunk_distance": "0",
+  "files": {
+    "codex-rs/core/src/tools/spec_plan.rs": "eff003d44cee91a9a31d25c8be89f5e64604b19e69bc2481b0d47289930620ca",
+    "codex-rs/core/tests/suite/current_time_reminder.rs": "874df7f176d341226d45a06bf8f8e23769f665e430b96849860dafcce21d3560",
+    "codex-rs/ext/extension-api/src/lib.rs": "ff12cee1fda6a1b59296d6164ff0dccdd720040d77d9785c3a379459a6651c85",
+    "codex-rs/ext/extension-api/src/goal_activity.rs": "c4cf9843d1469d3ab14ac635092e5e0ea008bc469469916652ef3df47c5b6994",
+    "codex-rs/ext/extension-api/tests/state.rs": "1a26704e3af3568188d255aff75cc9b3e7a45823c68f5922ce1ec434183eb131"
+  },
+  "config": {
+    "justfile": "9d7a65a494c2b771471c1bfd2edef164a4d22e27015966ad3d4b7af4f3ae2402",
+    "codex-rs/rust-toolchain.toml": "570656042681cfd8795403a455baf9a33035331a07db0645e866bbcea89a3d64",
+    "codex-rs/.config/nextest.toml": "277f6bba1e104c103c658073f91ef50057d0b0ca70f87e58493215536495553b",
+    "/Users/iv/Developer/IV/codex/.temp/.cargo/config.toml": "f30df093e9a141d12348fea58cfe73aedf0a4ec4f06127f5c744a5c9caccc467"
+  },
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "test_environment": {
+    "NEXTEST_TEST_THREADS": "4",
+    "INSTA_UPDATE": "no",
+    "INSTA_WORKSPACE_ROOT": "/Users/iv/Developer/IV/codex/.temp/STORY-260929-bohnqb/worktree/codex-rs"
+  },
+  "toolchain": "rustc 1.95.0 (59807616e 2026-04-14)"
+}

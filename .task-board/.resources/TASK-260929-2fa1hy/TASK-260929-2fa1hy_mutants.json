@@ -1,0 +1,23 @@
+[
+  {
+    "name": "no_marker_admitted",
+    "patch": "--- a/codex-rs/core/src/tools/spec_plan.rs\n+++ b/codex-rs/core/src/tools/spec_plan.rs\n@@ -1250,7 +1250,7 @@\n                         .as_ref()\n                         .is_some_and(|config| config.sleep_tool)\n                 } else {\n-                    model_has_clock || context.goal_activity_present\n+                    model_has_clock || context.goal_activity_present || features.enabled(Feature::Goals)\n                 }\n             }\n         }\n",
+    "test": "suite::current_time_reminder::goal_activity_controls_model_driven_sleep_on_each_sampling_request::direct_tools",
+    "command": "just test -p codex-core --test all --retries 3 -E 'test(suite::current_time_reminder::goal_activity_controls_model_driven_sleep_on_each_sampling_request::direct_tools)'",
+    "status": "not executed on current candidate; hosted replay required"
+  },
+  {
+    "name": "reminder_false_bypass",
+    "patch": "--- a/codex-rs/core/src/tools/spec_plan.rs\n+++ b/codex-rs/core/src/tools/spec_plan.rs\n@@ -1248,7 +1248,7 @@\n                         .config\n                         .current_time_reminder\n                         .as_ref()\n-                        .is_some_and(|config| config.sleep_tool)\n+                        .is_some_and(|config| config.sleep_tool || context.goal_activity_present)\n                 } else {\n                     model_has_clock || context.goal_activity_present\n                 }\n",
+    "test": "suite::current_time_reminder::current_time_reminder_sleep_setting_overrides_goal_activity::explicit_false",
+    "command": "just test -p codex-core --test all --retries 3 -E 'test(suite::current_time_reminder::current_time_reminder_sleep_setting_overrides_goal_activity::explicit_false)'",
+    "status": "not executed on current candidate; hosted replay required"
+  },
+  {
+    "name": "hard_disable_bypass",
+    "patch": "--- a/codex-rs/core/src/tools/spec_plan.rs\n+++ b/codex-rs/core/src/tools/spec_plan.rs\n@@ -1239,7 +1239,7 @@\n     if current_time_reminder_enabled || model_has_clock {\n         registry.add(CurrentTimeHandler);\n     }\n-    if features.enabled(Feature::SleepTool)\n+    if (features.enabled(Feature::SleepTool) || context.goal_activity_present)\n         && match turn_context.config.sleep_tool_mode {\n             SleepToolMode::AlwaysOn => true,\n             SleepToolMode::ModelDriven => {\n",
+    "test": "suite::current_time_reminder::disabled_sleep_tool_feature_wins_over_goal_activity",
+    "command": "just test -p codex-core --test all --retries 3 -E 'test(suite::current_time_reminder::disabled_sleep_tool_feature_wins_over_goal_activity)'",
+    "status": "not executed on current candidate; hosted replay required"
+  }
+]
