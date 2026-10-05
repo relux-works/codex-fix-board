@@ -1,0 +1,1148 @@
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index 316af05c08..b68bdf907f 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -345,6 +345,50 @@ impl CodexThread {
+         self.session.flush_rollout().await
+     }
+ 
++    /// Enqueues one internal exec-completion notification for testing.
++    ///
++    /// Test-only: reserves a real completion receipt, arms and publishes a
++    /// successful exit, enqueues the runtime mailbox entry, and wakes idle
++    /// work. Production enqueue arrives with receipt publication (story E);
++    /// no protocol or app-server surface is added here.
++    #[doc(hidden)]
++    pub async fn test_enqueue_exec_completion_notification(&self) -> bool {
++        use crate::unified_exec::completion_receipt::InitialResponseDecision;
++        use crate::unified_exec::completion_receipt::ReceiptOwner;
++        use crate::unified_exec::completion_receipt::TerminalCompletion;
++
++        let Ok(owner) = ReceiptOwner::new(
++            self.session.thread_id,
++            /*runtime_generation*/ 1,
++            format!("test-call-{}", uuid::Uuid::new_v4()),
++        ) else {
++            return false;
++        };
++        let store = self.session.services.unified_exec_manager.receipt_store();
++        let Ok(receipt_id) = store.reserve(owner.clone()) else {
++            return false;
++        };
++        let _ = store.resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm);
++        let _ = store.publish_exit(
++            receipt_id,
++            &owner,
++            TerminalCompletion {
++                exit_code: Some(0),
++                timed_out: false,
++            },
++        );
++        if !self
++            .session
++            .input_queue
++            .enqueue_runtime_notification(receipt_id, owner)
++            .await
++        {
++            return false;
++        }
++        self.session.maybe_start_turn_for_pending_work().await;
++        true
++    }
++
+     pub async fn submit_with_trace(
+         &self,
+         op: Op,
+diff --git a/codex-rs/core/src/session/input_queue.rs b/codex-rs/core/src/session/input_queue.rs
+index 2212dc09f6..3173db6c7c 100644
+--- a/codex-rs/core/src/session/input_queue.rs
++++ b/codex-rs/core/src/session/input_queue.rs
+@@ -1,6 +1,10 @@
++use super::runtime_mailbox::RuntimeLease;
++use super::runtime_mailbox::RuntimeMailbox;
+ use crate::state::ActiveTurn;
+ use crate::state::MailboxDeliveryPhase;
+ use crate::state::TurnState;
++use crate::unified_exec::completion_receipt::ReceiptId;
++use crate::unified_exec::completion_receipt::ReceiptOwner;
+ use codex_diagnostics::Gauge;
+ use codex_diagnostics::GaugeGuard;
+ use codex_history::ResponseItemEnvelope;
+@@ -95,6 +99,7 @@ pub(crate) struct TurnInputQueue {
+ pub(crate) struct InputQueue {
+     activity_tx: watch::Sender<InputQueueActivity>,
+     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
++    runtime_notifications: Mutex<RuntimeMailbox>,
+ }
+ 
+ struct PendingMailboxCommunication {
+@@ -109,6 +114,7 @@ impl InputQueue {
+         Self {
+             activity_tx,
+             mailbox_pending_mails: Mutex::new(VecDeque::new()),
++            runtime_notifications: Mutex::new(RuntimeMailbox::new()),
+         }
+     }
+ 
+@@ -176,18 +182,93 @@ impl InputQueue {
+         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+     }
+ 
++    /// Enqueues an internal runtime notification for an exec completion.
++    ///
++    /// Returns `false` without duplicating when the receipt is already
++    /// present. Callers start idle work via `maybe_start_turn_for_pending_work`.
++    pub(crate) async fn enqueue_runtime_notification(
++        &self,
++        receipt_id: ReceiptId,
++        owner: ReceiptOwner,
++    ) -> bool {
++        let enqueued = self
++            .runtime_notifications
++            .lock()
++            .await
++            .enqueue(receipt_id, owner);
++        if enqueued {
++            self.activity_tx.send_replace(InputQueueActivity::Mailbox);
++        }
++        enqueued
++    }
++
++    /// Leases unleased, non-suspended runtime entries without removing them.
++    ///
++    /// Idle wake hands these leases to the turn starter. Active-turn delivery
++    /// arrives with the internal `TurnInput` variant in leaf 2.
++    pub(crate) async fn lease_runtime_notifications(&self) -> Vec<RuntimeLease> {
++        self.runtime_notifications.lock().await.lease_available()
++    }
++
++    /// Acknowledges a runtime lease after its contents were sampled.
++    ///
++    /// Production callers arrive with sampling acknowledgement (story D).
++    #[allow(dead_code)]
++    pub(crate) async fn acknowledge_runtime_lease(&self, lease: &RuntimeLease) -> bool {
++        self.runtime_notifications.lock().await.acknowledge(lease)
++    }
++
++    /// Returns a runtime lease to the unleased state after a failed attempt.
++    ///
++    /// Production callers arrive with sampling acknowledgement (story D).
++    #[allow(dead_code)]
++    pub(crate) async fn fail_runtime_lease(&self, lease: &RuntimeLease) -> bool {
++        let failed = self.runtime_notifications.lock().await.fail(lease);
++        if failed {
++            self.activity_tx.send_replace(InputQueueActivity::Mailbox);
++        }
++        failed
++    }
++
++    /// Removes a runtime entry whether leased or not.
++    ///
++    /// Production callers arrive with receipt cancellation (story E).
++    #[allow(dead_code)]
++    pub(crate) async fn cancel_runtime_notification(&self, receipt_id: ReceiptId) -> bool {
++        self.runtime_notifications.lock().await.cancel(receipt_id)
++    }
++
++    /// Marks a runtime entry suspended after retries are exhausted.
++    ///
++    /// Production callers arrive with bounded sampling retries (story D).
++    #[allow(dead_code)]
++    pub(crate) async fn suspend_runtime_notification(&self, receipt_id: ReceiptId) -> bool {
++        self.runtime_notifications.lock().await.suspend(receipt_id)
++    }
++
+     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
+-        !self.mailbox_pending_mails.lock().await.is_empty()
++        if !self.mailbox_pending_mails.lock().await.is_empty() {
++            return true;
++        }
++        self.runtime_notifications.lock().await.has_pending()
+     }
+ 
+     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
+-        self.mailbox_pending_mails
++        if self
++            .mailbox_pending_mails
+             .lock()
+             .await
+             .iter()
+             .any(|mail| mail.communication.trigger_turn)
++        {
++            return true;
++        }
++        self.runtime_notifications.lock().await.has_trigger()
+     }
+ 
++    /// Drains inter-agent mail, removing entries. Runtime notifications are
++    /// leased separately via [`Self::lease_runtime_notifications`] and stay
++    /// until acknowledged or cancelled.
+     pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, TurnStartOptions) {
+         let pending_mails = self
+             .mailbox_pending_mails
+@@ -760,4 +841,183 @@ mod tests {
+             .await;
+         assert!(input_queue.has_trigger_turn_mailbox_items().await);
+     }
++
++    fn runtime_owner(call_id: &str) -> crate::unified_exec::completion_receipt::ReceiptOwner {
++        crate::unified_exec::completion_receipt::ReceiptOwner::new(
++            codex_protocol::ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0001),
++            /*runtime_generation*/ 7,
++            call_id,
++        )
++        .expect("test owner should be valid")
++    }
++
++    fn reserve_runtime_receipt(
++        store: &crate::unified_exec::completion_receipt::CompletionReceiptStore,
++        call_id: &str,
++    ) -> (
++        crate::unified_exec::completion_receipt::ReceiptId,
++        crate::unified_exec::completion_receipt::ReceiptOwner,
++    ) {
++        let owner = runtime_owner(call_id);
++        let receipt_id = store
++            .reserve(owner.clone())
++            .expect("reservation should succeed");
++        (receipt_id, owner)
++    }
++
++    #[tokio::test]
++    async fn input_queue_runtime_entry_survives_drain_as_leased() {
++        let store = crate::unified_exec::completion_receipt::CompletionReceiptStore::default();
++        let (receipt_id, owner) = reserve_runtime_receipt(&store, "call-queue-lease");
++        let input_queue = InputQueue::new();
++
++        assert!(
++            input_queue
++                .enqueue_runtime_notification(receipt_id, owner)
++                .await
++        );
++        assert!(input_queue.has_pending_mailbox_items().await);
++        assert!(input_queue.has_trigger_turn_mailbox_items().await);
++
++        // Inter-agent drain leaves the runtime entry untouched.
++        let (items, _) = input_queue.drain_mailbox_input_items().await;
++        assert!(items.is_empty());
++        assert!(input_queue.has_pending_mailbox_items().await);
++
++        let leases = input_queue.lease_runtime_notifications().await;
++        assert_eq!(leases.len(), 1);
++        assert_eq!(leases[0].receipt_id(), receipt_id);
++        // Leased entries are handed out but stay for acknowledgement.
++        assert!(!input_queue.has_pending_mailbox_items().await);
++        assert!(input_queue.has_trigger_turn_mailbox_items().await);
++        assert!(input_queue.lease_runtime_notifications().await.is_empty());
++
++        assert!(input_queue.acknowledge_runtime_lease(&leases[0]).await);
++        assert!(!input_queue.has_pending_mailbox_items().await);
++        assert!(!input_queue.has_trigger_turn_mailbox_items().await);
++        // Double acknowledgement is refused.
++        assert!(!input_queue.acknowledge_runtime_lease(&leases[0]).await);
++    }
++
++    #[tokio::test]
++    async fn input_queue_runtime_failed_lease_retries_without_duplicate() {
++        let store = crate::unified_exec::completion_receipt::CompletionReceiptStore::default();
++        let (receipt_id, owner) = reserve_runtime_receipt(&store, "call-queue-fail");
++        let input_queue = InputQueue::new();
++        assert!(
++            input_queue
++                .enqueue_runtime_notification(receipt_id, owner)
++                .await
++        );
++
++        let first = input_queue.lease_runtime_notifications().await;
++        assert_eq!(first.len(), 1);
++        assert!(input_queue.fail_runtime_lease(&first[0]).await);
++        assert!(!input_queue.fail_runtime_lease(&first[0]).await);
++        assert!(input_queue.has_pending_mailbox_items().await);
++
++        let second = input_queue.lease_runtime_notifications().await;
++        assert_eq!(second.len(), 1);
++        assert_eq!(second[0].receipt_id(), receipt_id);
++        assert_ne!(second[0], first[0]);
++        assert!(!input_queue.acknowledge_runtime_lease(&first[0]).await);
++        assert!(input_queue.acknowledge_runtime_lease(&second[0]).await);
++    }
++
++    #[tokio::test]
++    async fn input_queue_runtime_suspended_entries_never_count_as_trigger() {
++        let store = crate::unified_exec::completion_receipt::CompletionReceiptStore::default();
++        let (receipt_id, owner) = reserve_runtime_receipt(&store, "call-queue-suspend");
++        let input_queue = InputQueue::new();
++        assert!(
++            input_queue
++                .enqueue_runtime_notification(receipt_id, owner)
++                .await
++        );
++        assert!(input_queue.has_trigger_turn_mailbox_items().await);
++
++        assert!(input_queue.suspend_runtime_notification(receipt_id).await);
++        assert!(!input_queue.has_pending_mailbox_items().await);
++        assert!(!input_queue.has_trigger_turn_mailbox_items().await);
++        assert!(input_queue.lease_runtime_notifications().await.is_empty());
++    }
++
++    #[tokio::test]
++    async fn input_queue_runtime_cancel_removes_leased_and_unleased_entries() {
++        let store = crate::unified_exec::completion_receipt::CompletionReceiptStore::default();
++        let (leased_id, leased_owner) = reserve_runtime_receipt(&store, "call-queue-cancel-leased");
++        let (unleased_id, unleased_owner) =
++            reserve_runtime_receipt(&store, "call-queue-cancel-unleased");
++        let input_queue = InputQueue::new();
++        assert!(
++            input_queue
++                .enqueue_runtime_notification(leased_id, leased_owner)
++                .await
++        );
++        assert!(
++            input_queue
++                .enqueue_runtime_notification(unleased_id, unleased_owner)
++                .await
++        );
++
++        let leases = input_queue.lease_runtime_notifications().await;
++        assert_eq!(leases.len(), 2);
++        let leased_token = leases
++            .iter()
++            .find(|lease| lease.receipt_id() == leased_id)
++            .expect("leased entry should have a token");
++        let unleased_token = leases
++            .iter()
++            .find(|lease| lease.receipt_id() == unleased_id)
++            .expect("second entry should lease too");
++        assert!(input_queue.fail_runtime_lease(unleased_token).await);
++
++        assert!(input_queue.cancel_runtime_notification(leased_id).await);
++        assert!(input_queue.cancel_runtime_notification(unleased_id).await);
++        assert!(!input_queue.has_pending_mailbox_items().await);
++        assert!(!input_queue.has_trigger_turn_mailbox_items().await);
++        assert!(input_queue.lease_runtime_notifications().await.is_empty());
++        assert!(!input_queue.acknowledge_runtime_lease(leased_token).await);
++        assert!(!input_queue.fail_runtime_lease(leased_token).await);
++        assert!(!input_queue.acknowledge_runtime_lease(unleased_token).await);
++    }
++
++    #[tokio::test]
++    async fn input_queue_runtime_and_inter_agent_mail_share_trigger_queries() {
++        let store = crate::unified_exec::completion_receipt::CompletionReceiptStore::default();
++        let (receipt_id, owner) = reserve_runtime_receipt(&store, "call-queue-mixed");
++        let input_queue = InputQueue::new();
++
++        let queued_mail = make_mail(
++            AgentPath::root(),
++            AgentPath::try_from("/root/worker").expect("agent path"),
++            "queued",
++            /*trigger_turn*/ false,
++        );
++        input_queue
++            .enqueue_mailbox_communication(queued_mail, Default::default())
++            .await;
++        assert!(input_queue.has_pending_mailbox_items().await);
++        assert!(!input_queue.has_trigger_turn_mailbox_items().await);
++
++        assert!(
++            input_queue
++                .enqueue_runtime_notification(receipt_id, owner)
++                .await
++        );
++        assert!(input_queue.has_pending_mailbox_items().await);
++        assert!(input_queue.has_trigger_turn_mailbox_items().await);
++
++        // Draining inter-agent mail preserves the runtime entry and its trigger.
++        let (items, _) = input_queue.drain_mailbox_input_items().await;
++        assert_eq!(items.len(), 1);
++        assert!(input_queue.has_pending_mailbox_items().await);
++        assert!(input_queue.has_trigger_turn_mailbox_items().await);
++
++        let leases = input_queue.lease_runtime_notifications().await;
++        assert_eq!(leases.len(), 1);
++        assert!(input_queue.acknowledge_runtime_lease(&leases[0]).await);
++        assert!(!input_queue.has_pending_mailbox_items().await);
++        assert!(!input_queue.has_trigger_turn_mailbox_items().await);
++    }
+ }
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index e08a0fa5a8..3a499f7b93 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -252,6 +252,7 @@ mod retained_context;
+ mod review;
+ mod rollout_budget;
+ mod rollout_reconstruction;
++pub(crate) mod runtime_mailbox;
+ #[allow(clippy::module_inception)]
+ pub(crate) mod session;
+ pub(crate) mod startup_prewarm;
+diff --git a/codex-rs/core/src/session/runtime_mailbox.rs b/codex-rs/core/src/session/runtime_mailbox.rs
+new file mode 100644
+index 0000000000..84e864bcc9
+--- /dev/null
++++ b/codex-rs/core/src/session/runtime_mailbox.rs
+@@ -0,0 +1,220 @@
++//! Internal runtime-notification mailbox entries for exec completions.
++//!
++//! This module owns the mailbox side of completion receipts. Each entry carries
++//! a receipt reference from the unified-exec receipt state machine (stage B)
++//! and stays logically leased from drain until it is acknowledged as sampled
++//! or is cancelled. A failed sampling attempt returns the entry to the
++//! unleased state so a later drain retries it without creating a duplicate.
++//!
++//! Runtime entries are never [`InterAgentCommunication`][iac]: they have no
++//! author, no recipient lineage, and no trigger-turn fork boundary. Trigger
++//! queries include unsampled, non-suspended entries so they keep priority over
++//! goal continuation; suspended entries (retry exhausted) are excluded so they
++//! never block idle starts or suppress idle contributors.
++//!
++//! Sampling acknowledgement wiring (story D) and the context fragment plus
++//! internal `TurnInput` variant (leaf 2) are out of scope. Until then, idle
++//! wake leases entries via [`RuntimeMailbox::lease_available`] and hands the
++//! leases to the turn starter; active-turn delivery arrives with the variant.
++//!
++//! [iac]: codex_protocol::protocol::InterAgentCommunication
++
++use std::collections::VecDeque;
++
++use uuid::Uuid;
++
++use crate::unified_exec::completion_receipt::ReceiptId;
++use crate::unified_exec::completion_receipt::ReceiptOwner;
++
++/// Turn trigger recorded when an idle wake starts for runtime completions.
++///
++/// The wake preserves the thread's execution settings, invents no initiating
++/// agent, and resets no human quota.
++pub(crate) const EXEC_COMPLETION_TURN_TRIGGER: &str = "exec_completion";
++
++/// Opaque sampling lease for one runtime mailbox entry.
++///
++/// The token is minted by [`RuntimeMailbox::lease_available`] and must be
++/// presented to acknowledge or fail the lease. Callers cannot mint leases.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct RuntimeLease {
++    receipt_id: ReceiptId,
++    token: Uuid,
++}
++
++impl RuntimeLease {
++    // Leaf 2 maps leases to the internal TurnInput variant; story D uses the
++    // receipt id to acknowledge sampling. Covered by tests until then.
++    #[allow(dead_code)]
++    pub(crate) fn receipt_id(&self) -> ReceiptId {
++        self.receipt_id
++    }
++}
++
++/// One pending runtime notification carrying a receipt reference.
++#[derive(Debug)]
++struct PendingRuntimeNotification {
++    receipt_id: ReceiptId,
++    // Carries the B receipt owner for sampling-acknowledgement wiring (story D).
++    #[allow(dead_code)]
++    owner: ReceiptOwner,
++    suspended: bool,
++    lease: Option<Uuid>,
++}
++
++/// Mailbox-side lease tracking for runtime notifications.
++///
++/// Entries are removed only by acknowledgement or cancellation. Draining
++/// leases unleased, non-suspended entries without removing them.
++#[derive(Debug, Default)]
++pub(crate) struct RuntimeMailbox {
++    entries: VecDeque<PendingRuntimeNotification>,
++}
++
++impl RuntimeMailbox {
++    pub(crate) fn new() -> Self {
++        Self::default()
++    }
++
++    /// Enqueues a runtime notification for a completion receipt.
++    ///
++    /// Returns `false` without duplicating when the receipt is already
++    /// present, whether leased or not.
++    pub(crate) fn enqueue(&mut self, receipt_id: ReceiptId, owner: ReceiptOwner) -> bool {
++        if self
++            .entries
++            .iter()
++            .any(|entry| entry.receipt_id == receipt_id)
++        {
++            return false;
++        }
++        self.entries.push_back(PendingRuntimeNotification {
++            receipt_id,
++            owner,
++            suspended: false,
++            lease: None,
++        });
++        true
++    }
++
++    /// Reports whether an unleased, non-suspended entry awaits a wake turn.
++    ///
++    /// Leased entries are already handed to a turn and suspended entries never
++    /// start one, so neither counts as pending work here.
++    pub(crate) fn has_pending(&self) -> bool {
++        self.entries
++            .iter()
++            .any(|entry| !entry.suspended && entry.lease.is_none())
++    }
++
++    /// Reports whether an unsampled, non-suspended entry exists.
++    ///
++    /// Leased but unacknowledged entries still count so they keep priority
++    /// over goal continuation. Suspended entries never count.
++    pub(crate) fn has_trigger(&self) -> bool {
++        self.entries.iter().any(|entry| !entry.suspended)
++    }
++
++    /// Leases every unleased, non-suspended entry in FIFO order.
++    ///
++    /// Leased and suspended entries are left untouched and never re-offered
++    /// while their state holds.
++    pub(crate) fn lease_available(&mut self) -> Vec<RuntimeLease> {
++        let mut leases = Vec::new();
++        for entry in self
++            .entries
++            .iter_mut()
++            .filter(|entry| !entry.suspended && entry.lease.is_none())
++        {
++            let token = Uuid::new_v4();
++            entry.lease = Some(token);
++            leases.push(RuntimeLease {
++                receipt_id: entry.receipt_id,
++                token,
++            });
++        }
++        leases
++    }
++
++    /// Acknowledges a lease after its contents were sampled.
++    ///
++    /// Removes the entry. Unknown receipts, stale tokens, and leases for
++    /// cancelled entries are refused. Production callers arrive with sampling
++    /// acknowledgement (story D); covered by tests until then.
++    #[allow(dead_code)]
++    pub(crate) fn acknowledge(&mut self, lease: &RuntimeLease) -> bool {
++        let Some(index) = self
++            .entries
++            .iter()
++            .position(|entry| entry.receipt_id == lease.receipt_id)
++        else {
++            return false;
++        };
++        if self.entries[index].lease != Some(lease.token) {
++            return false;
++        }
++        self.entries.remove(index);
++        true
++    }
++
++    /// Returns a leased entry to the unleased state after a failed attempt.
++    ///
++    /// The next drain retries it with a fresh token. Stale tokens and unknown
++    /// receipts are refused without duplicating the entry. Production callers
++    /// arrive with sampling acknowledgement (story D); covered by tests until then.
++    #[allow(dead_code)]
++    pub(crate) fn fail(&mut self, lease: &RuntimeLease) -> bool {
++        let Some(entry) = self
++            .entries
++            .iter_mut()
++            .find(|entry| entry.receipt_id == lease.receipt_id)
++        else {
++            return false;
++        };
++        if entry.lease != Some(lease.token) {
++            return false;
++        }
++        entry.lease = None;
++        true
++    }
++
++    /// Removes the entry whether leased or not.
++    ///
++    /// Cancelled entries are never re-offered, and their lease tokens can no
++    /// longer acknowledge. Production callers arrive with receipt
++    /// cancellation (story E); covered by tests until then.
++    #[allow(dead_code)]
++    pub(crate) fn cancel(&mut self, receipt_id: ReceiptId) -> bool {
++        let Some(index) = self
++            .entries
++            .iter()
++            .position(|entry| entry.receipt_id == receipt_id)
++        else {
++            return false;
++        };
++        self.entries.remove(index);
++        true
++    }
++
++    /// Marks an entry suspended after retries are exhausted.
++    ///
++    /// Suspended entries are excluded from pending, trigger, and lease
++    /// queries until they are cancelled or acknowledged. Production callers
++    /// arrive with bounded sampling retries (story D); covered by tests until then.
++    #[allow(dead_code)]
++    pub(crate) fn suspend(&mut self, receipt_id: ReceiptId) -> bool {
++        let Some(entry) = self
++            .entries
++            .iter_mut()
++            .find(|entry| entry.receipt_id == receipt_id)
++        else {
++            return false;
++        };
++        entry.suspended = true;
++        true
++    }
++}
++
++#[cfg(test)]
++#[path = "runtime_mailbox_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/session/runtime_mailbox_tests.rs b/codex-rs/core/src/session/runtime_mailbox_tests.rs
+new file mode 100644
+index 0000000000..bda7e69422
+--- /dev/null
++++ b/codex-rs/core/src/session/runtime_mailbox_tests.rs
+@@ -0,0 +1,171 @@
++use codex_protocol::ThreadId;
++use pretty_assertions::assert_eq;
++
++use super::RuntimeMailbox;
++use crate::unified_exec::completion_receipt::CompletionReceiptStore;
++use crate::unified_exec::completion_receipt::ReceiptId;
++use crate::unified_exec::completion_receipt::ReceiptOwner;
++
++fn receipt_owner(call_id: &str) -> ReceiptOwner {
++    ReceiptOwner::new(
++        ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0001),
++        /*runtime_generation*/ 7,
++        call_id,
++    )
++    .expect("test owner should be valid")
++}
++
++fn reserve_receipt(store: &CompletionReceiptStore, call_id: &str) -> (ReceiptId, ReceiptOwner) {
++    let owner = receipt_owner(call_id);
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("reserve should succeed");
++    (receipt_id, owner)
++}
++
++#[test]
++fn runtime_entry_survives_lease_until_acknowledged() {
++    let store = CompletionReceiptStore::default();
++    let (receipt_id, owner) = reserve_receipt(&store, "call-lease");
++    let mut mailbox = RuntimeMailbox::new();
++
++    assert!(mailbox.enqueue(receipt_id, owner));
++    assert!(mailbox.has_pending());
++    assert!(mailbox.has_trigger());
++
++    let leases = mailbox.lease_available();
++    assert_eq!(leases.len(), 1);
++    assert_eq!(leases[0].receipt_id(), receipt_id);
++    // Leased entries stay for acknowledgement: trigger priority remains while
++    // pending work is already handed out.
++    assert!(!mailbox.has_pending());
++    assert!(mailbox.has_trigger());
++
++    // A second drain does not re-offer while leased.
++    assert!(mailbox.lease_available().is_empty());
++
++    assert!(mailbox.acknowledge(&leases[0]));
++    assert!(!mailbox.has_pending());
++    assert!(!mailbox.has_trigger());
++    assert!(mailbox.lease_available().is_empty());
++}
++
++#[test]
++fn runtime_double_acknowledgement_is_refused() {
++    let store = CompletionReceiptStore::default();
++    let (receipt_id, owner) = reserve_receipt(&store, "call-double-ack");
++    let mut mailbox = RuntimeMailbox::new();
++    assert!(mailbox.enqueue(receipt_id, owner));
++
++    let leases = mailbox.lease_available();
++    assert_eq!(leases.len(), 1);
++    assert!(mailbox.acknowledge(&leases[0]));
++    assert!(!mailbox.acknowledge(&leases[0]));
++    assert!(mailbox.lease_available().is_empty());
++}
++
++#[test]
++fn runtime_failed_lease_returns_unleased_exactly_once() {
++    let store = CompletionReceiptStore::default();
++    let (receipt_id, owner) = reserve_receipt(&store, "call-fail");
++    let mut mailbox = RuntimeMailbox::new();
++    assert!(mailbox.enqueue(receipt_id, owner));
++
++    let first = mailbox.lease_available();
++    assert_eq!(first.len(), 1);
++    assert!(mailbox.fail(&first[0]));
++    // A stale retry of the same token is refused without duplicating.
++    assert!(!mailbox.fail(&first[0]));
++    assert!(mailbox.has_pending());
++    assert!(mailbox.has_trigger());
++
++    let second = mailbox.lease_available();
++    assert_eq!(second.len(), 1);
++    assert_eq!(second[0].receipt_id(), receipt_id);
++    assert_ne!(second[0], first[0]);
++    // The old token can no longer acknowledge after the retry leased anew.
++    assert!(!mailbox.acknowledge(&first[0]));
++    assert!(mailbox.acknowledge(&second[0]));
++    assert!(mailbox.lease_available().is_empty());
++}
++
++#[test]
++fn runtime_suspended_entries_are_excluded_from_trigger_and_lease() {
++    let store = CompletionReceiptStore::default();
++    let (receipt_id, owner) = reserve_receipt(&store, "call-suspend");
++    let mut mailbox = RuntimeMailbox::new();
++    assert!(mailbox.enqueue(receipt_id, owner));
++
++    assert!(mailbox.suspend(receipt_id));
++    assert!(!mailbox.has_pending());
++    assert!(!mailbox.has_trigger());
++    assert!(mailbox.lease_available().is_empty());
++}
++
++#[test]
++fn runtime_suspended_while_leased_stops_suppressing() {
++    let store = CompletionReceiptStore::default();
++    let (receipt_id, owner) = reserve_receipt(&store, "call-suspend-leased");
++    let mut mailbox = RuntimeMailbox::new();
++    assert!(mailbox.enqueue(receipt_id, owner));
++
++    let leases = mailbox.lease_available();
++    assert_eq!(leases.len(), 1);
++    assert!(mailbox.has_trigger());
++
++    assert!(mailbox.suspend(receipt_id));
++    assert!(!mailbox.has_pending());
++    assert!(!mailbox.has_trigger());
++    assert!(mailbox.lease_available().is_empty());
++    // Acknowledgement still removes a suspended lease for cleanup.
++    assert!(mailbox.acknowledge(&leases[0]));
++}
++
++#[test]
++fn runtime_cancel_removes_leased_and_unleased_entries() {
++    let store = CompletionReceiptStore::default();
++    let (unleased_id, unleased_owner) = reserve_receipt(&store, "call-cancel-unleased");
++    let (leased_id, leased_owner) = reserve_receipt(&store, "call-cancel-leased");
++    let mut mailbox = RuntimeMailbox::new();
++    assert!(mailbox.enqueue(unleased_id, unleased_owner));
++    assert!(mailbox.enqueue(leased_id, leased_owner));
++
++    let leases = mailbox.lease_available();
++    assert_eq!(leases.len(), 2);
++    let leased_token = leases
++        .iter()
++        .find(|lease| lease.receipt_id() == leased_id)
++        .expect("leased entry should have a token");
++    let unleased_token = leases
++        .iter()
++        .find(|lease| lease.receipt_id() == unleased_id)
++        .expect("unleased entry leases too");
++
++    // Cancel one while leased and fail the other back to unleased first so
++    // both lease states are covered.
++    assert!(mailbox.fail(unleased_token));
++    assert!(mailbox.cancel(unleased_id));
++    assert!(mailbox.cancel(leased_id));
++
++    assert!(!mailbox.has_pending());
++    assert!(!mailbox.has_trigger());
++    assert!(mailbox.lease_available().is_empty());
++    // Lease tokens for cancelled entries can no longer acknowledge or fail.
++    assert!(!mailbox.acknowledge(leased_token));
++    assert!(!mailbox.fail(leased_token));
++    assert!(!mailbox.acknowledge(unleased_token));
++}
++
++#[test]
++fn runtime_duplicate_enqueue_does_not_duplicate_delivery() {
++    let store = CompletionReceiptStore::default();
++    let (receipt_id, owner) = reserve_receipt(&store, "call-duplicate");
++    let mut mailbox = RuntimeMailbox::new();
++
++    assert!(mailbox.enqueue(receipt_id, owner.clone()));
++    assert!(!mailbox.enqueue(receipt_id, owner));
++
++    let leases = mailbox.lease_available();
++    assert_eq!(leases.len(), 1);
++    assert!(mailbox.lease_available().is_empty());
++}
+diff --git a/codex-rs/core/src/session/turn_input_tests.rs b/codex-rs/core/src/session/turn_input_tests.rs
+index e76b3e2684..7824346d53 100644
+--- a/codex-rs/core/src/session/turn_input_tests.rs
++++ b/codex-rs/core/src/session/turn_input_tests.rs
+@@ -1072,3 +1072,109 @@ async fn steer_preserves_request_origin(
+     );
+     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+ }
++
++fn runtime_receipt_for_admission(
++    store: &crate::unified_exec::completion_receipt::CompletionReceiptStore,
++    call_id: &str,
++) -> (
++    crate::unified_exec::completion_receipt::ReceiptId,
++    crate::unified_exec::completion_receipt::ReceiptOwner,
++) {
++    let owner = crate::unified_exec::completion_receipt::ReceiptOwner::new(
++        codex_protocol::ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0001),
++        /*runtime_generation*/ 7,
++        call_id,
++    )
++    .expect("test owner should be valid");
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("reservation should succeed");
++    (receipt_id, owner)
++}
++
++fn goal_continuation_request() -> TurnInputRequest {
++    TurnInputRequest::new(SubmittedTurnInput::ResponseItem(user_message(
++        "goal continuation",
++    )))
++    .on_start(TurnStartOptions {
++        turn_trigger: Some("goal".to_string()),
++        ..Default::default()
++    })
++}
++
++#[tokio::test]
++async fn runtime_entry_suppresses_automatic_goal_continuation() {
++    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
++    session
++        .services
++        .thread_extension_data
++        .insert(codex_extension_api::GoalActivity {
++            goal_id: "goal-1".to_string(),
++            revision: 1,
++            state: codex_extension_api::GoalActivityState::Active,
++        });
++    let store = crate::unified_exec::completion_receipt::CompletionReceiptStore::default();
++    let (receipt_id, owner) = runtime_receipt_for_admission(&store, "call-admission");
++    assert!(
++        session
++            .input_queue
++            .enqueue_runtime_notification(receipt_id, owner)
++            .await
++    );
++    assert!(session.input_queue.has_trigger_turn_mailbox_items().await);
++
++    let submission = handle(
++        &session,
++        goal_continuation_request(),
++        TurnInputMode::StartIfIdle,
++        "goal-continuation".to_string(),
++    )
++    .await
++    .expect("goal continuation should return a typed rejection");
++    assert_eq!(
++        submission,
++        TurnInputSubmission::NotSubmitted {
++            reason: NotSubmittedReason::PendingTriggerTurn,
++        }
++    );
++    assert!(session.active_turn.lock().await.is_none());
++}
++
++#[tokio::test]
++async fn suspended_runtime_entry_does_not_block_start_if_idle() {
++    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
++    session
++        .services
++        .thread_extension_data
++        .insert(codex_extension_api::GoalActivity {
++            goal_id: "goal-1".to_string(),
++            revision: 1,
++            state: codex_extension_api::GoalActivityState::Active,
++        });
++    let store = crate::unified_exec::completion_receipt::CompletionReceiptStore::default();
++    let (receipt_id, owner) = runtime_receipt_for_admission(&store, "call-admission-suspended");
++    assert!(
++        session
++            .input_queue
++            .enqueue_runtime_notification(receipt_id, owner)
++            .await
++    );
++    assert!(
++        session
++            .input_queue
++            .suspend_runtime_notification(receipt_id)
++            .await
++    );
++    assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++
++    let submission = handle(
++        &session,
++        goal_continuation_request(),
++        TurnInputMode::StartIfIdle,
++        "goal-continuation-after-suspend".to_string(),
++    )
++    .await
++    .expect("suspended runtime must not block idle starts");
++    assert!(matches!(submission, TurnInputSubmission::Started { .. }));
++    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
++}
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 28a3b54b1c..5583af509a 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -446,8 +446,8 @@ impl Session {
+     /// Starts a regular turn with the provided sub-id when pending work should wake an idle
+     /// session.
+     ///
+-    /// The turn is created only when the session is idle and mailbox mail either requests a turn
+-    /// or can wake an outstanding durable sleep.
++    /// The turn is created only when the session is idle and mailbox mail either requests a turn,
++    /// a runtime exec-completion entry is pending, or mail can wake an outstanding durable sleep.
+     pub(crate) async fn maybe_start_turn_for_pending_work_with_sub_id(
+         self: &Arc<Self>,
+         sub_id: String,
+@@ -484,14 +484,21 @@ impl Session {
+         }
+         let (input, mut start_options) =
+             self.input_queue.get_pending_input(&self.active_turn).await;
+-        if !input.iter().any(
++        let runtime_leases = self.input_queue.lease_runtime_notifications().await;
++        let has_trigger_mail = input.iter().any(
+             |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
+-        ) {
++        );
++        if !has_trigger_mail {
+             // Queue-only mail wakes durable sleep without selecting a new task's settings.
++            // Runtime wakes likewise preserve the thread's execution settings.
+             start_options.cyber_access_program = self
+                 .reference_context_item()
+                 .await
+                 .and_then(|context| context.cyber_access_program);
++            if !runtime_leases.is_empty() {
++                start_options.turn_trigger =
++                    Some(crate::session::runtime_mailbox::EXEC_COMPLETION_TURN_TRIGGER.to_string());
++            }
+         }
+         let turn_context = self
+             .new_turn_with_default_settings(
+diff --git a/codex-rs/core/tests/suite/mod.rs b/codex-rs/core/tests/suite/mod.rs
+index 5545a57410..b9bb0ce472 100644
+--- a/codex-rs/core/tests/suite/mod.rs
++++ b/codex-rs/core/tests/suite/mod.rs
+@@ -192,6 +192,7 @@ mod rmcp_client;
+ mod rollout_budget;
+ mod rollout_compression;
+ mod rollout_list_find;
++mod runtime_mailbox;
+ mod safety_buffering;
+ mod safety_check_downgrade;
+ mod scenarios;
+diff --git a/codex-rs/core/tests/suite/runtime_mailbox.rs b/codex-rs/core/tests/suite/runtime_mailbox.rs
+new file mode 100644
+index 0000000000..065c1a9ee1
+--- /dev/null
++++ b/codex-rs/core/tests/suite/runtime_mailbox.rs
+@@ -0,0 +1,196 @@
++use anyhow::Context;
++use codex_core::TurnInputRequest;
++use codex_core::TurnStartOptions;
++use codex_login::CodexAuth;
++use codex_protocol::protocol::EventMsg;
++use codex_protocol::turn_input::CyberAccessProgram;
++use codex_protocol::user_input::UserInput;
++use core_test_support::responses;
++use core_test_support::test_codex::test_codex;
++use core_test_support::wait_for_event;
++use pretty_assertions::assert_eq;
++use serde_json::Value;
++
++async fn wait_for_turn_complete(codex: &codex_core::CodexThread) -> String {
++    let event = wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
++    let EventMsg::TurnComplete(completed) = event else {
++        unreachable!("wait predicate only accepts turn-complete events");
++    };
++    completed.turn_id
++}
++
++fn turn_trigger_of(request: &core_test_support::responses::ResponsesRequest) -> Option<String> {
++    let raw = request.header("x-codex-turn-metadata")?;
++    let metadata: Value = serde_json::from_str(&raw).ok()?;
++    metadata.get("turn_trigger")?.as_str().map(str::to_string)
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn pending_runtime_entry_starts_one_wake_turn_with_exec_completion() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            responses::sse_completed("resp-wake"),
++        ],
++    )
++    .await;
++    let codex = test_codex()
++        .with_model("gpt-5.4")
++        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
++        .build_with_auto_env(&server)
++        .await?
++        .codex;
++
++    codex
++        .start_or_steer_turn(
++            TurnInputRequest::user_input(vec![UserInput::Text {
++                text: "run a background job".to_string(),
++                text_elements: Vec::new(),
++            }])
++            .on_start(TurnStartOptions {
++                cyber_access_program: Some(CyberAccessProgram::Standard),
++                ..Default::default()
++            }),
++        )
++        .await?;
++    let initial_turn_id = wait_for_turn_complete(&codex).await;
++
++    assert!(
++        codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    let wake_turn_id = wait_for_turn_complete(&codex).await;
++
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 2);
++    // The wake turn preserves the thread's execution settings.
++    for request in &captured {
++        assert_eq!(
++            request.body_json()["access_programs"],
++            serde_json::json!({"cyber": "standard"}),
++        );
++    }
++    responses::assert_root_turn(&captured[0].body_json(), Some(&initial_turn_id))?;
++    responses::assert_parent_turn(&captured[0].body_json(), /*expected*/ None)?;
++    responses::assert_root_turn(&captured[1].body_json(), Some(&wake_turn_id))?;
++    // No parent lineage and no initiating agent: the wake invents neither.
++    responses::assert_parent_turn(&captured[1].body_json(), /*expected*/ None)?;
++    // The wake turn carries the exec_completion trigger and no inter-agent
++    // author: it is a named internal wake, never fake agent mail.
++    assert_eq!(
++        turn_trigger_of(&captured[1]).as_deref(),
++        Some("exec_completion")
++    );
++    assert!(
++        captured[1].inputs_of_type("agent_message").is_empty(),
++        "runtime wake must not fabricate agent mail"
++    );
++    // The wake adds no new user message: it resets no human quota.
++    let initial_user_texts = captured[0].message_input_texts("user");
++    let wake_user_texts = captured[1].message_input_texts("user");
++    assert_eq!(wake_user_texts, initial_user_texts);
++
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn two_runtime_entries_still_start_one_wake_turn() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            responses::sse_completed("resp-wake"),
++        ],
++    )
++    .await;
++    let codex = test_codex()
++        .with_model("gpt-5.4")
++        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
++        .build_with_auto_env(&server)
++        .await?
++        .codex;
++
++    codex
++        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
++            text: "run two background jobs".to_string(),
++            text_elements: Vec::new(),
++        }]))
++        .await?;
++    wait_for_turn_complete(&codex).await;
++
++    assert!(
++        codex.test_enqueue_exec_completion_notification().await,
++        "first runtime notification should enqueue"
++    );
++    assert!(
++        codex.test_enqueue_exec_completion_notification().await,
++        "second runtime notification should enqueue"
++    );
++    wait_for_turn_complete(&codex).await;
++
++    // Both entries lease into the same wake turn; no second wake follows.
++    // The two-item sequence would fail a third sampling request.
++    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 2);
++    assert_eq!(
++        turn_trigger_of(&captured[1]).as_deref(),
++        Some("exec_completion")
++    );
++    assert!(
++        captured[1].inputs_of_type("agent_message").is_empty(),
++        "runtime wake must not fabricate agent mail"
++    );
++
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn queue_only_inter_agent_mail_still_never_starts_a_turn_alone() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests =
++        responses::mount_sse_sequence(&server, vec![responses::sse_completed("resp-1")]).await;
++    let codex = test_codex().build_with_auto_env(&server).await?.codex;
++
++    codex
++        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
++            text: "hello".to_string(),
++            text_elements: Vec::new(),
++        }]))
++        .await?;
++    wait_for_turn_complete(&codex).await;
++    assert_eq!(requests.requests().len(), 1);
++
++    codex
++        .submit(codex_protocol::protocol::Op::InterAgentCommunication {
++            communication: codex_protocol::protocol::InterAgentCommunication::new(
++                codex_protocol::AgentPath::try_from("/root/worker").expect("worker path"),
++                codex_protocol::AgentPath::root(),
++                Vec::new(),
++                "queued child update".to_string(),
++                /*trigger_turn*/ false,
++            ),
++            start_options: Default::default(),
++        })
++        .await
++        .context("submit queue-only mail")?;
++    // Barrier so the mail is enqueued before asserting no wake follows.
++    codex
++        .submit(codex_protocol::protocol::Op::RealtimeConversationListVoices)
++        .await?;
++    wait_for_event(codex.as_ref(), |event| {
++        matches!(event, EventMsg::RealtimeConversationListVoicesResponse(_))
++    })
++    .await;
++    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
++    assert_eq!(
++        requests.requests().len(),
++        1,
++        "queue-only mail must not start a turn without durable sleep"
++    );
++
++    Ok(())
++}

@@ -1,0 +1,52 @@
+[
+ {
+  "name": "runtime_trigger_admits_suspended",
+  "patch": "--- a/codex-rs/core/src/session/runtime_mailbox.rs\n+++ b/codex-rs/core/src/session/runtime_mailbox.rs\n@@ -112,7 +112,7 @@\n     /// Leased but unacknowledged entries still count so they keep priority\n     /// over goal continuation. Suspended entries never count.\n     pub(crate) fn has_trigger(&self) -> bool {\n-        self.entries.iter().any(|entry| !entry.suspended)\n+        !self.entries.is_empty()\n     }\n \n     /// Leases every unleased, non-suspended entry in FIFO order.\n",
+  "expected_kill": "suspended_runtime_entry_does_not_block_start_if_idle (core/src/session/turn_input_tests.rs)"
+ },
+ {
+  "name": "runtime_lease_admits_suspended",
+  "patch": "--- a/codex-rs/core/src/session/runtime_mailbox.rs\n+++ b/codex-rs/core/src/session/runtime_mailbox.rs\n@@ -124,7 +124,7 @@\n         for entry in self\n             .entries\n             .iter_mut()\n-            .filter(|entry| !entry.suspended && entry.lease.is_none())\n+            .filter(|entry| entry.lease.is_none())\n         {\n             let token = Uuid::new_v4();\n             entry.lease = Some(token);\n",
+  "expected_kill": "runtime_suspended_entries_are_excluded_from_trigger_and_lease (core/src/session/runtime_mailbox_tests.rs)"
+ },
+ {
+  "name": "runtime_lease_readmits_leased",
+  "patch": "--- a/codex-rs/core/src/session/runtime_mailbox.rs\n+++ b/codex-rs/core/src/session/runtime_mailbox.rs\n@@ -124,7 +124,7 @@\n         for entry in self\n             .entries\n             .iter_mut()\n-            .filter(|entry| !entry.suspended && entry.lease.is_none())\n+            .filter(|entry| !entry.suspended)\n         {\n             let token = Uuid::new_v4();\n             entry.lease = Some(token);\n",
+  "expected_kill": "runtime_entry_survives_lease_until_acknowledged (core/src/session/runtime_mailbox_tests.rs)"
+ },
+ {
+  "name": "runtime_ack_admits_stale",
+  "patch": "--- a/codex-rs/core/src/session/runtime_mailbox.rs\n+++ b/codex-rs/core/src/session/runtime_mailbox.rs\n@@ -150,9 +150,6 @@\n         else {\n             return false;\n         };\n-        if self.entries[index].lease != Some(lease.token) {\n-            return false;\n-        }\n         self.entries.remove(index);\n         true\n     }\n",
+  "expected_kill": "runtime_failed_lease_returns_unleased_exactly_once (core/src/session/runtime_mailbox_tests.rs)"
+ },
+ {
+  "name": "runtime_fail_admits_stale",
+  "patch": "--- a/codex-rs/core/src/session/runtime_mailbox.rs\n+++ b/codex-rs/core/src/session/runtime_mailbox.rs\n@@ -171,9 +171,6 @@\n         else {\n             return false;\n         };\n-        if entry.lease != Some(lease.token) {\n-            return false;\n-        }\n         entry.lease = None;\n         true\n     }\n",
+  "expected_kill": "runtime_failed_lease_returns_unleased_exactly_once (core/src/session/runtime_mailbox_tests.rs)"
+ },
+ {
+  "name": "runtime_cancel_admits_leased",
+  "patch": "--- a/codex-rs/core/src/session/runtime_mailbox.rs\n+++ b/codex-rs/core/src/session/runtime_mailbox.rs\n@@ -192,6 +192,9 @@\n         else {\n             return false;\n         };\n+        if self.entries[index].lease.is_some() {\n+            return false;\n+        }\n         self.entries.remove(index);\n         true\n     }\n",
+  "expected_kill": "runtime_cancel_removes_leased_and_unleased_entries (core/src/session/runtime_mailbox_tests.rs)"
+ },
+ {
+  "name": "runtime_pending_admits_leased",
+  "patch": "--- a/codex-rs/core/src/session/runtime_mailbox.rs\n+++ b/codex-rs/core/src/session/runtime_mailbox.rs\n@@ -104,7 +104,7 @@\n     pub(crate) fn has_pending(&self) -> bool {\n         self.entries\n             .iter()\n-            .any(|entry| !entry.suspended && entry.lease.is_none())\n+            .any(|entry| !entry.suspended)\n     }\n \n     /// Reports whether an unsampled, non-suspended entry exists.\n",
+  "expected_kill": "two_runtime_entries_still_start_one_wake_turn (core/tests/suite/runtime_mailbox.rs)"
+ },
+ {
+  "name": "runtime_enqueue_admits_duplicate",
+  "patch": "--- a/codex-rs/core/src/session/runtime_mailbox.rs\n+++ b/codex-rs/core/src/session/runtime_mailbox.rs\n@@ -81,13 +81,6 @@\n     /// Returns `false` without duplicating when the receipt is already\n     /// present, whether leased or not.\n     pub(crate) fn enqueue(&mut self, receipt_id: ReceiptId, owner: ReceiptOwner) -> bool {\n-        if self\n-            .entries\n-            .iter()\n-            .any(|entry| entry.receipt_id == receipt_id)\n-        {\n-            return false;\n-        }\n         self.entries.push_back(PendingRuntimeNotification {\n             receipt_id,\n             owner,\n",
+  "expected_kill": "runtime_duplicate_enqueue_does_not_duplicate_delivery (core/src/session/runtime_mailbox_tests.rs)"
+ },
+ {
+  "name": "runtime_wake_omits_trigger",
+  "patch": "--- a/codex-rs/core/src/tasks/mod.rs\n+++ b/codex-rs/core/src/tasks/mod.rs\n@@ -495,10 +495,7 @@\n                 .reference_context_item()\n                 .await\n                 .and_then(|context| context.cyber_access_program);\n-            if !runtime_leases.is_empty() {\n-                start_options.turn_trigger =\n-                    Some(crate::session::runtime_mailbox::EXEC_COMPLETION_TURN_TRIGGER.to_string());\n-            }\n+            let _ = runtime_leases.is_empty();\n         }\n         let turn_context = self\n             .new_turn_with_default_settings(\n",
+  "expected_kill": "pending_runtime_entry_starts_one_wake_turn_with_exec_completion (core/tests/suite/runtime_mailbox.rs)"
+ },
+ {
+  "name": "runtime_wake_fakes_agent_mail",
+  "patch": "--- a/codex-rs/core/src/tasks/mod.rs\n+++ b/codex-rs/core/src/tasks/mod.rs\n@@ -482,9 +482,20 @@\n         {\n             return;\n         }\n-        let (input, mut start_options) =\n+        let (mut input, mut start_options) =\n             self.input_queue.get_pending_input(&self.active_turn).await;\n         let runtime_leases = self.input_queue.lease_runtime_notifications().await;\n+        if !runtime_leases.is_empty() {\n+            input.push(TurnInput::InterAgentCommunication(\n+                codex_protocol::protocol::InterAgentCommunication::new(\n+                    codex_protocol::AgentPath::root(),\n+                    codex_protocol::AgentPath::root(),\n+                    Vec::new(),\n+                    \"fake completion\".to_string(),\n+                    /*trigger_turn*/ false,\n+                ),\n+            ));\n+        }\n         let has_trigger_mail = input.iter().any(\n             |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),\n         );\n",
+  "expected_kill": "pending_runtime_entry_starts_one_wake_turn_with_exec_completion (core/tests/suite/runtime_mailbox.rs)"
+ }
+]

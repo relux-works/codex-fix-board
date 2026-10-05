@@ -1,0 +1,62 @@
+[
+  {
+    "name": "m1-fragment-cap-769",
+    "patch": "--- a/codex-rs/core/src/context/exec_completion.rs\n+++ b/codex-rs/core/src/context/exec_completion.rs\n@@ -24,7 +24,7 @@\n use codex_protocol::models::ContentItemKind;\n \n /// Maximum rendered size of one escaped fragment, in UTF-8 bytes.\n-pub(crate) const MAX_EXEC_COMPLETION_FRAGMENT_BYTES: usize = 768;\n+pub(crate) const MAX_EXEC_COMPLETION_FRAGMENT_BYTES: usize = 769;\n \n /// Maximum fragments attached to one sampling request (at most 6144 bytes).\n pub(crate) const MAX_EXEC_COMPLETION_FRAGMENTS_PER_REQUEST: usize = 8;\n",
+    "expected_killer": "context::exec_completion::tests::fragment_truncates_oversized_failure_with_an_explicit_marker",
+    "gate": "AC1 fragment byte cap weakened by one byte"
+  },
+  {
+    "name": "m2-escape-drops-gt",
+    "patch": "--- a/codex-rs/core/src/context/exec_completion.rs\n+++ b/codex-rs/core/src/context/exec_completion.rs\n@@ -170,8 +170,7 @@\n         match ch {\n             '&' => escaped.push_str(\"&amp;\"),\n             '<' => escaped.push_str(\"&lt;\"),\n-            '>' => escaped.push_str(\"&gt;\"),\n             _ if ch.is_ascii_control() => escaped.push(' '),\n             _ => escaped.push(ch),\n         }\n     }\n",
+    "expected_killer": "context::exec_completion::tests::fragment_escapes_marker_injection_and_newlines",
+    "gate": "AC1 escaping narrowed to & and < only"
+  },
+  {
+    "name": "m3-classifier-rejects-exec-source",
+    "patch": "--- a/codex-rs/core/src/context/internal_model_context.rs\n+++ b/codex-rs/core/src/context/internal_model_context.rs\n@@ -106,7 +106,9 @@\n         let Some((source, body_and_close)) = rest.split_once(SOURCE_ATTR_END) else {\n             return false;\n         };\n \n-        is_valid_source(source) && body_and_close.ends_with(CONTEXT_END_MARKER)\n+        is_valid_source(source)\n+            && source != \"exec_completion\"\n+            && body_and_close.ends_with(CONTEXT_END_MARKER)\n     }\n \n     fn body(&self) -> String {\n",
+    "expected_killer": "context::exec_completion::tests::fragment_is_classified_as_internal_context_not_user_text",
+    "gate": "AC3 existing classifier narrowed to all-but-one source (unchanged gate, proves sensitivity)"
+  },
+  {
+    "name": "m4-batch-cap-9",
+    "patch": "--- a/codex-rs/core/src/context/exec_completion.rs\n+++ b/codex-rs/core/src/context/exec_completion.rs\n@@ -27,7 +27,7 @@\n pub(crate) const MAX_EXEC_COMPLETION_FRAGMENT_BYTES: usize = 768;\n \n /// Maximum fragments attached to one sampling request (at most 6144 bytes).\n-pub(crate) const MAX_EXEC_COMPLETION_FRAGMENTS_PER_REQUEST: usize = 8;\n+pub(crate) const MAX_EXEC_COMPLETION_FRAGMENTS_PER_REQUEST: usize = 9;\n \n /// Internal-context source label for exec-completion fragments.\n const EXEC_COMPLETION_SOURCE: &str = \"exec_completion\";\n",
+    "expected_killer": "session::input_queue::tests::nine_pending_completions_batch_eight_and_retain_one",
+    "gate": "AC2 batch cap weakened by one fragment"
+  },
+  {
+    "name": "m5-kind-user-prefixed",
+    "patch": "--- a/codex-rs/core/src/context/exec_completion.rs\n+++ b/codex-rs/core/src/context/exec_completion.rs\n@@ -96,7 +96,7 @@\n }\n \n impl ContextualUserFragment for ExecCompletionFragment {\n     fn content_kind(&self) -> ContentItemKind {\n-        ContentItemKind(\"exec.completion\".to_string())\n+        ContentItemKind(\"user.exec_completion\".to_string())\n     }\n \n     fn role(&self) -> &'static str {\n",
+    "expected_killer": "context::exec_completion::tests::fragment_is_classified_as_internal_context_not_user_text",
+    "gate": "AC3 content kind weakened to user-prefixed"
+  },
+  {
+    "name": "m6-serialize-admits-empty",
+    "patch": "--- a/codex-rs/core/src/session/input_queue.rs\n+++ b/codex-rs/core/src/session/input_queue.rs\n@@ -106,6 +106,9 @@\n                 \"InterAgentCommunication\",\n                 communication,\n             ),\n+            Self::ExecCompletion(leases) if leases.is_empty() => {\n+                serializer.serialize_newtype_variant(\"TurnInput\", 4, \"ExecCompletion\", &leases.len())\n+            }\n             Self::ExecCompletion(_) => Err(serde::ser::Error::custom(\n                 \"runtime exec completions cannot cross the turn-input serialization boundary\",\n             )),\n",
+    "expected_killer": "session::input_queue::tests::exec_completion_variant_refuses_serialization",
+    "gate": "AC4 serialization refusal narrowed to non-empty batches"
+  },
+  {
+    "name": "m7-user-input-always-emits-order",
+    "patch": "--- a/codex-rs/core/src/session/input_queue.rs\n+++ b/codex-rs/core/src/session/input_queue.rs\n@@ -73,17 +73,13 @@\n                 metadata,\n             } => {\n                 let mut len = 2;\n-                if metadata.acceptance_order.is_some() {\n-                    len += 1;\n-                }\n+                len += 1;\n                 if !metadata.origin.is_user() {\n                     len += 1;\n                 }\n                 let mut state =\n                     serializer.serialize_struct_variant(\"TurnInput\", 0, \"UserInput\", len)?;\n                 state.serialize_field(\"content\", content)?;\n                 state.serialize_field(\"client_id\", client_id)?;\n-                if let Some(acceptance_order) = metadata.acceptance_order {\n-                    state.serialize_field(\"acceptance_order\", &acceptance_order)?;\n-                }\n+                state.serialize_field(\"acceptance_order\", &metadata.acceptance_order)?;\n                 if !metadata.origin.is_user() {\n                     state.serialize_field(\"origin\", &metadata.origin)?;\n                 }\n",
+    "expected_killer": "session::input_queue::tests::user_input_variant_serializes_byte_identically",
+    "gate": "AC4 manual encoding drifted to always emit acceptance_order"
+  },
+  {
+    "name": "m8-record-persists-trigger-metadata",
+    "patch": "--- a/codex-rs/core/src/hook_runtime.rs\n+++ b/codex-rs/core/src/hook_runtime.rs\n@@ -786,6 +786,12 @@\n                 .collect::<Vec<_>>();\n             sess.record_conversation_items(turn_context, model_info, &items)\n                 .await;\n+            sess.persist_rollout_items(&[\n+                codex_rollout::RolloutItem::InterAgentCommunicationMetadata {\n+                    trigger_turn: true,\n+                },\n+            ])\n+            .await;\n             sess.ensure_rollout_materialized(persist_context).await;\n         }\n     }\n",
+    "expected_killer": "suite::exec_completion::wake_turn_persists_only_contextual_response_items_and_resume_stays_silent",
+    "gate": "AC5 record gate weakened to ResponseItem plus one metadata class"
+  },
+  {
+    "name": "m9-pending-admits-suspended",
+    "patch": "--- a/codex-rs/core/src/session/runtime_mailbox.rs\n+++ b/codex-rs/core/src/session/runtime_mailbox.rs\n@@ -114,7 +114,7 @@\n     pub(crate) fn has_pending(&self) -> bool {\n         self.entries\n             .iter()\n-            .any(|entry| !entry.suspended && entry.lease.is_none())\n+            .any(|entry| entry.lease.is_none())\n     }\n \n     /// Reports whether an unsampled, non-suspended entry exists.\n",
+    "expected_killer": "session::input_queue::tests::input_queue_runtime_suspended_entries_never_count_as_trigger",
+    "gate": "pending gate narrowed to also admit suspended entries (leaf-1 test; own tests unaffected by design)"
+  },
+  {
+    "name": "m10-follow-up-readmits-runtime",
+    "patch": "--- a/codex-rs/core/src/session/input_queue.rs\n+++ b/codex-rs/core/src/session/input_queue.rs\n@@ -595,6 +595,6 @@\n         if has_turn_pending_input {\n             return true;\n         }\n-        !self.mailbox_pending_mails.lock().await.is_empty()\n+        self.has_pending_mailbox_items().await\n     }\n }",
+    "expected_killer": "suite::exec_completion::nine_pending_completions_sample_in_capped_batches_without_loss",
+    "gate": "AC2 in-turn follow-up re-admits exactly the idle-only runtime class (spin returns, follow-up batch starves); co-killed by session::input_queue::tests::in_turn_follow_up_ignores_idle_only_runtime_entries"
+  }
+]
