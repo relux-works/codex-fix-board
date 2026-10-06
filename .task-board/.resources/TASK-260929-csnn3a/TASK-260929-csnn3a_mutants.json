@@ -1,0 +1,38 @@
+[
+  {
+    "name": "retain_only_task_present",
+    "patch": "--- a/codex-rs/core/src/session/inject.rs\n+++ b/codex-rs/core/src/session/inject.rs\n@@ -21,6 +21,9 @@\n         let mut active = self.active_turn.lock().await;\n         match active.as_mut() {\n             Some(active_turn) => {\n+                if active_turn.task.is_none() {\n+                    return Err(input);\n+                }\n                 self.input_queue\n                     .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(\n                         active_turn.turn_state.as_ref(),\n"
+  },
+  {
+    "name": "acknowledge_on_recording",
+    "patch": "--- a/codex-rs/core/src/hook_runtime.rs\n+++ b/codex-rs/core/src/hook_runtime.rs\n@@ -783,6 +783,9 @@\n             // anything. A retry skips fragments already in history instead of\n             // appending them a second time.\n             exec_completion_ack::note_recorded(turn_context, &leases);\n+            for lease in &leases {\n+                sess.input_queue.acknowledge_runtime_lease(lease).await;\n+            }\n             let history = sess.clone_history().await;\n             let history_items = history.raw_items().collect::<Vec<_>>();\n             let items = leases\n"
+  },
+  {
+    "name": "fail_first_tracked_only",
+    "patch": "--- a/codex-rs/core/src/session/exec_completion_ack.rs\n+++ b/codex-rs/core/src/session/exec_completion_ack.rs\n@@ -211,7 +211,7 @@\n         return;\n     }\n     let mut suspended = 0usize;\n-    for lease in leases {\n+    for lease in leases.iter().take(1) {\n         if sess.input_queue.fail_runtime_lease(lease).await\n             && sess\n                 .input_queue\n"
+  },
+  {
+    "name": "ack_skipped_when_websockets_enabled",
+    "patch": "--- a/codex-rs/core/src/session/exec_completion_ack.rs\n+++ b/codex-rs/core/src/session/exec_completion_ack.rs\n@@ -147,6 +147,9 @@\n     sess: &Session,\n     turn_context: &TurnContext,\n     prompt_input: &[ResponseItem],\n ) {\n+    if turn_context.config.model_provider.supports_websockets {\n+        return;\n+    }\n     let Some(tracked) = turn_context\n         .extension_data\n"
+  },
+  {
+    "name": "compact_acks_staged",
+    "patch": "--- a/codex-rs/core/src/session/handlers.rs\n+++ b/codex-rs/core/src/session/handlers.rs\n@@ -244,6 +244,13 @@\n pub async fn compact(sess: &Arc<Session>, sub_id: String) {\n     // Stop the old turn before the compact task picks up the next turn's environments.\n     sess.abort_all_tasks(TurnAbortReason::Replaced).await;\n+    let staged = sess\n+        .input_queue\n+        .lease_runtime_notifications_up_to(usize::MAX)\n+        .await;\n+    for lease in &staged {\n+        sess.input_queue.acknowledge_runtime_lease(lease).await;\n+    }\n     let turn_context = sess\n         .new_turn_with_default_settings(sub_id, Default::default())\n         .await;\n"
+  },
+  {
+    "name": "guardian_prep_drops_exec_fragments",
+    "patch": "--- a/codex-rs/core/src/guardian/request_budget.rs\n+++ b/codex-rs/core/src/guardian/request_budget.rs\n@@ -146,6 +146,21 @@\n         prompt\n             .input\n             .extend(restored.iter().map(|envelope| envelope.item.clone()));\n     }\n+    prompt.input.retain(|item| {\n+        let ResponseItem::Message { role, content, .. } = item else {\n+            return true;\n+        };\n+        if role.as_str() != \"user\" {\n+            return true;\n+        }\n+        !content.iter().any(|entry| {\n+            matches!(\n+                entry,\n+                ContentItem::InputText { text }\n+                    if text.contains(\"source=\\\"exec_completion\\\"\")\n+            )\n+        })\n+    });\n     let request = session.services.model_client.build_responses_request(\n         prompt,\n         model,\n"
+  },
+  {
+    "name": "reserved_claim_ignores_identity",
+    "patch": "--- a/codex-rs/core/src/tasks/mod.rs\n+++ b/codex-rs/core/src/tasks/mod.rs\n@@ -293,7 +293,7 @@\n                 debug_assert!(turn.task.is_none());\n                 Some(turn)\n             }\n-            TurnStartClaim::Reserved(expected) => {\n+            TurnStartClaim::Reserved(_expected) => {\n                 let turn = active.as_mut()?;\n-                if turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, expected) {\n+                if turn.task.is_none() {\n                     Some(turn)\n                 } else {\n                     None\n"
+  },
+  {
+    "name": "reserved_claim_ignores_task",
+    "patch": "--- a/codex-rs/core/src/tasks/mod.rs\n+++ b/codex-rs/core/src/tasks/mod.rs\n@@ -295,7 +295,7 @@\n             }\n             TurnStartClaim::Reserved(expected) => {\n                 let turn = active.as_mut()?;\n-                if turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, expected) {\n+                if Arc::ptr_eq(&turn.turn_state, expected) {\n                     Some(turn)\n                 } else {\n                     None\n"
+  },
+  {
+    "name": "backoff_skips_post_failback_rewake",
+    "patch": "--- a/codex-rs/core/src/tasks/mod.rs\n+++ b/codex-rs/core/src/tasks/mod.rs\n@@ -642,12 +642,2 @@\n             exec_completion_ack::fail_leases(self, /*turn_context*/ None, &runtime_leases).await;\n-            if !runtime_leases.is_empty() {\n-                // The winner may already have finished: its teardown\n-                // scheduler skipped these entries while they were still\n-                // leased, so without a pass here the fail-back leaves an\n-                // idle session with pending receipts and no future wake.\n-                // This cannot double-wake a live winner (the scheduler\n-                // returns on an active turn) nor spin on suspended entries\n-                // (they no longer count as pending).\n-                self.maybe_start_turn_for_pending_work().await;\n-            }\n         }\n"
+  }
+]

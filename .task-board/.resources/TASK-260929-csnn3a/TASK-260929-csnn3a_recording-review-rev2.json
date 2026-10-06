@@ -1,0 +1,39 @@
+{
+  "task": "TASK-260929-csnn3a",
+  "revision": 2,
+  "candidate_tree": "f0cf63cd9fc511340d23e680f43e846403157f62",
+  "verification": "passed",
+  "panels": [
+    {
+      "panel": "TASK-261006-1466jv",
+      "verdict": "accept",
+      "findings": 0,
+      "notes_preserved": 8,
+      "rows_preserved": 3,
+      "sha256": "35d9498eef94a68497b574b9455d894cb70f72e79e2e5965eacaddf3fd8a5939"
+    },
+    {
+      "panel": "TASK-261006-793s3d",
+      "verdict": "accept",
+      "findings": 0,
+      "notes_preserved": 4,
+      "rows_preserved": 3,
+      "sha256": "15f78322eb9f1bf06f8425be92d714f93c7eb593a90cec1ad89c4ab2fb561050"
+    },
+    {
+      "panel": "TASK-261006-3t6opn",
+      "verdict": "accept",
+      "findings": 0,
+      "notes_preserved": 9,
+      "rows_preserved": 3,
+      "sha256": "045ab0640787a72bd940e71ee7dde554cf097137dbad7dd30499481d1235184c"
+    }
+  ],
+  "surface_rows": "3 of 3 preserved; all held in all three panels and merged verdict",
+  "findings": [],
+  "notes": [
+    "Recording-only check. No code review, production tests, builds, or mutant executions rerun. Hosted evidence and coverage bounds remain attributed to the panels. All 21 panel notes and the nonblocking free-hunt record are preserved verbatim in the merged JSON. R141-A-1 is reported resolved by all three panels."
+  ],
+  "merged_verdict_sha256": "e1900c0b407ab235f88295134383626f92abc4b3a263fb2dfa7371fc2b2fb331",
+  "logbook": "All three panels accept revision 2; merge retains every finding (none), every surface row, all notes and free-hunt bounds. Recording acceptance uses the existing merged verdict; integration remains producer-owned."
+}

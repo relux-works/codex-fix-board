@@ -1,0 +1,2037 @@
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index fc43206c93..92eb59cd79 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -380,6 +380,23 @@ impl CodexThread {
+         true
+     }
+ 
++    /// Reports the idle-wake mailbox gates for testing: `(pending, trigger)`.
++    ///
++    /// Test-only: acknowledged entries report `(false, false)`, retained
++    /// entries `(true, true)`, and suspended entries `(false, false)`.
++    /// Suites using this probe stage no inter-agent mail, so both gates
++    /// reflect runtime notifications only.
++    #[doc(hidden)]
++    pub async fn test_runtime_notification_state(&self) -> (bool, bool) {
++        (
++            self.session.input_queue.has_pending_mailbox_items().await,
++            self.session
++                .input_queue
++                .has_trigger_turn_mailbox_items()
++                .await,
++        )
++    }
++
+     async fn test_reserve_and_enqueue_exec_completion(&self) -> bool {
+         use crate::context::ExecCompletion;
+         use crate::context::ExecOutputRetention;
+diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
+index 9262c91f62..c88c65aa07 100644
+--- a/codex-rs/core/src/hook_runtime.rs
++++ b/codex-rs/core/src/hook_runtime.rs
+@@ -66,6 +66,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
+ use crate::event_mapping::parse_turn_item;
+ use crate::guardian::GuardianReviewContext;
+ use crate::session::TurnInput;
++use crate::session::exec_completion_ack;
+ use crate::session::session::Session;
+ use crate::session::step_context::StepContext;
+ use crate::session::turn_context::TurnContext;
+@@ -775,10 +776,20 @@ pub(crate) async fn record_pending_input(
+             sess.ensure_rollout_materialized(persist_context).await;
+         }
+         TurnInput::ExecCompletion(leases) => {
+-            // Only the contextual items persist: no receipt metadata, so
+-            // resume replays data without rearming anything.
++            // Recording is not acknowledgement: track the leases on the turn
++            // so the submit path can acknowledge exactly the fragments a
++            // submitted prompt contains. Only the contextual items persist: no
++            // receipt metadata, so resume replays data without rearming
++            // anything. A retry skips fragments already in history instead of
++            // appending them a second time.
++            exec_completion_ack::note_recorded(turn_context, &leases);
++            let history = sess.clone_history().await;
++            let history_items = history.raw_items().collect::<Vec<_>>();
+             let items = leases
+                 .iter()
++                .filter(|lease| {
++                    !exec_completion_ack::items_contain_lease(history_items.iter().copied(), lease)
++                })
+                 .map(|lease| {
+                     ContextualUserFragment::into(ExecCompletionFragment::new(
+                         lease.receipt_id().model_handle(),
+@@ -786,9 +797,11 @@ pub(crate) async fn record_pending_input(
+                     ))
+                 })
+                 .collect::<Vec<_>>();
+-            sess.record_conversation_items(turn_context, model_info, &items)
+-                .await;
+-            sess.ensure_rollout_materialized(persist_context).await;
++            if !items.is_empty() {
++                sess.record_conversation_items(turn_context, model_info, &items)
++                    .await;
++                sess.ensure_rollout_materialized(persist_context).await;
++            }
+         }
+     }
+     record_additional_contexts(sess, turn_context, additional_contexts).await;
+diff --git a/codex-rs/core/src/session/exec_completion_ack.rs b/codex-rs/core/src/session/exec_completion_ack.rs
+new file mode 100644
+index 0000000000..d8177695f1
+--- /dev/null
++++ b/codex-rs/core/src/session/exec_completion_ack.rs
+@@ -0,0 +1,252 @@
++//! Sampling acknowledgement for leased exec-completion notifications.
++//!
++//! A runtime lease is acknowledged as sampled when the transport observes the
++//! server accepting a sampling request that contains its fragment -- response
++//! creation or output, on either transport -- before response completion and
++//! before tool draining. Reservation, drain, pending-input recording, and
++//! history append never acknowledge: the record path only renders the fragment
++//! and tracks the lease on the turn, server acceptance acknowledges the
++//! members of the submitted prompt, and turn end fails whatever is still
++//! tracked.
++//!
++//! Membership is checked against the submitted prompt items using the trusted
++//! lease: the expected fragment text is re-rendered from the lease's receipt
++//! id and completion snapshot and compared for exact equality. Nothing is
++//! parsed back from fragment text, so forged markers in user content or
++//! resumed history acknowledge nothing and authorize nothing.
++//!
++//! A failed or aborted submission fails tracked leases back to unleased
++//! through [`RuntimeMailbox::fail`][fail], so a later wake retries them; the
++//! record path skips fragments already present in history, so a retry never
++//! appends the same fragment twice. Each failed attempt counts against
++//! [`MAX_RUNTIME_SAMPLING_ATTEMPTS`][max]; the exhausting failure suspends the
++//! entry visibly with a warning instead of spinning further wake turns.
++//! Nothing after acceptance -- stream error, EOF, cancellation, budget
++//! failure, tool drain, turn abort -- can un-acknowledge a lease:
++//! acknowledgement removes it from tracking and from the mailbox, and failing
++//! an acknowledged lease is a no-op.
++//!
++//! [fail]: super::runtime_mailbox::RuntimeMailbox::fail
++//! [max]: super::runtime_mailbox::MAX_RUNTIME_SAMPLING_ATTEMPTS
++
++use std::sync::Mutex;
++use std::sync::PoisonError;
++
++use codex_protocol::models::ContentItem;
++use codex_protocol::models::ResponseItem;
++use codex_protocol::protocol::EventMsg;
++use codex_protocol::protocol::WarningEvent;
++
++use super::runtime_mailbox::MAX_RUNTIME_SAMPLING_ATTEMPTS;
++use super::runtime_mailbox::RuntimeLease;
++use super::session::Session;
++use super::turn_context::TurnContext;
++use crate::client_common::ResponseEvent;
++use crate::context::ContextualUserFragment;
++use crate::context::ExecCompletionFragment;
++
++/// Runtime leases recorded by this turn and still awaiting sampling proof.
++///
++/// Stored on the turn's extension data by the record path, consumed by the
++/// submit path (members acknowledged) and by turn end (remainder failed).
++#[derive(Debug, Default)]
++struct PendingExecCompletionAcks {
++    leases: Mutex<Vec<RuntimeLease>>,
++}
++
++/// Tracks leases whose fragments were recorded for this turn.
++///
++/// Recording is not acknowledgement; every tracked lease still needs a
++/// submitted prompt containing its fragment. Leases already tracked (a retry
++/// re-recording the same receipt) are not duplicated.
++pub(crate) fn note_recorded(turn_context: &TurnContext, leases: &[RuntimeLease]) {
++    if leases.is_empty() {
++        return;
++    }
++    let tracked = turn_context
++        .extension_data
++        .get_or_init(PendingExecCompletionAcks::default);
++    let mut guard = tracked
++        .leases
++        .lock()
++        .unwrap_or_else(PoisonError::into_inner);
++    for lease in leases {
++        if !guard
++            .iter()
++            .any(|known| known.receipt_id() == lease.receipt_id())
++        {
++            guard.push(lease.clone());
++        }
++    }
++}
++
++/// Reports whether the trusted fragment of `lease` is among `items`.
++///
++/// The expected text is re-rendered from the lease itself; prompt and history
++/// items are compared for exact equality and never parsed for receipt ids.
++pub(crate) fn items_contain_lease<'a>(
++    mut items: impl Iterator<Item = &'a ResponseItem>,
++    lease: &RuntimeLease,
++) -> bool {
++    let fragment =
++        ExecCompletionFragment::new(lease.receipt_id().model_handle(), lease.completion());
++    let role = fragment.role();
++    let expected = fragment.render();
++    items.any(|item| match item {
++        ResponseItem::Message {
++            role: item_role,
++            content,
++            ..
++        } if item_role == role => content
++            .iter()
++            .any(|entry| matches!(entry, ContentItem::InputText { text } if text == &expected)),
++        _ => false,
++    })
++}
++
++/// Reports whether a stream event proves the server accepted the request.
++///
++/// Response creation is the canonical signal; output and completion prove the
++/// same for transports and bodies that skip creation. Header-synthesized and
++/// auxiliary metadata events are excluded: they are emitted before (or
++/// independently of) the body's accept/reject verdict, so they prove contact,
++/// not acceptance. `response.failed` never reaches this classifier: the stream
++/// parser surfaces it as an error, and a rejected request is not a sampling
++/// proof. The match is exhaustive on purpose: a new event variant must make an
++/// explicit acceptance choice here.
++pub(crate) fn is_acceptance_event(event: &ResponseEvent) -> bool {
++    match event {
++        ResponseEvent::Created { .. }
++        | ResponseEvent::OutputItemDone(_)
++        | ResponseEvent::OutputItemAdded(_)
++        | ResponseEvent::OutputTextDelta(_)
++        | ResponseEvent::ToolCallInputDelta { .. }
++        | ResponseEvent::ReasoningSummaryDelta { .. }
++        | ResponseEvent::ReasoningSummaryDone { .. }
++        | ResponseEvent::ReasoningContentDelta { .. }
++        | ResponseEvent::ReasoningSummaryPartAdded { .. }
++        | ResponseEvent::Completed { .. } => true,
++        ResponseEvent::ServerModel(_)
++        | ResponseEvent::ModelVerifications(_)
++        | ResponseEvent::TurnModerationMetadata(_)
++        | ResponseEvent::SafetyBuffering(_)
++        | ResponseEvent::ServerReasoningIncluded(_)
++        | ResponseEvent::RateLimits(_)
++        | ResponseEvent::ModelsEtag(_) => false,
++    }
++}
++
++/// Acknowledges tracked leases whose fragments the submitted prompt contains.
++///
++/// Called when the transport observes the server accepting a sampling request
++/// (see [`is_acceptance_event`]), on any transport. Members are acknowledged
++/// and untracked; non-members (omitted from the prompt, e.g. by compaction)
++/// stay tracked so a later request in this turn can still sample them, and
++/// turn end fails whatever remains.
++pub(crate) async fn acknowledge_submitted(
++    sess: &Session,
++    turn_context: &TurnContext,
++    prompt_input: &[ResponseItem],
++) {
++    let Some(tracked) = turn_context
++        .extension_data
++        .get::<PendingExecCompletionAcks>()
++    else {
++        return;
++    };
++    let members: Vec<RuntimeLease> = tracked
++        .leases
++        .lock()
++        .unwrap_or_else(PoisonError::into_inner)
++        .iter()
++        .filter(|lease| items_contain_lease(prompt_input.iter(), lease))
++        .cloned()
++        .collect();
++    if members.is_empty() {
++        return;
++    }
++    for lease in &members {
++        sess.input_queue.acknowledge_runtime_lease(lease).await;
++    }
++    tracked
++        .leases
++        .lock()
++        .unwrap_or_else(PoisonError::into_inner)
++        .retain(|lease| !members.contains(lease));
++}
++
++/// Fails tracked leases that no submitted prompt in this turn contained.
++///
++/// Called once when the turn ends (completion, error, or abort): the leases
++/// return to unleased so a later wake retries them. Entries that exhaust
++/// [`MAX_RUNTIME_SAMPLING_ATTEMPTS`][max] suspend visibly with a warning.
++/// [max]: super::runtime_mailbox::MAX_RUNTIME_SAMPLING_ATTEMPTS
++pub(crate) async fn fail_unsubmitted(sess: &Session, turn_context: &TurnContext) {
++    let Some(tracked) = turn_context
++        .extension_data
++        .remove::<PendingExecCompletionAcks>()
++    else {
++        return;
++    };
++    let leases = tracked
++        .leases
++        .lock()
++        .unwrap_or_else(PoisonError::into_inner)
++        .clone();
++    fail_leases(sess, Some(turn_context), &leases).await;
++}
++
++/// Fails leases that never reached the record path of a finished turn.
++///
++/// Abort paths call this with leases dropped from turn-pending input. When
++/// the aborted turn never started a task there is no turn context to warn on;
++/// suspension still applies, and the entry stays retained but starts no
++/// further wake turns.
++pub(crate) async fn fail_leases(
++    sess: &Session,
++    turn_context: Option<&TurnContext>,
++    leases: &[RuntimeLease],
++) {
++    if leases.is_empty() {
++        return;
++    }
++    let mut suspended = 0usize;
++    for lease in leases {
++        if sess.input_queue.fail_runtime_lease(lease).await
++            && sess
++                .input_queue
++                .is_runtime_notification_suspended(lease.receipt_id())
++                .await
++        {
++            suspended += 1;
++        }
++    }
++    if suspended == 0 {
++        return;
++    }
++    let Some(turn_context) = turn_context else {
++        return;
++    };
++    sess.send_event(
++        turn_context,
++        EventMsg::Warning(WarningEvent {
++            message: suspension_warning(suspended),
++        }),
++    )
++    .await;
++}
++
++fn suspension_warning(suspended: usize) -> String {
++    let completions = if suspended == 1 {
++        "completion"
++    } else {
++        "completions"
++    };
++    format!(
++        "Background exec completion delivery suspended for {suspended} {completions} after {MAX_RUNTIME_SAMPLING_ATTEMPTS} failed sampling attempts; the wake will not retry automatically."
++    )
++}
++
++#[cfg(test)]
++#[path = "exec_completion_ack_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/session/exec_completion_ack_tests.rs b/codex-rs/core/src/session/exec_completion_ack_tests.rs
+new file mode 100644
+index 0000000000..2675df28ed
+--- /dev/null
++++ b/codex-rs/core/src/session/exec_completion_ack_tests.rs
+@@ -0,0 +1,164 @@
++use codex_protocol::ThreadId;
++use codex_protocol::models::ContentItem;
++use codex_protocol::models::ResponseItem;
++use pretty_assertions::assert_eq;
++
++use super::is_acceptance_event;
++use super::items_contain_lease;
++use crate::client_common::ResponseEvent;
++use crate::context::ContextualUserFragment;
++use crate::context::ExecCompletion;
++use crate::context::ExecCompletionFragment;
++use crate::context::ExecOutputRetention;
++use crate::session::runtime_mailbox::RuntimeLease;
++use crate::session::runtime_mailbox::RuntimeMailbox;
++use crate::unified_exec::completion_receipt::CompletionReceiptStore;
++use crate::unified_exec::completion_receipt::ReceiptOwner;
++
++fn receipt_owner(call_id: &str) -> ReceiptOwner {
++    ReceiptOwner::new(
++        ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0001),
++        /*runtime_generation*/ 7,
++        call_id,
++    )
++    .expect("test owner should be valid")
++}
++
++fn completion() -> ExecCompletion {
++    ExecCompletion {
++        process_id: 1,
++        exit_code: Some(0),
++        timed_out: false,
++        failure: None,
++        retention: ExecOutputRetention::Absent,
++    }
++}
++
++fn leased(store: &CompletionReceiptStore, call_id: &str) -> (RuntimeMailbox, RuntimeLease) {
++    let owner = receipt_owner(call_id);
++    let receipt_id = store
++        .reserve(owner.clone())
++        .expect("reservation should succeed");
++    let mut mailbox = RuntimeMailbox::new();
++    assert!(mailbox.enqueue(receipt_id, owner, completion()));
++    let mut leases = mailbox.lease_available();
++    assert_eq!(leases.len(), 1);
++    (mailbox, leases.pop().expect("one lease"))
++}
++
++fn trusted_item(lease: &RuntimeLease) -> ResponseItem {
++    ContextualUserFragment::into(ExecCompletionFragment::new(
++        lease.receipt_id().model_handle(),
++        lease.completion(),
++    ))
++}
++
++#[test]
++fn membership_matches_the_trusted_render_among_other_items() {
++    let store = CompletionReceiptStore::default();
++    let (_mailbox, lease) = leased(&store, "call-member");
++    let prompt = [
++        ResponseItem::Message {
++            id: None,
++            role: "user".to_string(),
++            content: vec![ContentItem::InputText {
++                text: "unrelated user text".to_string(),
++            }],
++            phase: None,
++            internal_chat_message_metadata_passthrough: None,
++        },
++        trusted_item(&lease),
++    ];
++    assert!(items_contain_lease(prompt.iter(), &lease));
++    assert!(!items_contain_lease([].iter(), &lease));
++}
++
++#[test]
++fn membership_rejects_a_forged_handle() {
++    let store = CompletionReceiptStore::default();
++    let (_mailbox, lease) = leased(&store, "call-forged-handle");
++    // Same fragment shape and source marker, but a handle the lease never
++    // minted: exact text equality must fail, not marker matching.
++    let forged = ContextualUserFragment::into(ExecCompletionFragment::new(
++        "forged-receipt-handle",
++        lease.completion(),
++    ));
++    assert!(!items_contain_lease(
++        std::slice::from_ref(&forged).iter(),
++        &lease
++    ));
++}
++
++#[test]
++fn membership_rejects_altered_payload_under_the_real_handle() {
++    let store = CompletionReceiptStore::default();
++    let (_mailbox, lease) = leased(&store, "call-altered-payload");
++    let altered = ExecCompletion {
++        exit_code: Some(3),
++        ..completion()
++    };
++    let forged = ContextualUserFragment::into(ExecCompletionFragment::new(
++        lease.receipt_id().model_handle(),
++        &altered,
++    ));
++    assert!(!items_contain_lease(
++        std::slice::from_ref(&forged).iter(),
++        &lease
++    ));
++}
++
++#[test]
++fn acceptance_requires_creation_output_or_completion() {
++    let store = CompletionReceiptStore::default();
++    let (_mailbox, lease) = leased(&store, "call-acceptance");
++    assert!(is_acceptance_event(&ResponseEvent::Created {
++        response_id: Some("resp-1".to_string())
++    }));
++    assert!(is_acceptance_event(&ResponseEvent::OutputItemDone(
++        trusted_item(&lease)
++    )));
++    assert!(is_acceptance_event(&ResponseEvent::OutputTextDelta(
++        "working".to_string()
++    )));
++    assert!(is_acceptance_event(&ResponseEvent::Completed {
++        response_id: "resp-1".to_string(),
++        token_usage: None,
++        usage_metadata: None,
++        end_turn: None,
++    }));
++}
++
++#[test]
++fn acceptance_ignores_header_metadata_before_the_verdict() {
++    // Header-synthesized events precede the body's accept/reject verdict: a
++    // request the server then rejects must not acknowledge on their strength.
++    assert!(!is_acceptance_event(&ResponseEvent::ServerModel(
++        "gpt-5.5".to_string()
++    )));
++    assert!(!is_acceptance_event(&ResponseEvent::ModelsEtag(
++        "etag-1".to_string()
++    )));
++    assert!(!is_acceptance_event(
++        &ResponseEvent::ServerReasoningIncluded(true)
++    ));
++}
++
++#[test]
++fn membership_ignores_non_user_messages() {
++    let store = CompletionReceiptStore::default();
++    let (_mailbox, lease) = leased(&store, "call-role");
++    let ResponseItem::Message { content, .. } = trusted_item(&lease) else {
++        panic!("trusted render should be a message");
++    };
++    let assistant_echo = ResponseItem::Message {
++        id: None,
++        role: "assistant".to_string(),
++        content,
++        phase: None,
++        internal_chat_message_metadata_passthrough: None,
++    };
++    assert!(
++        !items_contain_lease(std::slice::from_ref(&assistant_echo).iter(), &lease),
++        "fragment text outside a user message is data, not delivery"
++    );
++}
+diff --git a/codex-rs/core/src/session/input_queue.rs b/codex-rs/core/src/session/input_queue.rs
+index 3a4892546f..cb191f7cda 100644
+--- a/codex-rs/core/src/session/input_queue.rs
++++ b/codex-rs/core/src/session/input_queue.rs
+@@ -306,18 +306,17 @@ impl InputQueue {
+             .lease_available_up_to(limit)
+     }
+ 
+-    /// Acknowledges a runtime lease after its contents were sampled.
+-    ///
+-    /// Production callers arrive with sampling acknowledgement (story D).
+-    #[allow(dead_code)]
++    /// Acknowledges a runtime lease after its fragment was observed in a
++    /// submitted prompt.
+     pub(crate) async fn acknowledge_runtime_lease(&self, lease: &RuntimeLease) -> bool {
+         self.runtime_notifications.lock().await.acknowledge(lease)
+     }
+ 
+     /// Returns a runtime lease to the unleased state after a failed attempt.
+     ///
+-    /// Production callers arrive with sampling acknowledgement (story D).
+-    #[allow(dead_code)]
++    /// The failing attempt that exhausts the sampling budget suspends the
++    /// entry instead of re-offering it; see
++    /// [`RuntimeMailbox::fail`][crate::session::runtime_mailbox::RuntimeMailbox::fail].
+     pub(crate) async fn fail_runtime_lease(&self, lease: &RuntimeLease) -> bool {
+         let failed = self.runtime_notifications.lock().await.fail(lease);
+         if failed {
+@@ -326,6 +325,14 @@ impl InputQueue {
+         failed
+     }
+ 
++    /// Reports whether a runtime entry is suspended (attempts exhausted).
++    pub(crate) async fn is_runtime_notification_suspended(&self, receipt_id: ReceiptId) -> bool {
++        self.runtime_notifications
++            .lock()
++            .await
++            .is_suspended(receipt_id)
++    }
++
+     /// Removes a runtime entry whether leased or not.
+     ///
+     /// Production callers arrive with receipt cancellation (story E).
+@@ -336,12 +343,34 @@ impl InputQueue {
+ 
+     /// Marks a runtime entry suspended after retries are exhausted.
+     ///
+-    /// Production callers arrive with bounded sampling retries (story D).
++    /// Exhaustion suspends internally through [`Self::fail_runtime_lease`];
++    /// this stays for explicit suspension, pinned by tests.
+     #[allow(dead_code)]
+     pub(crate) async fn suspend_runtime_notification(&self, receipt_id: ReceiptId) -> bool {
+         self.runtime_notifications.lock().await.suspend(receipt_id)
+     }
+ 
++    /// Removes internal exec-completion inputs from turn-pending input.
++    ///
++    /// Abort paths call this on the taken turn so leases that never reached
++    /// the record path are failed (never stranded leased) instead of dropped
++    /// with the turn. Recorded leases are tracked separately per turn.
++    pub(crate) async fn take_pending_exec_completion_leases(
++        &self,
++        active_turn: &ActiveTurn,
++    ) -> Vec<RuntimeLease> {
++        let mut turn_state = active_turn.turn_state.lock().await;
++        let mut leases = Vec::new();
++        turn_state.pending_input.items.retain_mut(|input| {
++            let TurnInput::ExecCompletion(carried) = input else {
++                return true;
++            };
++            leases.append(carried);
++            false
++        });
++        leases
++    }
++
+     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
+         if !self.mailbox_pending_mails.lock().await.is_empty() {
+             return true;
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 3a499f7b93..1b120de67a 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -231,6 +231,7 @@ mod code_mode_warning;
+ pub(crate) mod context_window;
+ mod daemon_recovery;
+ mod environment;
++pub(crate) mod exec_completion_ack;
+ mod extension_interruption;
+ pub(crate) mod extension_metrics;
+ mod guardian_checkpoint;
+diff --git a/codex-rs/core/src/session/runtime_mailbox.rs b/codex-rs/core/src/session/runtime_mailbox.rs
+index 15d1b07351..212c16ecbc 100644
+--- a/codex-rs/core/src/session/runtime_mailbox.rs
++++ b/codex-rs/core/src/session/runtime_mailbox.rs
+@@ -12,10 +12,15 @@
+ //! goal continuation; suspended entries (retry exhausted) are excluded so they
+ //! never block idle starts or suppress idle contributors.
+ //!
+-//! Sampling acknowledgement wiring (story D) is out of scope: idle wake
+-//! leases entries via [`RuntimeMailbox::lease_available_up_to`] and hands the
+-//! leases to the turn starter as the internal `TurnInput` variant, which the
+-//! record path renders through the exec-completion context fragment.
++//! Idle wake leases entries via [`RuntimeMailbox::lease_available_up_to`] and
++//! hands the leases to the turn starter as the internal `TurnInput` variant,
++//! which the record path renders through the exec-completion context fragment.
++//! The sampling path acknowledges a lease only after a submitted prompt is
++//! observed to contain its fragment; a failed or aborted submission fails the
++//! lease back to unleased so a later wake retries it. Each failed attempt
++//! counts against [`MAX_RUNTIME_SAMPLING_ATTEMPTS`]; the attempt that exhausts
++//! the budget suspends the entry instead of re-offering it, so a persistently
++//! failing completion can neither spin wake turns nor wedge the mailbox.
+ //!
+ //! [iac]: codex_protocol::protocol::InterAgentCommunication
+ 
+@@ -33,6 +38,15 @@ use crate::unified_exec::completion_receipt::ReceiptOwner;
+ /// agent, and resets no human quota.
+ pub(crate) const EXEC_COMPLETION_TURN_TRIGGER: &str = "exec_completion";
+ 
++/// Maximum failed sampling attempts before a runtime entry is suspended.
++///
++/// One attempt is one wake turn that carried the entry without observing its
++/// fragment in a submitted prompt (failed or aborted submission, or omission
++/// from the prompt). In-turn transport retries are bounded separately and do
++/// not count here. The failing attempt that reaches this budget suspends the
++/// entry: it stays retained and visible but starts no further wake turns.
++pub(crate) const MAX_RUNTIME_SAMPLING_ATTEMPTS: u32 = 3;
++
+ /// Opaque sampling lease for one runtime mailbox entry.
+ ///
+ /// The token is minted by [`RuntimeMailbox::lease_available`] and must be
+@@ -60,12 +74,15 @@ impl RuntimeLease {
+ #[derive(Debug)]
+ struct PendingRuntimeNotification {
+     receipt_id: ReceiptId,
+-    // Carries the B receipt owner for sampling-acknowledgement wiring (story D).
++    // Carries the B receipt owner for retained-output reads (story E).
+     #[allow(dead_code)]
+     owner: ReceiptOwner,
+     completion: ExecCompletion,
+     suspended: bool,
+     lease: Option<Uuid>,
++    /// Failed sampling attempts so far; reaching
++    /// [`MAX_RUNTIME_SAMPLING_ATTEMPTS`] suspends the entry.
++    attempts: u32,
+ }
+ 
+ /// Mailbox-side lease tracking for runtime notifications.
+@@ -106,6 +123,7 @@ impl RuntimeMailbox {
+             completion,
+             suspended: false,
+             lease: None,
++            attempts: 0,
+         });
+         true
+     }
+@@ -161,12 +179,12 @@ impl RuntimeMailbox {
+         leases
+     }
+ 
+-    /// Acknowledges a lease after its contents were sampled.
++    /// Acknowledges a lease after the server accepted a prompt containing its fragment.
+     ///
+     /// Removes the entry. Unknown receipts, stale tokens, and leases for
+-    /// cancelled entries are refused. Production callers arrive with sampling
+-    /// acknowledgement (story D); covered by tests until then.
+-    #[allow(dead_code)]
++    /// cancelled entries are refused. Removal is what makes a later
++    /// [`Self::fail`] on the same lease a no-op: no downstream error path can
++    /// requeue an acknowledged lease.
+     pub(crate) fn acknowledge(&mut self, lease: &RuntimeLease) -> bool {
+         let Some(index) = self
+             .entries
+@@ -185,9 +203,11 @@ impl RuntimeMailbox {
+     /// Returns a leased entry to the unleased state after a failed attempt.
+     ///
+     /// The next drain retries it with a fresh token. Stale tokens and unknown
+-    /// receipts are refused without duplicating the entry. Production callers
+-    /// arrive with sampling acknowledgement (story D); covered by tests until then.
+-    #[allow(dead_code)]
++    /// receipts are refused without duplicating the entry and without counting
++    /// an attempt; in particular, failing an acknowledged lease is a no-op and
++    /// never requeues it. The attempt that reaches [`MAX_RUNTIME_SAMPLING_ATTEMPTS`]
++    /// suspends the entry instead: it stays retained but is excluded from
++    /// pending, trigger, and lease queries.
+     pub(crate) fn fail(&mut self, lease: &RuntimeLease) -> bool {
+         let Some(entry) = self
+             .entries
+@@ -200,9 +220,25 @@ impl RuntimeMailbox {
+             return false;
+         }
+         entry.lease = None;
++        entry.attempts = entry.attempts.saturating_add(1);
++        let exhausted = entry.attempts >= MAX_RUNTIME_SAMPLING_ATTEMPTS;
++        let receipt_id = entry.receipt_id;
++        if exhausted {
++            self.suspend(receipt_id);
++        }
+         true
+     }
+ 
++    /// Reports whether the entry is suspended (attempts exhausted).
++    ///
++    /// Unknown receipts report `false`. Callers use this after [`Self::fail`]
++    /// to warn visibly when an entry stops retrying.
++    pub(crate) fn is_suspended(&self, receipt_id: ReceiptId) -> bool {
++        self.entries
++            .iter()
++            .any(|entry| entry.receipt_id == receipt_id && entry.suspended)
++    }
++
+     /// Removes the entry whether leased or not.
+     ///
+     /// Cancelled entries are never re-offered, and their lease tokens can no
+@@ -224,9 +260,7 @@ impl RuntimeMailbox {
+     /// Marks an entry suspended after retries are exhausted.
+     ///
+     /// Suspended entries are excluded from pending, trigger, and lease
+-    /// queries until they are cancelled or acknowledged. Production callers
+-    /// arrive with bounded sampling retries (story D); covered by tests until then.
+-    #[allow(dead_code)]
++    /// queries until they are cancelled or acknowledged.
+     pub(crate) fn suspend(&mut self, receipt_id: ReceiptId) -> bool {
+         let Some(entry) = self
+             .entries
+diff --git a/codex-rs/core/src/session/runtime_mailbox_tests.rs b/codex-rs/core/src/session/runtime_mailbox_tests.rs
+index 955cae1e1f..ce5f00ae3b 100644
+--- a/codex-rs/core/src/session/runtime_mailbox_tests.rs
++++ b/codex-rs/core/src/session/runtime_mailbox_tests.rs
+@@ -1,6 +1,7 @@
+ use codex_protocol::ThreadId;
+ use pretty_assertions::assert_eq;
+ 
++use super::MAX_RUNTIME_SAMPLING_ATTEMPTS;
+ use super::RuntimeMailbox;
+ use crate::context::ExecCompletion;
+ use crate::context::ExecOutputRetention;
+@@ -202,6 +203,74 @@ fn runtime_lease_carries_the_admission_snapshot() {
+     assert_eq!(leases[0].completion(), &expected);
+ }
+ 
++#[test]
++fn runtime_failed_attempts_suspend_on_exhaustion_and_stay_retained() {
++    let store = CompletionReceiptStore::default();
++    let (receipt_id, owner) = reserve_receipt(&store, "call-exhaust");
++    let mut mailbox = RuntimeMailbox::new();
++    assert!(mailbox.enqueue(receipt_id, owner, completion(1)));
++
++    for attempt in 1..=MAX_RUNTIME_SAMPLING_ATTEMPTS {
++        let leases = mailbox.lease_available();
++        assert_eq!(leases.len(), 1);
++        assert!(mailbox.fail(&leases[0]));
++        assert_eq!(
++            mailbox.is_suspended(receipt_id),
++            attempt == MAX_RUNTIME_SAMPLING_ATTEMPTS,
++            "only the exhausting attempt suspends"
++        );
++    }
++    assert!(!mailbox.has_pending());
++    assert!(!mailbox.has_trigger());
++    assert!(mailbox.lease_available().is_empty());
++    // Retained, not dropped: cancellation still finds the entry.
++    assert!(mailbox.cancel(receipt_id));
++    assert!(!mailbox.is_suspended(receipt_id));
++}
++
++#[test]
++fn runtime_stale_fail_counts_no_attempt() {
++    let store = CompletionReceiptStore::default();
++    let (receipt_id, owner) = reserve_receipt(&store, "call-stale-uncounted");
++    let mut mailbox = RuntimeMailbox::new();
++    assert!(mailbox.enqueue(receipt_id, owner, completion(1)));
++
++    for attempt in 1..MAX_RUNTIME_SAMPLING_ATTEMPTS {
++        let leases = mailbox.lease_available();
++        assert_eq!(leases.len(), 1);
++        assert!(mailbox.fail(&leases[0]));
++        // A stale retry of the consumed token is refused and uncounted.
++        assert!(!mailbox.fail(&leases[0]));
++        assert!(
++            !mailbox.is_suspended(receipt_id),
++            "attempt {attempt} of {MAX_RUNTIME_SAMPLING_ATTEMPTS} must not suspend"
++        );
++    }
++    let leases = mailbox.lease_available();
++    assert_eq!(leases.len(), 1);
++    assert!(mailbox.fail(&leases[0]));
++    assert!(mailbox.is_suspended(receipt_id));
++}
++
++#[test]
++fn runtime_fail_after_acknowledge_is_noop() {
++    let store = CompletionReceiptStore::default();
++    let (receipt_id, owner) = reserve_receipt(&store, "call-fail-after-ack");
++    let mut mailbox = RuntimeMailbox::new();
++    assert!(mailbox.enqueue(receipt_id, owner, completion(1)));
++
++    let leases = mailbox.lease_available();
++    assert_eq!(leases.len(), 1);
++    assert!(mailbox.acknowledge(&leases[0]));
++    // Every downstream error path fails through this same call: once
++    // acknowledged, a lease can neither burn attempts nor requeue.
++    assert!(!mailbox.fail(&leases[0]));
++    assert!(!mailbox.has_pending());
++    assert!(!mailbox.has_trigger());
++    assert!(mailbox.lease_available().is_empty());
++    assert!(!mailbox.is_suspended(receipt_id));
++}
++
+ #[test]
+ fn runtime_capped_lease_retains_the_remainder_unleased() {
+     let store = CompletionReceiptStore::default();
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 7ba86367e7..a7d8381409 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -36,6 +36,7 @@ use crate::responses_retry::handle_response_stream_error;
+ use crate::session::PreviousTurnSettings;
+ use crate::session::TurnInput;
+ use crate::session::daemon_recovery::RecordedTurnInput;
++use crate::session::exec_completion_ack;
+ use crate::session::session::Session;
+ use crate::session::step_context::StepContext;
+ use crate::session::turn_context::TurnContext;
+@@ -1691,6 +1692,9 @@ async fn run_sampling_request(
+         .await
+         {
+             Ok(output) => {
++                // Acknowledgement happened inside `try_run_sampling_request`
++                // at server acceptance; later drain, cancellation, or abort
++                // requeues nothing.
+                 return Ok((output, original_input.unwrap_or(prompt.input)));
+             }
+             Err(err) => match err.details() {
+@@ -2604,6 +2608,7 @@ async fn try_run_sampling_request(
+         !sess.services.extensions.turn_item_contributors().is_empty();
+     let mut active_item_is_streaming_to_client = false;
+     let receiving_span = trace_span!("receiving_stream");
++    let mut exec_completion_accepted = false;
+     let outcome: CodexResult<SamplingRequestResult> = loop {
+         let handle_responses = trace_span!(
+             parent: &receiving_span,
+@@ -2661,6 +2666,18 @@ async fn try_run_sampling_request(
+             }
+         };
+ 
++        // Server acceptance is the only acknowledgement point: the first
++        // event proving the server is producing this response acknowledges
++        // exactly the tracked leases whose fragments the submitted prompt
++        // contains. Nothing later -- stream error, EOF, cancellation, budget
++        // failure, tool drain, turn abort -- can un-acknowledge them:
++        // acknowledgement untracks the members and removes them from the
++        // mailbox, and failing an acknowledged lease is a no-op.
++        if !exec_completion_accepted && exec_completion_ack::is_acceptance_event(&event) {
++            exec_completion_accepted = true;
++            exec_completion_ack::acknowledge_submitted(&sess, &turn_context, &prompt.input).await;
++        }
++
+         sess.services
+             .session_telemetry
+             .record_responses(&handle_responses, &event);
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index b887de2da2..bd96e25bfb 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -30,6 +30,7 @@ use crate::context::ContextualUserFragment;
+ use crate::context::MAX_EXEC_COMPLETION_FRAGMENTS_PER_REQUEST;
+ use crate::hook_runtime::run_turn_interrupt_hooks;
+ use crate::session::TurnInput;
++use crate::session::exec_completion_ack;
+ use crate::session::session::Session;
+ use crate::session::turn::run_hooks_and_record_inputs;
+ use crate::session::turn_context::NewTurnContextOptions;
+@@ -559,7 +560,14 @@ impl Session {
+         let mut aborted_turn = false;
+         let mut active_turn_to_clear = None;
+         let mut turn_context = None;
++        let mut dropped_leases = Vec::new();
+         if let Some(mut active_turn) = self.take_active_turn(&reason).await {
++            // Leases that never reached the record path must fail rather than
++            // drop with the turn, or their entries stay leased forever.
++            dropped_leases = self
++                .input_queue
++                .take_pending_exec_completion_leases(&active_turn)
++                .await;
+             let task = active_turn.task.take();
+             aborted_turn = task.is_some();
+             turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
+@@ -586,6 +594,7 @@ impl Session {
+             // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+             self.input_queue.clear_pending(&active_turn).await;
+         }
++        exec_completion_ack::fail_leases(self, turn_context.as_deref(), &dropped_leases).await;
+         if reason == TurnAbortReason::Interrupted && aborted_turn {
+             self.maybe_start_turn_for_pending_work().await;
+         }
+@@ -629,6 +638,12 @@ impl Session {
+         reason: TurnAbortReason,
+         error: Option<ErrorEvent>,
+     ) {
++        // Leases that never reached the record path must fail rather than
++        // drop with the turn, or their entries stay leased forever.
++        let dropped_leases = self
++            .input_queue
++            .take_pending_exec_completion_leases(&active_turn)
++            .await;
+         let task = active_turn.task.take();
+         let turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
+         if let Some(task) = task {
+@@ -642,6 +657,7 @@ impl Session {
+         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
+         // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+         self.input_queue.clear_pending(&active_turn).await;
++        exec_completion_ack::fail_leases(self, turn_context.as_deref(), &dropped_leases).await;
+ 
+         if reason == TurnAbortReason::Interrupted {
+             self.maybe_start_turn_for_pending_work().await;
+@@ -716,6 +732,11 @@ impl Session {
+             PersistContext::Standard,
+         )
+         .await;
++        // Leases recorded but never observed in a submitted prompt return to
++        // unleased so a later wake retries them; entries that exhaust their
++        // sampling budget suspend visibly instead of spinning further wakes.
++        // This must precede the idle wake below so retries are re-offered.
++        exec_completion_ack::fail_unsubmitted(self, &turn_context).await;
+         let turn_telemetry = &turn_context.session_telemetry;
+         // Emit token usage metrics.
+         {
+@@ -1026,6 +1047,9 @@ impl Session {
+                 turn_id: task.turn_context.sub_id.clone(),
+                 profile,
+             });
++        // An aborted submission is not a sampling proof: recorded leases
++        // return to unleased so the post-abort wake can retry them.
++        exec_completion_ack::fail_unsubmitted(self, &task.turn_context).await;
+         let event = EventMsg::TurnAborted(TurnAbortedEvent {
+             turn_id: Some(task.turn_context.sub_id.clone()),
+             reason,
+diff --git a/codex-rs/core/tests/suite/exec_completion.rs b/codex-rs/core/tests/suite/exec_completion.rs
+index fea4d7f482..5d75e29304 100644
+--- a/codex-rs/core/tests/suite/exec_completion.rs
++++ b/codex-rs/core/tests/suite/exec_completion.rs
+@@ -1,20 +1,36 @@
+ use codex_core::StartIfIdleSubmission;
+ use codex_core::TurnInput;
+ use codex_core::TurnInputRequest;
++use codex_core::config::RolloutBudgetConfig;
+ use codex_core::context::ContextualUserFragment;
+ use codex_core::context::ExecCompletion;
+ use codex_core::context::ExecCompletionFragment;
+ use codex_core::context::ExecOutputRetention;
++use codex_model_provider_info::ModelProviderInfo;
++use codex_model_provider_info::WireApi;
+ use codex_protocol::models::ContentItem;
+ use codex_protocol::models::ResponseItem;
++use codex_protocol::protocol::CodexErrorInfo;
+ use codex_protocol::protocol::EventMsg;
+ use codex_protocol::protocol::Op;
+ use codex_protocol::user_input::UserInput;
+ use codex_rollout::RolloutItem;
+ use core_test_support::responses;
++use core_test_support::responses::WebSocketRequest;
++use core_test_support::skip_if_host_windows;
++use core_test_support::skip_if_no_network;
++use core_test_support::skip_if_target_windows;
++use core_test_support::streaming_sse::StreamingSseChunk;
++use core_test_support::streaming_sse::start_streaming_sse_server;
+ use core_test_support::test_codex::test_codex;
+ use core_test_support::wait_for_event;
+ use pretty_assertions::assert_eq;
++use std::time::Duration;
++use tokio::sync::oneshot;
++use wiremock::Mock;
++use wiremock::ResponseTemplate;
++use wiremock::matchers::method;
++use wiremock::matchers::path_regex;
+ 
+ const EXEC_COMPLETION_WRAPPER: &str = "source=\"exec_completion\"";
+ 
+@@ -69,6 +85,57 @@ async fn start_initial_turn(codex: &codex_core::CodexThread) -> anyhow::Result<(
+     Ok(())
+ }
+ 
++/// User-role input texts of one WebSocket request body.
++fn ws_input_texts(request: &WebSocketRequest) -> Vec<String> {
++    let mut texts = Vec::new();
++    let body = request.body_json();
++    let Some(items) = body.get("input").and_then(serde_json::Value::as_array) else {
++        return texts;
++    };
++    for item in items {
++        if item.get("role").and_then(serde_json::Value::as_str) != Some("user") {
++            continue;
++        }
++        let Some(content) = item.get("content").and_then(serde_json::Value::as_array) else {
++            continue;
++        };
++        for entry in content {
++            if entry.get("type").and_then(serde_json::Value::as_str) == Some("input_text")
++                && let Some(text) = entry.get("text").and_then(serde_json::Value::as_str)
++            {
++                texts.push(text.to_string());
++            }
++        }
++    }
++    texts
++}
++
++fn count_exec_texts(texts: &[String]) -> usize {
++    texts
++        .iter()
++        .filter(|text| text.contains(EXEC_COMPLETION_WRAPPER))
++        .count()
++}
++
++/// Counts exec-completion fragment texts in one raw streaming-server request
++/// body (the POST /v1/responses JSON the client submitted).
++fn count_exec_texts_in_raw_body(body: &[u8]) -> usize {
++    let json: serde_json::Value =
++        serde_json::from_slice(body).expect("streaming request body should be JSON");
++    let Some(items) = json.get("input").and_then(serde_json::Value::as_array) else {
++        return 0;
++    };
++    items
++        .iter()
++        .filter(|item| item.get("role").and_then(serde_json::Value::as_str) == Some("user"))
++        .filter_map(|item| item.get("content").and_then(serde_json::Value::as_array))
++        .flatten()
++        .filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("input_text"))
++        .filter_map(|entry| entry.get("text").and_then(serde_json::Value::as_str))
++        .filter(|text| text.contains(EXEC_COMPLETION_WRAPPER))
++        .count()
++}
++
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn wake_turn_persists_only_contextual_response_items_and_resume_stays_silent()
+ -> anyhow::Result<()> {
+@@ -274,3 +341,992 @@ async fn nine_pending_completions_sample_in_capped_batches_without_loss() -> any
+     );
+     Ok(())
+ }
++
++/// AC1: a submitted HTTP request containing the fragment acknowledges exactly
++/// that receipt; the lease is then gone and no further wake follows.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn sampled_fragment_acknowledges_and_wakes_no_more() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            responses::sse_completed("resp-wake"),
++        ],
++    )
++    .await;
++    let test = test_codex().build_with_auto_env(&server).await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    wait_for_turn_complete(&test.codex).await;
++
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 2);
++    assert_eq!(
++        count_exec_texts(&captured[0].message_input_texts("user")),
++        0
++    );
++    assert_eq!(
++        count_exec_texts(&captured[1].message_input_texts("user")),
++        1
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "acknowledged lease must be gone"
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(
++        requests.requests().len(),
++        2,
++        "no further wake turns after acknowledgement"
++    );
++    Ok(())
++}
++
++/// AC3/AC4: reservation, drain, pending-input recording, and history append
++/// never acknowledge. The first submission fails terminally, so the recorded
++/// lease must survive all pre-submit stages and retry; the retry samples it
++/// once without appending the fragment a second time. A mutant that
++/// acknowledges on append (or earlier) leaves no lease to retry and this test
++/// times out waiting for the second turn.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn failed_submission_retries_once_without_second_history_append() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            responses::sse_failed("resp-fail", "invalid_prompt", "bad prompt"),
++            responses::sse_completed("resp-retry"),
++        ],
++    )
++    .await;
++    let test = test_codex().build_with_auto_env(&server).await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    wait_for_turn_complete(&test.codex).await;
++    wait_for_turn_complete(&test.codex).await;
++
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 3);
++    assert_eq!(
++        count_exec_texts(&captured[1].message_input_texts("user")),
++        1
++    );
++    assert_eq!(
++        count_exec_texts(&captured[2].message_input_texts("user")),
++        1,
++        "retry resubmits the retained fragment"
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1,
++        "retry must not append the fragment a second time"
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "retried lease must acknowledge on success"
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(requests.requests().len(), 3);
++    Ok(())
++}
++
++/// AC4 (abort): interrupting a submission in flight fails the lease back to
++/// unleased; the post-abort wake retries it once, with no second append.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn aborted_submission_retries_and_samples_once() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_response_sequence(
++        &server,
++        vec![
++            responses::sse_response(responses::sse_completed("resp-initial")),
++            responses::sse_response(responses::sse_completed("resp-slow"))
++                .set_delay(Duration::from_secs(5)),
++            responses::sse_response(responses::sse_completed("resp-retry")),
++        ],
++    )
++    .await;
++    let test = test_codex().build_with_auto_env(&server).await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    // Interrupt only once the wake submission is in flight, so the abort
++    // deterministically hits a started (but uncompleted) submission.
++    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
++    while requests.requests().len() < 2 {
++        assert!(
++            tokio::time::Instant::now() < deadline,
++            "wake submission never started"
++        );
++        tokio::time::sleep(Duration::from_millis(10)).await;
++    }
++    test.codex.submit(Op::Interrupt).await?;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnAborted(_))
++    })
++    .await;
++    wait_for_turn_complete(&test.codex).await;
++
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 3);
++    assert_eq!(
++        count_exec_texts(&captured[1].message_input_texts("user")),
++        1
++    );
++    assert_eq!(
++        count_exec_texts(&captured[2].message_input_texts("user")),
++        1,
++        "post-abort wake resubmits the retained fragment"
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1,
++        "retry must not append the fragment a second time"
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false)
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(requests.requests().len(), 3);
++    Ok(())
++}
++
++/// AC2 (WebSocket): the same acknowledgement contract holds when the wake
++/// turn submits over the WebSocket transport.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn websocket_submission_acknowledges() -> anyhow::Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    // Prewarm consumes scripted requests before real turns; spare slots absorb
++    // per-turn prewarm variance. Exactly one request must carry the fragment.
++    let scripted = vec![
++        vec![
++            responses::ev_response_created("warm-0"),
++            responses::ev_completed("warm-0"),
++        ],
++        vec![
++            responses::ev_response_created("resp-initial"),
++            responses::ev_completed("resp-initial"),
++        ],
++        vec![
++            responses::ev_response_created("warm-1"),
++            responses::ev_completed("warm-1"),
++        ],
++        vec![
++            responses::ev_response_created("resp-wake"),
++            responses::ev_completed("resp-wake"),
++        ],
++        vec![
++            responses::ev_response_created("spare"),
++            responses::ev_completed("spare"),
++        ],
++    ];
++    let server = responses::start_websocket_server(vec![scripted]).await;
++    let test = test_codex().build_with_websocket_server(&server).await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    wait_for_turn_complete(&test.codex).await;
++
++    let fragment_requests = server
++        .connections()
++        .iter()
++        .flatten()
++        .filter(|request| count_exec_texts(&ws_input_texts(request)) == 1)
++        .count();
++    assert_eq!(
++        fragment_requests, 1,
++        "exactly one websocket request must carry the fragment"
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "websocket-sampled lease must be gone"
++    );
++
++    server.shutdown().await;
++    Ok(())
++}
++
++/// AC2 (fallback): when the WebSocket handshake is rejected with 426 the turn
++/// falls back to HTTP, and the HTTP submission acknowledges the lease.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn http_fallback_submission_acknowledges() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    Mock::given(method("GET"))
++        .and(path_regex(".*/responses$"))
++        .respond_with(ResponseTemplate::new(426))
++        .mount(&server)
++        .await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            responses::sse_completed("resp-wake"),
++        ],
++    )
++    .await;
++    let test = test_codex()
++        .with_config(|config| {
++            config.model_provider.supports_websockets = true;
++        })
++        .build_with_auto_env(&server)
++        .await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    wait_for_turn_complete(&test.codex).await;
++
++    // The fallback path was taken: websocket handshakes were attempted and
++    // the sampling requests still completed over HTTP.
++    let handshake_attempted = server
++        .received_requests()
++        .await
++        .expect("mock server should retain received requests")
++        .iter()
++        .any(|request| request.method == "GET" && request.url.path().ends_with("/responses"));
++    assert!(
++        handshake_attempted,
++        "expected a websocket handshake attempt"
++    );
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 2);
++    assert_eq!(
++        count_exec_texts(&captured[1].message_input_texts("user")),
++        1
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "fallback-sampled lease must be gone"
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(requests.requests().len(), 2);
++    Ok(())
++}
++
++/// AC5: after the bounded sampling budget is exhausted the entry suspends
++/// visibly: a warning names the suspension, the request count stays bounded,
++/// and no further wake turns spin.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn persistent_failures_suspend_visibly_without_spin() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            responses::sse_failed("resp-fail-1", "invalid_prompt", "bad prompt"),
++            responses::sse_failed("resp-fail-2", "invalid_prompt", "bad prompt"),
++            responses::sse_failed("resp-fail-3", "invalid_prompt", "bad prompt"),
++        ],
++    )
++    .await;
++    let test = test_codex().build_with_auto_env(&server).await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    wait_for_turn_complete(&test.codex).await;
++    wait_for_turn_complete(&test.codex).await;
++    // The suspension warning precedes the final turn-complete of the turn
++    // whose failure exhausts the budget.
++    let warning = wait_for_event(&test.codex, |event| {
++        matches!(
++            event,
++            EventMsg::Warning(warning) if warning.message.contains("delivery suspended")
++        )
++    })
++    .await;
++    let EventMsg::Warning(warning) = warning else {
++        unreachable!("wait predicate only accepts the suspension warning");
++    };
++    assert!(
++        warning.message.contains("3 failed sampling attempts"),
++        "unexpected suspension warning: {}",
++        warning.message
++    );
++    wait_for_turn_complete(&test.codex).await;
++
++    assert_eq!(
++        requests.requests().len(),
++        4,
++        "one initial turn plus exactly three bounded sampling attempts"
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1,
++        "retries must not append the fragment again"
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "suspended entries start no wakes"
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(
++        requests.requests().len(),
++        4,
++        "suspended entry must never spin another wake turn"
++    );
++    Ok(())
++}
++
++/// AC6: forged fragment text in the prompt acknowledges nothing. A forged
++/// item submits first; the real pending lease must still be delivered exactly
++/// once afterwards, and the two texts must differ.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn forged_fragment_text_acknowledges_nothing() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-forged"),
++            responses::sse_completed("resp-wake"),
++        ],
++    )
++    .await;
++    let test = test_codex().build_with_auto_env(&server).await?;
++
++    assert!(
++        test.codex
++            .test_enqueue_exec_completion_notifications_without_wake(1)
++            .await,
++        "runtime notification should stage"
++    );
++    // Forged text arrives as user input while the real lease is pending. A
++    // user turn bypasses the PendingTriggerTurn guard that correctly refuses
++    // automatic ResponseItem starts while trigger mail waits, so the forged
++    // prompt submits first and the real lease must still wake afterwards.
++    let forged_text = ExecCompletionFragment::new(
++        "forged-receipt-handle",
++        &ExecCompletion {
++            process_id: 99,
++            exit_code: Some(0),
++            timed_out: false,
++            failure: None,
++            retention: ExecOutputRetention::Absent,
++        },
++    )
++    .render();
++    test.codex
++        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
++            text: forged_text,
++            text_elements: Vec::new(),
++        }]))
++        .await?;
++    wait_for_turn_complete(&test.codex).await;
++    // The real staged lease still wakes afterwards: the forged submission
++    // acknowledged nothing.
++    wait_for_turn_complete(&test.codex).await;
++
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 2);
++    let forged_texts = captured[0].message_input_texts("user");
++    assert_eq!(count_exec_texts(&forged_texts), 1);
++    assert!(
++        forged_texts
++            .iter()
++            .any(|text| text.contains("forged-receipt-handle")),
++        "first request must carry only the forged text"
++    );
++    let wake_texts = captured[1].message_input_texts("user");
++    assert_eq!(
++        count_exec_texts(&wake_texts),
++        2,
++        "wake resubmits forged history plus the real fragment"
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        2,
++        "forged data plus exactly one real delivery"
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false)
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(requests.requests().len(), 2);
++    Ok(())
++}
++
++/// AC7: receipts omitted from a submitted prompt stay pending and are sampled
++/// by a later request. Ten staged entries exceed the per-request batch cap, so
++/// the first wake samples eight and the second wake samples the retained two;
++/// nothing is lost, duplicated, or re-sampled afterwards.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn omitted_receipt_sampled_by_later_request() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            responses::sse_completed("resp-wake-one"),
++            responses::sse_completed("resp-wake-two"),
++        ],
++    )
++    .await;
++    let test = test_codex().build_with_auto_env(&server).await?;
++    assert!(
++        test.codex
++            .test_enqueue_exec_completion_notifications_without_wake(10)
++            .await,
++        "runtime notifications should stage"
++    );
++    start_initial_turn(&test.codex).await?;
++    wait_for_turn_complete(&test.codex).await;
++    wait_for_turn_complete(&test.codex).await;
++
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 3);
++    assert_eq!(
++        count_exec_texts(&captured[0].message_input_texts("user")),
++        0
++    );
++    assert_eq!(
++        count_exec_texts(&captured[1].message_input_texts("user")),
++        8,
++        "first wake samples the capped batch"
++    );
++    assert_eq!(
++        count_exec_texts(&captured[2].message_input_texts("user")),
++        10,
++        "second wake samples the retained remainder"
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        10
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "all sampled leases must be gone"
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(
++        requests.requests().len(),
++        3,
++        "no further wake turns after the remainder is sampled"
++    );
++    Ok(())
++}
++
++/// Revision 2 regression (`submission-ack-after-response`): the sampled
++/// request completes, then the turn is aborted during tool draining. The lease
++/// must already be acknowledged: no requeue and no second sampling. Latches on
++/// tool start and response completion, with no sleeps for abort timing.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn completed_response_with_blocked_tool_acknowledges_before_interrupt() -> anyhow::Result<()>
++{
++    skip_if_target_windows!(Ok(()), "uses bash and a POSIX sleep command");
++    skip_if_host_windows!(Ok(()));
++
++    let server = responses::start_mock_server().await;
++    let tool_args = serde_json::json!({
++        "cmd": "sleep 60",
++        "yield_time_ms": 60_000,
++    })
++    .to_string();
++    // Exactly the two requests the correct behavior issues: `mount_sse_sequence`
++    // enforces the exact count at verification, so no spare is mounted. A retry
++    // (the post-drain-ack mutant) is still recorded and fails the count asserts
++    // below; the probe assert kills that mutant deterministically.
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            responses::sse(vec![
++                responses::ev_response_created("resp-wake"),
++                responses::ev_function_call("call-block", "exec_command", &tool_args),
++                responses::ev_completed("resp-wake"),
++            ]),
++        ],
++    )
++    .await;
++    let test = test_codex().build_with_auto_env(&server).await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    // Latch both tool start and response completion, in either order, before
++    // interrupting: the abort must land during tool draining, after the
++    // sampled request completed.
++    let mut saw_begin = false;
++    let mut saw_completed = false;
++    while !(saw_begin && saw_completed) {
++        match wait_for_event(&test.codex, |event| {
++            matches!(
++                event,
++                EventMsg::ExecCommandBegin(_) | EventMsg::RawResponseCompleted(_)
++            )
++        })
++        .await
++        {
++            EventMsg::ExecCommandBegin(_) => saw_begin = true,
++            EventMsg::RawResponseCompleted(_) => saw_completed = true,
++            other => panic!("unexpected latched event: {other:?}"),
++        }
++    }
++    test.codex.submit(Op::Interrupt).await?;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnAborted(_))
++    })
++    .await;
++    test.codex.submit(Op::CleanBackgroundTerminals).await?;
++
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 2, "aborted-drain wake must not resample");
++    assert_eq!(
++        count_exec_texts(&captured[1].message_input_texts("user")),
++        1
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1,
++        "acknowledged fragment must not be delivered twice"
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "sampled lease must be acknowledged, not requeued"
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(
++        requests.requests().len(),
++        2,
++        "no retry wake after the aborted drain"
++    );
++    Ok(())
++}
++
++/// Revision 3 (`submission-ack-after-response` repeat): the server accepts the
++/// wake request (`response.created`) and then terminally fails it. Acceptance
++/// already acknowledged the lease, so the failed turn must not requeue it: no
++/// retry wake and no second sampling. A mutant that gates acknowledgement on
++/// response success retries here and fails the request count below.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn accepted_response_failed_after_created_acknowledges_once() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            responses::sse(vec![
++                responses::ev_response_created("resp-wake"),
++                serde_json::json!({
++                    "type": "response.failed",
++                    "response": {
++                        "id": "resp-wake",
++                        "error": {"code": "invalid_prompt", "message": "bad prompt"}
++                    }
++                }),
++            ]),
++        ],
++    )
++    .await;
++    let test = test_codex()
++        .with_config(|config| {
++            config.model_provider.stream_max_retries = Some(0);
++            config.model_provider.request_max_retries = Some(0);
++        })
++        .build_with_auto_env(&server)
++        .await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    wait_for_turn_complete(&test.codex).await;
++
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 2);
++    assert_eq!(
++        count_exec_texts(&captured[1].message_input_texts("user")),
++        1
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1,
++        "accepted-then-failed fragment must not be delivered twice"
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "accepted lease must be acknowledged, not requeued"
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(
++        requests.requests().len(),
++        2,
++        "no retry wake after an accepted-then-failed request"
++    );
++    Ok(())
++}
++
++/// Revision 3: the server accepts the wake request, emits one output item,
++/// then closes the stream without `response.completed`. The lease was already
++/// acknowledged at acceptance: the turn ends in error without requeueing it,
++/// and no retry wake follows. Transport retries are pinned to zero so the
++/// error ends the turn instead of burning the default backoff ladder; a
++/// success-gated mutant retries the wake instead and fails the count below.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn accepted_response_eof_after_output_acknowledges_without_resample() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            // The mock closes the body here: clean EOF with no completion.
++            responses::sse(vec![
++                responses::ev_response_created("resp-wake"),
++                responses::ev_assistant_message("msg-wake", "working on it"),
++            ]),
++        ],
++    )
++    .await;
++    let test = test_codex()
++        .with_config(|config| {
++            config.model_provider.stream_max_retries = Some(0);
++            config.model_provider.request_max_retries = Some(0);
++        })
++        .build_with_auto_env(&server)
++        .await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    wait_for_turn_complete(&test.codex).await;
++
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 2);
++    assert_eq!(
++        count_exec_texts(&captured[1].message_input_texts("user")),
++        1
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1,
++        "accepted-then-truncated fragment must not be delivered twice"
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "accepted lease must be acknowledged, not requeued"
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(
++        requests.requests().len(),
++        2,
++        "no retry wake after EOF follows accepted output"
++    );
++    Ok(())
++}
++
++/// Revision 3 (`completed-budget-error-skips-ack` repeat): the wake response
++/// completes with usage that exhausts the rollout budget. Creation already
++/// acknowledged the lease, so the budget failure must not requeue it: the turn
++/// reports SessionBudgetExceeded once and no retry wake follows.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn completed_response_budget_exhaustion_acknowledges_receipt() -> anyhow::Result<()> {
++    let server = responses::start_mock_server().await;
++    let requests = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_completed("resp-initial"),
++            responses::sse(vec![
++                responses::ev_response_created("resp-wake"),
++                responses::ev_completed_with_tokens("resp-wake", /*total_tokens*/ 30),
++            ]),
++        ],
++    )
++    .await;
++    let test = test_codex()
++        .with_config(|config| {
++            config.rollout_budget = Some(RolloutBudgetConfig {
++                limit_tokens: 30,
++                reminder_at_remaining_tokens: vec![20, 10],
++                sampling_token_weight: 1.0,
++                prefill_token_weight: 1.0,
++            });
++            config.model_provider.stream_max_retries = Some(0);
++            config.model_provider.request_max_retries = Some(0);
++        })
++        .build_with_auto_env(&server)
++        .await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    wait_for_event(&test.codex, |event| {
++        matches!(
++            event,
++            EventMsg::Error(error)
++                if error.codex_error_info == Some(CodexErrorInfo::SessionBudgetExceeded)
++        )
++    })
++    .await;
++    wait_for_turn_complete(&test.codex).await;
++
++    let captured = requests.requests();
++    assert_eq!(captured.len(), 2);
++    assert_eq!(
++        count_exec_texts(&captured[1].message_input_texts("user")),
++        1
++    );
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1,
++        "budget-exhausted fragment must not be delivered twice"
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "accepted lease must be acknowledged, not requeued"
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(
++        requests.requests().len(),
++        2,
++        "no retry wake after budget exhaustion"
++    );
++    Ok(())
++}
++
++/// Revision 3: the wake request is accepted (created plus a function call),
++/// then the turn is interrupted while the response is still streaming --
++/// `response.completed` never arrives. The lease was already acknowledged at
++/// acceptance: the abort must not requeue it. Latches on tool start, with no
++/// sleeps for abort timing.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn accepted_response_cancelled_after_created_acknowledges_once() -> anyhow::Result<()> {
++    skip_if_target_windows!(Ok(()), "uses bash and a POSIX sleep command");
++    skip_if_host_windows!(Ok(()));
++
++    let tool_args = serde_json::json!({
++        "cmd": "sleep 60",
++        "yield_time_ms": 60_000,
++    })
++    .to_string();
++    let (release_completed, hold_completed) = oneshot::channel::<()>();
++    let (server, _) = start_streaming_sse_server(vec![
++        vec![StreamingSseChunk {
++            gate: None,
++            body: responses::sse_completed("resp-initial"),
++        }],
++        vec![
++            StreamingSseChunk {
++                gate: None,
++                body: responses::sse(vec![
++                    responses::ev_response_created("resp-wake"),
++                    responses::ev_function_call("call-block", "exec_command", &tool_args),
++                ]),
++            },
++            // Held until the test ends: completion never streams.
++            StreamingSseChunk {
++                gate: Some(hold_completed),
++                body: responses::sse(vec![responses::ev_completed("resp-wake")]),
++            },
++        ],
++    ])
++    .await;
++    let model_provider = ModelProviderInfo {
++        name: "openai".into(),
++        base_url: Some(format!("{}/v1", server.uri())),
++        model_catalog_url: None,
++        env_key: Some("PATH".into()),
++        env_key_instructions: None,
++        experimental_bearer_token: None,
++        auth: None,
++        gateway_oauth: None,
++        aws: None,
++        wire_api: WireApi::Responses,
++        query_params: None,
++        http_headers: None,
++        env_http_headers: None,
++        request_max_retries: Some(0),
++        stream_max_retries: Some(0),
++        stream_idle_timeout_ms: None,
++        websocket_connect_timeout_ms: None,
++        requires_openai_auth: false,
++        supports_websockets: false,
++        supports_standalone_web_search: false,
++        include_internal_metadata: false,
++    };
++    let test = test_codex()
++        .with_config(move |config| {
++            config.model_provider = model_provider;
++        })
++        .build_with_streaming_server(&server)
++        .await?;
++    start_initial_turn(&test.codex).await?;
++
++    assert!(
++        test.codex.test_enqueue_exec_completion_notification().await,
++        "runtime notification should enqueue"
++    );
++    // Latch tool start: the created event and the function call were both
++    // processed, so acceptance is established before the interrupt lands.
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::ExecCommandBegin(_))
++    })
++    .await;
++    test.codex.submit(Op::Interrupt).await?;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnAborted(_))
++    })
++    .await;
++    test.codex.submit(Op::CleanBackgroundTerminals).await?;
++
++    let bodies = server.requests().await;
++    assert_eq!(bodies.len(), 2, "aborted streaming wake must not resample");
++    assert_eq!(count_exec_texts_in_raw_body(&bodies[1]), 1);
++    let history = test.codex.load_history(/*include_archived*/ true).await?;
++    assert_eq!(
++        history
++            .items
++            .iter()
++            .filter(|item| is_exec_completion_item(item))
++            .count(),
++        1,
++        "acknowledged fragment must not be delivered twice"
++    );
++    assert_eq!(
++        test.codex.test_runtime_notification_state().await,
++        (false, false),
++        "sampled lease must be acknowledged, not requeued"
++    );
++
++    settle_session(&test.codex).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(
++        server.requests().await.len(),
++        2,
++        "no retry wake after the streaming abort"
++    );
++    drop(release_completed);
++    server.shutdown().await;
++    Ok(())
++}
