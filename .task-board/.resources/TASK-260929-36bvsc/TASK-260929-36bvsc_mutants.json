@@ -1,0 +1,22 @@
+[
+  {
+    "name": "suspended_queued_admitted",
+    "patch": "--- a/codex-rs/core/src/session/pending_work.rs\n+++ b/codex-rs/core/src/session/pending_work.rs\n@@ -64,7 +64,7 @@\n ) -> PendingWorkSnapshot {\n     let suspended: HashSet<ReceiptId> = mailbox_entries\n         .iter()\n-        .filter(|entry| entry.suspended)\n+        .filter(|entry| entry.suspended && entry.leased)\n         .map(|entry| entry.receipt_id)\n         .collect();\n     let mut states: HashMap<ReceiptId, PendingState> = HashMap::new();\n@@ -84,7 +84,7 @@\n         states.insert(receipt_id, PendingState::Leased);\n     }\n     for entry in mailbox_entries {\n-        if entry.suspended {\n+        if entry.suspended && entry.leased {\n             states.remove(&entry.receipt_id);\n             continue;\n         }\n"
+  },
+  {
+    "name": "provider_missing_mapped_to_empty",
+    "patch": "--- a/codex-rs/ext/extension-api/src/pending_work.rs\n+++ b/codex-rs/ext/extension-api/src/pending_work.rs\n@@ -191,7 +191,7 @@\n     thread_store: &ExtensionData,\n ) -> Result<PendingWorkSnapshot, PendingWorkReadError> {\n     let Some(provider) = thread_store.get::<PendingWorkProvider>() else {\n-        return Err(PendingWorkReadError::ProviderMissing);\n+        return Ok(PendingWorkSnapshot::empty(0));\n     };\n     provider.read()\n }\n"
+  },
+  {
+    "name": "suspend_skips_revision_bump",
+    "patch": "diff --git a/codex-rs/core/src/session/runtime_mailbox.rs b/codex-rs/core/src/session/runtime_mailbox.rs\n--- a/codex-rs/core/src/session/runtime_mailbox.rs\n+++ b/codex-rs/core/src/session/runtime_mailbox.rs\n@@ -322,7 +322,6 @@\n             return false;\n         };\n         entry.suspended = true;\n-        self.bump_revision();\n         true\n     }\n }\n"
+  },
+  {
+    "name": "store_queued_excluded_from_snapshot",
+    "patch": "diff --git a/codex-rs/core/src/session/pending_work.rs b/codex-rs/core/src/session/pending_work.rs\n--- a/codex-rs/core/src/session/pending_work.rs\n+++ b/codex-rs/core/src/session/pending_work.rs\n@@ -71,12 +71,6 @@\n     for receipt_id in store_lists.armed {\n         states.insert(receipt_id, PendingState::Armed);\n     }\n-    for receipt_id in store_lists.queued {\n-        if suspended.contains(&receipt_id) {\n-            continue;\n-        }\n-        states.insert(receipt_id, PendingState::Queued);\n-    }\n     for receipt_id in store_lists.leased {\n         if suspended.contains(&receipt_id) {\n             continue;\n"
+  },
+  {
+    "name": "production_ack_skips_store_retirement",
+    "patch": "--- a/codex-rs/core/src/session/exec_completion_ack.rs\n+++ b/codex-rs/core/src/session/exec_completion_ack.rs\n@@ -183,11 +183,6 @@\n     for lease in &members {\n         if !sess.input_queue.acknowledge_runtime_lease(lease).await {\n             continue;\n         }\n-        let manager = &sess.services.unified_exec_manager;\n-        if let Ok(store_lease) = manager.lease_pushed_completion(lease.receipt_id(), lease.owner())\n-        {\n-            let _ = manager.acknowledge_pushed_completion(&store_lease).await;\n-        }\n     }\n     tracked\n"
+  }
+]

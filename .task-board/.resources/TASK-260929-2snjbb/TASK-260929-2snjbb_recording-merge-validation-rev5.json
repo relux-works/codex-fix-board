@@ -1,0 +1,83 @@
+{
+  "candidate_tree": "13972f7d936f6280c9b0cae88749c6f5c1a56a9a",
+  "revision": 5,
+  "merged_verdict": "accept",
+  "findings": [],
+  "notes_preserved": 28,
+  "surface_rows_preserved": "3/3",
+  "panels": [
+    {
+      "task": "TASK-261007-3qu2ce",
+      "verdict": "accept",
+      "findings": 0,
+      "notes": 4,
+      "surface_results": [
+        {
+          "row": "gate scope and fairness",
+          "result": "held",
+          "detail": "Hosted base 37578543875 on exact tree; Core handle(StartIfIdle) attacks goal_background_wait_blocks_goal_but_admits_user_and_followup and goal_background_wait_ignores_non_goal_triggers drive Armed receipts, user/follow-up and exec_completion controls. Narrowing overgate_non_goal_triggers killed in 37578682087; treat_read_error_as_empty in 37578790835; gate_only_queued_ignoring_armed in 37578629753. Static scope guard goal_admission.rs:51 excludes non-goal/non-automatic starts; runtime.rs:650 excludes non-Active goals. Disabled policy and unopted/server-only snapshot behavior have state/snapshot tests, not a new fully activated host test. Held is limited to the named executed attacks."
+        },
+        {
+          "row": "check-in tickets and warning",
+          "result": "held",
+          "detail": "Hosted production-entry scheduled_checkins_fire_through_production_runtime_under_paused_time, core/tests/suite/goal_background_wait.rs:195, runs real Wait arm -> CheckInTimer -> continuation -> Core StartIfIdle -> goal accounting, producing three turns and one exact warning. Runtime-reentry mutant killed in 37578579179; timer-spawn, fired-handle retention and stale-install mutants killed in 37578612871, 37578646983 and 37578808296. warning_repeats killed in 37578825692. Goal state tests attack cap, ticket reuse, generation, original epoch and late completion; reuse_ticket_id killed in 37578737666, reset_epoch_on_turn_start in 37578719469. Helper-level completion_after_cap_wakes_without_counting_as_human_input does not attest the later host activation vertical path."
+        },
+        {
+          "row": "admission recheck and invalidation",
+          "result": "held",
+          "detail": "Hosted Core handle(StartIfIdle) preparation/residual/post-publication attacks plus goal_publish_serialized_with_concurrent_arm, turn_input_tests.rs:1718, force a real store Arm into publication from a blocking thread. skip_transition_locks_in_publish killed in 37578773989, move_final_check_before_awaits in 37578665024, apply_goal_settings_before_final_check in 37578561576. Policy revision/invalidation mutants killed in 37578755970 and 37578700699. Contention tests are helper-entry controls, not independently public-entry attacks. Static trace confirms shared production revision, receipt-store+mailbox locks across compare/write with no await, safe contention rejection, and goal permit not captured by sleeping timer. Turn start/steering/mutation/clear/stop/resume hooks exist. Release state invalidation is a preparatory API with test callers only; host release/activation wiring is not established by this review."
+        }
+      ],
+      "sha256": "addda559ee41722d979a095a2cc23e41ed2030816083f85f4eea4c1ec5b98662"
+    },
+    {
+      "task": "TASK-261007-276t8v",
+      "verdict": "accept",
+      "findings": 0,
+      "notes": 10,
+      "surface_results": [
+        {
+          "row": "gate scope and fairness",
+          "result": "held",
+          "evidence": "Static: check_goal_admission (goal_admission.rs:54) gates only Automatic+goal; all other kinds/triggers return admitted_revision None and publish without inner locks. Disabled/inactive-or-budget-limited returns ProceedWithoutGate; read failure returns Wait/WaitOnReadFailure, never empty. Exact-tree hosted attacks on 13972f7d (precheck 7, run 37578543875 base green): overgate_non_goal_triggers 37578682087 killed by goal_background_wait_blocks_goal_but_admits_user_and_followup + goal_background_wait_ignores_non_goal_triggers; treat_read_error_as_empty 37578790835 killed by read_failure_never_treated_as_empty; gate_only_queued_ignoring_armed 37578629753 killed by cap/firing/epoch tests. Row code byte-identical to rev4 (all panels held). Held within these executed attacks, not a universal absence claim."
+        },
+        {
+          "row": "check-in tickets and warning",
+          "result": "held",
+          "evidence": "Static: CHECK_IN_DELAYS 30/60/120 min absolute, MAX_CHECK_INS_PER_HUMAN_INPUT 3, ticket ids increment and consume exactly once (outstanding+generation+last_consumed under one mutex) with revision still enforced, so each ticket bypasses only the work gate; warning is the exact AC5 string latched by warning_emitted; note_turn_start invalidates without moving wait_started_at (epoch anchored at human input). Exact-tree hosted attacks: reuse_ticket_id 37578737666, warning_repeats 37578825692, reset_epoch_on_turn_start 37578719469, drop_check_in_registration 37578596335, drop_timer_spawn 37578612871, keep_handle_in_slot_while_firing 37578646983, unconditional_slot_replace 37578808296, break_runtime_wait_arm_reentry 37578579179, all killed, incl. through scheduled_checkins_fire_through_production_runtime_under_paused_time (real session + production timer/runtime/Core, 3 automatic turns + exact warning once). Row code byte-identical to rev4 (all panels held)."
+        },
+        {
+          "row": "admission recheck and invalidation",
+          "result": "held",
+          "evidence": "Static: publish_goal_turn_if_revision_matches (goal_admission.rs:131-167) compares the admitted revision and writes last_started_turn_id under active_turn + Session.state + receipt-store + mailbox with no await between; every revision bump runs under the store or mailbox lock on the single Session-shared counter; try_lock contention/poison rejects safe; lock-order audit finds no inversion path (store/mailbox are leaves). Regression: goal_publish_serialized_with_concurrent_arm forces a real OS-thread Arm into the compare-to-publish window and requires publication to win the shared sequence (Started, receipt pending); goal_publish_rejects_safe_when_store_contended + goal_publish_rejects_safe_when_mailbox_contended bound fail-safe. Exact-tree hosted kills: skip_transition_locks_in_publish 37578773989 (race order + both contention tests), move_final_check_before_awaits 37578665024 (race + residual + settings), skip_revision_recheck 37578755970, preserve_ticket_across_invalidation 37578700699, apply_goal_settings_before_final_check 37578561576. Residual (receipt_armed_inside_start_task), post-publish control, settings-equality, invalidation (6 triggers + resume), and no-semaphore-across-delay tests all green on base run 37578543875. The rev4 compare/publication race mechanism is closed; held within these executed attacks."
+        }
+      ],
+      "sha256": "f64b5b1461177319946d7743fa2397738d2a455ca53d3446eeed9a3801b38565"
+    },
+    {
+      "task": "TASK-261007-2zoovd",
+      "verdict": "accept",
+      "findings": 0,
+      "notes": 14,
+      "surface_results": [
+        {
+          "row": "gate scope and fairness",
+          "result": "held",
+          "evidence": "Precheck 7 exact-tree base run 37578543875 reports core/small/lint/app-server success. Public Core handle StartIfIdle attacks goal_background_wait_blocks_goal_but_admits_user_and_followup and goal_background_wait_ignores_non_goal_triggers kill overgate_non_goal_triggers (37578682087). Supporting policy attacks treat_read_error_as_empty (37578790835) and gate_only_queued_ignoring_armed (37578629753) killed. Pinned-source row1 audit rerun exit 0, 8/8 probes: Automatic+goal-only guard, absent-checker bypass, read Result forwarded, trigger-mail priority, active-status/disabled checks. Held only within named attacks."
+        },
+        {
+          "row": "check-in tickets and warning",
+          "result": "held",
+          "evidence": "Precheck 7 real-session scheduled_checkins_fire_through_production_runtime_under_paused_time drives installed GoalExtension, production CheckInTimer and continue_if_idle through Core; observes 3 real requests and marked automatic continuations at 30/60/120 fake minutes, then one exact warning. Runtime reentry mutant break_runtime_wait_arm_reentry killed (37578579179); warning_repeats (37578825692), reset_epoch_on_turn_start (37578719469), keep_handle_in_slot_while_firing (37578646983), unconditional_slot_replace (37578808296), reuse_ticket_id (37578737666), drop_check_in_registration (37578596335) also killed. drop_timer_spawn (37578612871) killed but is a component deletion, not a narrowing proof. Static row2 audit exit 0, 9/9 probes verifies one-use attempts, ticket/revision checks, warning flag, detach-before-callback and actual suite composition. No new local Rust execution."
+        },
+        {
+          "row": "admission recheck and invalidation",
+          "result": "held",
+          "evidence": "Both rev4 findings are fixed by shared transition locks in goal_admission.rs:149-164. Public Core handle race goal_publish_serialized_with_concurrent_arm forces actual receipt-store Arm from a blocking thread into the compared-to-publish window; publish sequence must precede Arm completion. Precheck 7 reports skip_transition_locks_in_publish killed (37578773989) by this test plus both contention tests. move_final_check_before_awaits killed (37578665024) by race/residual/settings tests; apply_goal_settings_before_final_check killed (37578561576), skip_revision_recheck killed (37578755970), preserve_ticket_across_invalidation killed (37578700699). Static row3 audit exit 0, 24/24 probes. Receipt transition methods 7/7 and mailbox transition methods 6/6 inspected for lock-owned revision bumps; same shared counter wired in Session::new. Inner try_lock errors reject; no await between comparison and publication. Resume/lifecycle reset and wait-permit separation traced; release integration remains preparatory as noted."
+        }
+      ],
+      "sha256": "c3f5e405fd15c1c6e22f7cb9a42e4d424f7ff3f0758148a0994137b62ebd2c88"
+    }
+  ],
+  "merged_sha256": "6ddd95d4931076ad0819ec859517804851a0bb6120c712e633a3842154493a8a"
+}

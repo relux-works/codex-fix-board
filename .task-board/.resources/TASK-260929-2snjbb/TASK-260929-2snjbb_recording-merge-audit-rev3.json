@@ -1,0 +1,48 @@
+{
+  "candidate_tree": "16a538869452dc36d083b8ab3c3e63a1e57c7285",
+  "panel_records": 5,
+  "merged_records": 5,
+  "unique_mechanisms": 3,
+  "duplicates": {
+    "revision-recheck-before-await-window": 2,
+    "scheduled-checkin-regression-not-exercised": 2
+  },
+  "surface_comparison": [
+    {
+      "row": "gate scope and fairness",
+      "expected_result": "held",
+      "actual_result": "held",
+      "expected_finding_links": [],
+      "actual_finding_links": [],
+      "missing_links": []
+    },
+    {
+      "row": "check-in tickets and warning",
+      "expected_result": "broken",
+      "actual_result": "broken",
+      "expected_finding_links": [
+        "scheduled-checkin-regression-not-exercised"
+      ],
+      "actual_finding_links": [
+        "scheduled-checkin-regression-not-exercised"
+      ],
+      "missing_links": []
+    },
+    {
+      "row": "admission recheck and invalidation",
+      "expected_result": "broken",
+      "actual_result": "broken",
+      "expected_finding_links": [
+        "rejected-goal-start-commits-settings",
+        "revision-recheck-before-await-window"
+      ],
+      "actual_finding_links": [
+        "revision-recheck-before-await-window"
+      ],
+      "missing_links": [
+        "rejected-goal-start-commits-settings"
+      ]
+    }
+  ],
+  "read_scope": "Board artifact comparison only; no source re-review, behavioral tests or builds."
+}

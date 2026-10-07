@@ -1,0 +1,59 @@
+{
+  "task": "TASK-260929-2snjbb",
+  "revision": 4,
+  "candidate_tree_oid": "c7180fab47012a651662cd207a48caafdf7b10db",
+  "decision": "refuse_supplied_merge",
+  "finding_field_checks": [
+    {
+      "panel": "A",
+      "id": "revision-comparison-not-serialized-with-publication",
+      "all_original_fields_identical": true,
+      "reproductions_retained": true
+    },
+    {
+      "panel": "delta",
+      "id": "revision-recheck-before-await-window",
+      "all_original_fields_identical": true,
+      "reproductions_retained": true
+    }
+  ],
+  "notes_retained": 25,
+  "notes_total": 25,
+  "surface_results": [
+    {
+      "row": "gate scope and fairness",
+      "result": "held",
+      "evidence": "Hosted precheck 6 base 37569076583: core/small/lint/app-server success on tree c7180fab47012a651662cd207a48caafdf7b10db. overgate_non_goal_triggers 37569198182 killed by core handle StartIfIdle fairness/non-goal tests; treat_read_error_as_empty 37569275012 killed by read_failure_never_treated_as_empty; gate_only_queued_ignoring_armed 37569152218 killed by the real-session scheduled suite and cap/firing tests. Static check_goal_admission restricts to Automatic + goal; other input/mail paths retain their existing checks. Held within these executed attacks, not a universal absence claim.",
+      "reported_by": "TASK-261007-1hgsgy"
+    },
+    {
+      "row": "check-in tickets and warning",
+      "result": "held",
+      "evidence": "Exact-tree hosted attacks: reuse_ticket_id 37569243904; warning_repeats 37569305975; reset_epoch_on_turn_start 37569228520; drop_check_in_registration 37569121979; drop_timer_spawn 37569137077; keep_handle_in_slot_while_firing 37569167785; unconditional_slot_replace 37569290755; break_runtime_wait_arm_reentry 37569106946. Named killing tests are in hosted-precheck-6.md. The actual suite goal_background_wait.rs now installs production runtime/Core, observes 3 real automatic turns at fake 30/60/120, and one production warning, and its runtime-only mutant is killed. Static timer detach and generation guards retain ownership repairs. No new scheduler failure reproduced.",
+      "reported_by": "TASK-261007-1hgsgy"
+    },
+    {
+      "row": "admission recheck and invalidation",
+      "result": "broken",
+      "findings": [
+        "revision-comparison-not-serialized-with-publication"
+      ],
+      "evidence": "Pinned-source static_attack.py expected-red exit 1 (embedded source/log) establishes nonserialized final comparison/publication ordering. Attached skip_revision_recheck 37569260011, preserve_ticket_across_invalidation 37569213125, move_final_check_before_awaits 37569183037, apply_goal_settings_before_final_check 37569092438 kills are acknowledged; they cover their earlier/lifecycle/effect windows rather than OS-thread Arm after the final revision read. Wait returns before timer delay with goal permit released; lifecycle invalidation/reset methods traced.",
+      "reported_by": "TASK-261007-1hgsgy"
+    }
+  ],
+  "duplicate_mechanism_ids": [
+    "revision-comparison-not-serialized-with-publication",
+    "revision-recheck-before-await-window"
+  ],
+  "omitted_row_finding_links": [
+    "revision-recheck-before-await-window"
+  ],
+  "execution_bound": "Artifact comparison only; no production attacks, builds, Rust tests, hosted fetches or code changes.",
+  "source_sha256": {
+    "TASK-260929-2snjbb_review-verdict-rev4.md": "1f2a5c0e14e688339bd8c58b70e214abbe1ceab2b48e62838843acc60de3e268",
+    "TASK-261007-1hgsgy_panel-verdict.md": "646cee4d55b605d0b918651565ba70f4a0b2c0ca720f00da41d9d9a45f3e1517",
+    "TASK-261007-wb7tsq_panel-verdict.md": "545d05f5d3f41255789cbd7b413dd6d905a9c83ffe1a67a97a7f1e27719c9142",
+    "TASK-261007-2j7e5c_panel-verdict.md": "d27003a81b3fd36bd58b24582fe92a9d198eb7bc47f45ca76dc882a9352487a3"
+  }
+}

@@ -1,0 +1,1710 @@
+diff --git a/codex-rs/core/src/session/exec_completion_ack.rs b/codex-rs/core/src/session/exec_completion_ack.rs
+index d8177695f1..76c0cbd79c 100644
+--- a/codex-rs/core/src/session/exec_completion_ack.rs
++++ b/codex-rs/core/src/session/exec_completion_ack.rs
+@@ -26,6 +26,13 @@
+ //! acknowledgement removes it from tracking and from the mailbox, and failing
+ //! an acknowledged lease is a no-op.
+ //!
++//! Acceptance also retires the B receipt store claim for the same receipt, so
++//! the pending-work snapshot never resurrects sampled work from the store.
++//! The mailbox acknowledgement gates the store acknowledgement: only a lease
++//! whose mailbox entry was actually removed retires its store receipt, and a
++//! stale token skips both. Each store bumps the shared pending-work revision
++//! on its own transition, so one acceptance strictly increases the revision.
++//!
+ //! [fail]: super::runtime_mailbox::RuntimeMailbox::fail
+ //! [max]: super::runtime_mailbox::MAX_RUNTIME_SAMPLING_ATTEMPTS
+ 
+@@ -143,6 +150,14 @@ pub(crate) fn is_acceptance_event(event: &ResponseEvent) -> bool {
+ /// and untracked; non-members (omitted from the prompt, e.g. by compaction)
+ /// stay tracked so a later request in this turn can still sample them, and
+ /// turn end fails whatever remains.
++///
++/// Each member retires both its mailbox entry and its B receipt store claim,
++/// in that order. The mailbox removal gates the store retirement: a stale
++/// token removes nothing and retires nothing, so a fail after acknowledgement
++/// stays a no-op in both stores. A store lease failure means another path
++/// already retired the receipt (stdin claim, release) or currently holds the
++/// single claim; the mailbox removal is still the acceptance, and the store
++/// side resolves to terminal without resurrecting the receipt.
+ pub(crate) async fn acknowledge_submitted(
+     sess: &Session,
+     turn_context: &TurnContext,
+@@ -166,7 +181,14 @@ pub(crate) async fn acknowledge_submitted(
+         return;
+     }
+     for lease in &members {
+-        sess.input_queue.acknowledge_runtime_lease(lease).await;
++        if !sess.input_queue.acknowledge_runtime_lease(lease).await {
++            continue;
++        }
++        let manager = &sess.services.unified_exec_manager;
++        if let Ok(store_lease) = manager.lease_pushed_completion(lease.receipt_id(), lease.owner())
++        {
++            let _ = manager.acknowledge_pushed_completion(&store_lease).await;
++        }
+     }
+     tracked
+         .leases
+diff --git a/codex-rs/core/src/session/input_queue.rs b/codex-rs/core/src/session/input_queue.rs
+index cb191f7cda..f6faa89fb3 100644
+--- a/codex-rs/core/src/session/input_queue.rs
++++ b/codex-rs/core/src/session/input_queue.rs
+@@ -1,3 +1,4 @@
++use super::runtime_mailbox::MailboxEntrySnapshot;
+ use super::runtime_mailbox::RuntimeLease;
+ use super::runtime_mailbox::RuntimeMailbox;
+ use crate::context::ExecCompletion;
+@@ -19,6 +20,8 @@ use serde::Serializer;
+ use serde::ser::SerializeStructVariant as _;
+ use std::collections::VecDeque;
+ use std::sync::Arc;
++use std::sync::atomic::AtomicU64;
++use std::sync::atomic::Ordering;
+ use tokio::sync::Mutex;
+ use tokio::sync::watch;
+ use tokio_util::sync::CancellationToken;
+@@ -177,6 +180,7 @@ pub(crate) struct InputQueue {
+     activity_tx: watch::Sender<InputQueueActivity>,
+     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
+     runtime_notifications: Mutex<RuntimeMailbox>,
++    pending_work_revision: Arc<AtomicU64>,
+ }
+ 
+ struct PendingMailboxCommunication {
+@@ -186,15 +190,47 @@ struct PendingMailboxCommunication {
+ }
+ 
+ impl InputQueue {
++    #[cfg(test)]
+     pub(crate) fn new() -> Self {
++        Self::new_with_revision(Arc::new(AtomicU64::new(0)))
++    }
++
++    /// Creates a queue sharing the given pending-work revision.
++    pub(crate) fn new_with_revision(revision: Arc<AtomicU64>) -> Self {
+         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
+         Self {
+             activity_tx,
+             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+-            runtime_notifications: Mutex::new(RuntimeMailbox::new()),
++            runtime_notifications: Mutex::new(RuntimeMailbox::with_revision(Arc::clone(&revision))),
++            pending_work_revision: revision,
+         }
+     }
+ 
++    /// Returns the current pending-work revision without locking the mailbox.
++    pub(crate) fn pending_work_revision(&self) -> u64 {
++        self.pending_work_revision.load(Ordering::SeqCst)
++    }
++
++    /// Snapshots runtime mailbox entries with a non-blocking lock.
++    ///
++    /// Returns an explicit reason when the mailbox is contended so snapshot
++    /// readers fail instead of stalling a turn.
++    pub(crate) fn try_snapshot_runtime_mailbox(&self) -> Result<Vec<MailboxEntrySnapshot>, String> {
++        let guard = self
++            .runtime_notifications
++            .try_lock()
++            .map_err(|err| err.to_string())?;
++        Ok(guard.snapshot_entries())
++    }
++
++    /// Holds the runtime mailbox lock, for contended-read tests.
++    #[cfg(test)]
++    pub(crate) async fn test_hold_runtime_lock(
++        &self,
++    ) -> tokio::sync::MutexGuard<'_, RuntimeMailbox> {
++        self.runtime_notifications.lock().await
++    }
++
+     pub(crate) async fn subscribe_activity(
+         &self,
+         turn_state: Option<&Mutex<TurnState>>,
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index b146fb7bb5..259b7cc080 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -247,6 +247,7 @@ mod mcp_prewarm;
+ mod mcp_refresh;
+ mod mcp_runtime;
+ pub(crate) mod multi_agents;
++pub(crate) mod pending_work;
+ mod plugin_selection;
+ mod realtime_history;
+ mod retained_context;
+diff --git a/codex-rs/core/src/session/pending_work.rs b/codex-rs/core/src/session/pending_work.rs
+new file mode 100644
+index 0000000000..0423c6fbc1
+--- /dev/null
++++ b/codex-rs/core/src/session/pending_work.rs
+@@ -0,0 +1,144 @@
++//! Thread-level pending-work snapshot for the goal waiting policy.
++//!
++//! Combines Armed receipts from the completion receipt store (B) with
++//! unsampled non-suspended Queued/Leased runtime-mailbox entries (C1).
++//! Suspended, acknowledged, cancelled, and inline-settled receipts are
++//! excluded, as are live processes without receipts. This module never
++//! consults process liveness.
++//!
++//! Armed-to-Queued stays atomically pending: the receipt store lists Armed,
++//! Queued, and Leased under one lock, and the snapshot unions store Queued and
++//! Leased with mailbox entries, so a receipt moving from Armed to Queued never
++//! appears in neither set. Mailbox suspended entries suppress the matching
++//! store entry so exhausted retries stop counting as pending.
++//!
++//! A store Queued/Leased receipt without a mailbox entry is legitimately
++//! pending only in three windows: between the store exit publication and the
++//! mailbox enqueue (pre-enqueue; until stage 2e wires the watcher to the
++//! mailbox this is also where real exits wait), between the mailbox removal
++//! and the store retirement inside one sampling acceptance (transient), and
++//! while a mailbox cancellation has not yet reached the store. Sampling
++//! acceptance retires both sides, so a sampled receipt ends in neither set;
++//! a store entry that outlives its mailbox entry outside these windows is a
++//! caller bug, not pending work.
++
++use std::collections::HashMap;
++use std::collections::HashSet;
++
++use codex_extension_api::PendingWorkReadError;
++use codex_extension_api::PendingWorkReceipt;
++use codex_extension_api::PendingWorkSnapshot;
++
++use super::runtime_mailbox::MailboxEntrySnapshot;
++use super::session::Session;
++use crate::unified_exec::completion_receipt::PendingReceiptLists;
++use crate::unified_exec::completion_receipt::ReceiptId;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum PendingState {
++    Armed,
++    Queued,
++    Leased,
++}
++
++/// Reads the pending-work snapshot with non-blocking locks.
++///
++/// Fails with an explicit error when either store is contended or poisoned.
++/// Never returns an empty snapshot on failure.
++pub(crate) fn try_read_snapshot(
++    session: &Session,
++) -> Result<PendingWorkSnapshot, PendingWorkReadError> {
++    let store_lists = session
++        .services
++        .unified_exec_manager
++        .receipt_store()
++        .try_list_pending()
++        .map_err(|err| PendingWorkReadError::ReceiptStoreUnavailable {
++            reason: err.to_string(),
++        })?;
++    let mailbox_entries = session
++        .input_queue
++        .try_snapshot_runtime_mailbox()
++        .map_err(|reason| PendingWorkReadError::MailboxUnavailable { reason })?;
++    let revision = session.input_queue.pending_work_revision();
++    Ok(build_snapshot(store_lists, &mailbox_entries, revision))
++}
++
++/// Builds a snapshot from store and mailbox views.
++///
++/// Exported for unit tests that drive the stores directly without a `Session`.
++pub(crate) fn build_snapshot(
++    store_lists: PendingReceiptLists,
++    mailbox_entries: &[MailboxEntrySnapshot],
++    revision: u64,
++) -> PendingWorkSnapshot {
++    let suspended: HashSet<ReceiptId> = mailbox_entries
++        .iter()
++        .filter(|entry| entry.suspended)
++        .map(|entry| entry.receipt_id)
++        .collect();
++    let mut states: HashMap<ReceiptId, PendingState> = HashMap::new();
++    for receipt_id in store_lists.armed {
++        states.insert(receipt_id, PendingState::Armed);
++    }
++    for receipt_id in store_lists.queued {
++        if suspended.contains(&receipt_id) {
++            continue;
++        }
++        states.insert(receipt_id, PendingState::Queued);
++    }
++    for receipt_id in store_lists.leased {
++        if suspended.contains(&receipt_id) {
++            continue;
++        }
++        states.insert(receipt_id, PendingState::Leased);
++    }
++    for entry in mailbox_entries {
++        if entry.suspended {
++            states.remove(&entry.receipt_id);
++            continue;
++        }
++        if states
++            .get(&entry.receipt_id)
++            .is_some_and(|state| *state == PendingState::Armed)
++        {
++            continue;
++        }
++        let state = if entry.leased {
++            PendingState::Leased
++        } else {
++            PendingState::Queued
++        };
++        states
++            .entry(entry.receipt_id)
++            .and_modify(|existing| {
++                if *existing == PendingState::Queued && state == PendingState::Leased {
++                    *existing = PendingState::Leased;
++                }
++            })
++            .or_insert(state);
++    }
++
++    let mut armed = Vec::new();
++    let mut queued = Vec::new();
++    let mut leased = Vec::new();
++    for (receipt_id, state) in states {
++        if suspended.contains(&receipt_id) {
++            continue;
++        }
++        let receipt = PendingWorkReceipt::new(receipt_id.model_handle());
++        match state {
++            PendingState::Armed => armed.push(receipt),
++            PendingState::Queued => queued.push(receipt),
++            PendingState::Leased => leased.push(receipt),
++        }
++    }
++    armed.sort_by(|left, right| left.receipt_id().cmp(right.receipt_id()));
++    queued.sort_by(|left, right| left.receipt_id().cmp(right.receipt_id()));
++    leased.sort_by(|left, right| left.receipt_id().cmp(right.receipt_id()));
++    PendingWorkSnapshot::new(armed, queued, leased, revision)
++}
++
++#[cfg(test)]
++#[path = "pending_work_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/session/pending_work_tests.rs b/codex-rs/core/src/session/pending_work_tests.rs
+new file mode 100644
+index 0000000000..a0e43834e0
+--- /dev/null
++++ b/codex-rs/core/src/session/pending_work_tests.rs
+@@ -0,0 +1,604 @@
++use std::collections::HashSet;
++use std::sync::Arc;
++use std::sync::atomic::AtomicU64;
++
++use codex_extension_api::PendingWorkReadError;
++use codex_extension_api::PendingWorkSnapshot;
++use codex_protocol::ThreadId;
++use pretty_assertions::assert_eq;
++
++use super::build_snapshot;
++use crate::context::ExecCompletion;
++use crate::context::ExecOutputRetention;
++use crate::session::input_queue::InputQueue;
++use crate::session::runtime_mailbox::RuntimeMailbox;
++use crate::unified_exec::completion_receipt::CancellationReason;
++use crate::unified_exec::completion_receipt::CompletionReceiptStore;
++use crate::unified_exec::completion_receipt::InitialResponseDecision;
++use crate::unified_exec::completion_receipt::ReceiptOwner;
++use crate::unified_exec::completion_receipt::SamplingSource;
++use crate::unified_exec::completion_receipt::TerminalCompletion;
++
++fn test_owner(call_id: &str) -> ReceiptOwner {
++    ReceiptOwner::new(ThreadId::new(), 1, call_id).expect("owner")
++}
++
++fn test_terminal() -> TerminalCompletion {
++    TerminalCompletion {
++        exit_code: Some(0),
++        timed_out: false,
++    }
++}
++
++fn test_completion() -> ExecCompletion {
++    ExecCompletion {
++        process_id: 1,
++        exit_code: Some(0),
++        timed_out: false,
++        failure: None,
++        retention: ExecOutputRetention::Absent,
++    }
++}
++
++fn arm_receipt(
++    store: &CompletionReceiptStore,
++    call_id: &str,
++) -> (
++    ReceiptOwner,
++    crate::unified_exec::completion_receipt::ReceiptId,
++) {
++    let owner = test_owner(call_id);
++    let receipt_id = store.reserve(owner.clone()).expect("reserve");
++    let outcome = store
++        .resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm)
++        .expect("arm");
++    assert_eq!(
++        outcome,
++        crate::unified_exec::completion_receipt::InitialResponseOutcome::Armed
++    );
++    (owner, receipt_id)
++}
++
++fn queue_receipt(
++    store: &CompletionReceiptStore,
++    owner: &ReceiptOwner,
++    receipt_id: crate::unified_exec::completion_receipt::ReceiptId,
++) {
++    let outcome = store
++        .publish_exit(receipt_id, owner, test_terminal())
++        .expect("publish");
++    assert_eq!(
++        outcome,
++        crate::unified_exec::completion_receipt::ExitPublicationOutcome::Queued
++    );
++}
++
++fn snapshot_from(
++    store: &CompletionReceiptStore,
++    mailbox: &RuntimeMailbox,
++    revision: u64,
++) -> PendingWorkSnapshot {
++    let lists = store.try_list_pending().expect("list");
++    let entries = mailbox.snapshot_entries();
++    build_snapshot(lists, &entries, revision)
++}
++
++#[test]
++fn snapshot_reports_armed_queued_and_leased_only() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let mut mailbox = RuntimeMailbox::with_revision(Arc::clone(&revision));
++
++    // Armed: reserved + armed, no exit yet.
++    let (_, armed_id) = arm_receipt(&store, "armed");
++    // Queued via store: armed + published, no mailbox entry yet (pre-enqueue).
++    let (queued_owner, queued_id) = arm_receipt(&store, "queued");
++    queue_receipt(&store, &queued_owner, queued_id);
++    // Queued via mailbox: store queued + mailbox enqueued (unleased).
++    let (mbox_queued_owner, mbox_queued_id) = arm_receipt(&store, "mbox-queued");
++    queue_receipt(&store, &mbox_queued_owner, mbox_queued_id);
++    assert!(mailbox.enqueue(mbox_queued_id, mbox_queued_owner, test_completion()));
++    // Leased via mailbox: enqueued + leased.
++    let (mbox_leased_owner, mbox_leased_id) = arm_receipt(&store, "mbox-leased");
++    queue_receipt(&store, &mbox_leased_owner, mbox_leased_id);
++    assert!(mailbox.enqueue(mbox_leased_id, mbox_leased_owner, test_completion()));
++    let leases = mailbox.lease_available_up_to(1);
++    assert_eq!(leases.len(), 1);
++    assert_eq!(leases[0].receipt_id(), mbox_queued_id);
++    // Lease the second queued entry too so both mailbox entries are leased.
++    let leases = mailbox.lease_available_up_to(1);
++    assert_eq!(leases.len(), 1);
++    assert_eq!(leases[0].receipt_id(), mbox_leased_id);
++
++    let snapshot = snapshot_from(&store, &mailbox, store.revision());
++    let armed: HashSet<String> = snapshot
++        .armed()
++        .iter()
++        .map(|receipt| receipt.receipt_id().to_string())
++        .collect();
++    let queued: HashSet<String> = snapshot
++        .queued()
++        .iter()
++        .map(|receipt| receipt.receipt_id().to_string())
++        .collect();
++    let leased: HashSet<String> = snapshot
++        .leased()
++        .iter()
++        .map(|receipt| receipt.receipt_id().to_string())
++        .collect();
++
++    assert_eq!(armed, HashSet::from([armed_id.model_handle()]));
++    // Store-queued without mailbox still counts as queued (never neither).
++    assert!(queued.contains(&queued_id.model_handle()));
++    // Mailbox entries are leased, so they appear as leased, not queued.
++    assert_eq!(queued.len(), 1);
++    assert_eq!(
++        leased,
++        HashSet::from([mbox_queued_id.model_handle(), mbox_leased_id.model_handle()])
++    );
++    assert!(!snapshot.is_empty());
++    // Reserved (not armed) is excluded: create one and verify it never appears.
++    let reserved_owner = test_owner("reserved-only");
++    let reserved_id = store.reserve(reserved_owner).expect("reserve");
++    let snapshot = snapshot_from(&store, &mailbox, store.revision());
++    let all: HashSet<String> = snapshot
++        .armed()
++        .iter()
++        .chain(snapshot.queued())
++        .chain(snapshot.leased())
++        .map(|receipt| receipt.receipt_id().to_string())
++        .collect();
++    assert!(!all.contains(&reserved_id.model_handle()));
++}
++
++#[test]
++fn snapshot_excludes_suspended_and_cancelled() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let mut mailbox = RuntimeMailbox::with_revision(Arc::clone(&revision));
++
++    // Suspended via explicit suspend: store queued + mailbox suspended.
++    let (susp_owner, susp_id) = arm_receipt(&store, "susp");
++    queue_receipt(&store, &susp_owner, susp_id);
++    assert!(mailbox.enqueue(susp_id, susp_owner, test_completion()));
++    assert!(mailbox.suspend(susp_id));
++
++    // Acknowledged work is covered by production_acknowledgement_removes_pending_work,
++    // which drives the real sampling acceptance path instead of hand-acking stores.
++
++    // Cancelled via both stores.
++    let (cancel_owner, cancel_id) = arm_receipt(&store, "cancel");
++    queue_receipt(&store, &cancel_owner, cancel_id);
++    assert!(mailbox.enqueue(cancel_id, cancel_owner.clone(), test_completion()));
++    assert!(mailbox.cancel(cancel_id));
++    store
++        .cancel(cancel_id, &cancel_owner, CancellationReason::OwnerStopped)
++        .expect("store cancel");
++
++    let snapshot = snapshot_from(&store, &mailbox, store.revision());
++    assert!(snapshot.is_empty());
++    assert_eq!(snapshot.len(), 0);
++    let all: HashSet<String> = snapshot
++        .armed()
++        .iter()
++        .chain(snapshot.queued())
++        .chain(snapshot.leased())
++        .map(|receipt| receipt.receipt_id().to_string())
++        .collect();
++    assert!(!all.contains(&susp_id.model_handle()));
++    assert!(!all.contains(&cancel_id.model_handle()));
++}
++
++#[tokio::test]
++async fn production_acknowledgement_removes_pending_work() {
++    use crate::context::ContextualUserFragment;
++    use crate::context::ExecCompletionFragment;
++    use crate::session::exec_completion_ack;
++    use crate::session::pending_work::try_read_snapshot;
++    use crate::session::tests::make_session_and_context;
++    use crate::unified_exec::completion_receipt::ReceiptStatus;
++
++    let (session, turn_context) = make_session_and_context().await;
++    let session = Arc::new(session);
++    {
++        let weak = Arc::downgrade(&session);
++        session.services.thread_extension_data.insert(
++            codex_extension_api::PendingWorkProvider::new(move || {
++                let Some(session) = weak.upgrade() else {
++                    return Err(codex_extension_api::PendingWorkReadError::SessionUnavailable);
++                };
++                try_read_snapshot(session.as_ref())
++            }),
++        );
++    }
++
++    // Reserve, arm, and publish through the session's real receipt store.
++    let owner =
++        ReceiptOwner::new(session.thread_id, /*runtime_generation*/ 1, "prod-ack").expect("owner");
++    let store = session.services.unified_exec_manager.receipt_store();
++    let receipt_id = store.reserve(owner.clone()).expect("reserve");
++    let outcome = store
++        .resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm)
++        .expect("arm");
++    assert_eq!(
++        outcome,
++        crate::unified_exec::completion_receipt::InitialResponseOutcome::Armed
++    );
++    queue_receipt(store, &owner, receipt_id);
++    assert!(
++        session
++            .input_queue
++            .enqueue_runtime_notification(receipt_id, owner.clone(), test_completion())
++            .await
++    );
++
++    // Lease and record exactly as the wake and record paths do.
++    let leases = session
++        .input_queue
++        .lease_runtime_notifications_up_to(8)
++        .await;
++    assert_eq!(leases.len(), 1);
++    assert_eq!(leases[0].receipt_id(), receipt_id);
++    exec_completion_ack::note_recorded(&turn_context, &leases);
++
++    // Before acceptance the receipt is pending through the installed provider.
++    let before = codex_extension_api::read_pending_work(&session.services.thread_extension_data)
++        .expect("read before");
++    assert!(!before.is_empty());
++
++    // Drive the real production acceptance entry point: server acceptance of a
++    // prompt containing the trusted fragment. No manual store acknowledgement.
++    let fragment: codex_protocol::models::ResponseItem = ContextualUserFragment::into(
++        ExecCompletionFragment::new(receipt_id.model_handle(), leases[0].completion()),
++    );
++    exec_completion_ack::acknowledge_submitted(
++        &session,
++        &turn_context,
++        std::slice::from_ref(&fragment),
++    )
++    .await;
++
++    // After acceptance the receipt is in neither set, via the provider.
++    let after = codex_extension_api::read_pending_work(&session.services.thread_extension_data)
++        .expect("read after");
++    assert!(after.is_empty());
++    assert_eq!(after.len(), 0);
++    let handle = receipt_id.model_handle();
++    assert!(
++        !after
++            .armed()
++            .iter()
++            .chain(after.queued())
++            .chain(after.leased())
++            .any(|receipt| receipt.receipt_id() == handle)
++    );
++    // The B receipt itself retired to sampled through the pushed path.
++    assert_eq!(
++        store.status(receipt_id, &owner),
++        Ok(ReceiptStatus::Sampled {
++            source: SamplingSource::PushedCompletion
++        })
++    );
++    // A fail after acknowledgement stays a no-op in the mailbox.
++    assert!(!session.input_queue.fail_runtime_lease(&leases[0]).await);
++}
++
++#[test]
++fn revision_increases_on_arm() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let owner = test_owner("arm-rev");
++    let receipt_id = store.reserve(owner.clone()).expect("reserve");
++    let before = store.revision();
++    store
++        .resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm)
++        .expect("arm");
++    assert!(store.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_queue_via_publish() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "queue-publish");
++    let before = store.revision();
++    queue_receipt(&store, &owner, receipt_id);
++    assert!(store.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_queue_via_mailbox_enqueue() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let mut mailbox = RuntimeMailbox::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "queue-enqueue");
++    queue_receipt(&store, &owner, receipt_id);
++    let before = mailbox.revision();
++    assert!(mailbox.enqueue(receipt_id, owner, test_completion()));
++    assert!(mailbox.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_lease() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let mut mailbox = RuntimeMailbox::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "lease");
++    queue_receipt(&store, &owner, receipt_id);
++    assert!(mailbox.enqueue(receipt_id, owner, test_completion()));
++    let before = mailbox.revision();
++    let leases = mailbox.lease_available_up_to(1);
++    assert_eq!(leases.len(), 1);
++    assert!(mailbox.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_store_lease() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "store-lease");
++    queue_receipt(&store, &owner, receipt_id);
++    let before = store.revision();
++    store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("lease");
++    assert!(store.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_fail_back() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let mut mailbox = RuntimeMailbox::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "fail-back");
++    queue_receipt(&store, &owner, receipt_id);
++    assert!(mailbox.enqueue(receipt_id, owner, test_completion()));
++    let leases = mailbox.lease_available_up_to(1);
++    assert_eq!(leases.len(), 1);
++    let before = mailbox.revision();
++    assert!(mailbox.fail(&leases[0]));
++    assert!(mailbox.revision() > before);
++    assert!(!mailbox.is_suspended(receipt_id));
++}
++
++#[test]
++fn revision_increases_on_store_fail_back() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "store-fail");
++    queue_receipt(&store, &owner, receipt_id);
++    let lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("lease");
++    let before = store.revision();
++    store.fail_sampling(&lease).expect("fail");
++    assert!(store.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_acknowledge() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let mut mailbox = RuntimeMailbox::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "ack-rev");
++    queue_receipt(&store, &owner, receipt_id);
++    assert!(mailbox.enqueue(receipt_id, owner, test_completion()));
++    let leases = mailbox.lease_available_up_to(1);
++    assert_eq!(leases.len(), 1);
++    let before = mailbox.revision();
++    assert!(mailbox.acknowledge(&leases[0]));
++    assert!(mailbox.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_store_acknowledge() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "store-ack");
++    queue_receipt(&store, &owner, receipt_id);
++    let lease = store
++        .lease_for_sampling(receipt_id, &owner, SamplingSource::PushedCompletion)
++        .expect("lease");
++    let before = store.revision();
++    store.acknowledge_sampled(&lease).expect("ack");
++    assert!(store.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_cancel() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "cancel-rev");
++    let before = store.revision();
++    store
++        .cancel(receipt_id, &owner, CancellationReason::OwnerStopped)
++        .expect("cancel");
++    assert!(store.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_mailbox_cancel() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let mut mailbox = RuntimeMailbox::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "mbox-cancel");
++    queue_receipt(&store, &owner, receipt_id);
++    assert!(mailbox.enqueue(receipt_id, owner, test_completion()));
++    let before = mailbox.revision();
++    assert!(mailbox.cancel(receipt_id));
++    assert!(mailbox.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_suspend() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let mut mailbox = RuntimeMailbox::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "suspend-rev");
++    queue_receipt(&store, &owner, receipt_id);
++    assert!(mailbox.enqueue(receipt_id, owner, test_completion()));
++    let before = mailbox.revision();
++    assert!(mailbox.suspend(receipt_id));
++    assert!(mailbox.revision() > before);
++}
++
++#[test]
++fn revision_increases_on_suspend_via_exhausted_fail() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let mut mailbox = RuntimeMailbox::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "exhaust");
++    queue_receipt(&store, &owner, receipt_id);
++    assert!(mailbox.enqueue(receipt_id, owner, test_completion()));
++    for _ in 0..crate::session::runtime_mailbox::MAX_RUNTIME_SAMPLING_ATTEMPTS {
++        let leases = mailbox.lease_available_up_to(1);
++        assert_eq!(leases.len(), 1);
++        let before = mailbox.revision();
++        assert!(mailbox.fail(&leases[0]));
++        assert!(mailbox.revision() > before);
++    }
++    assert!(mailbox.is_suspended(receipt_id));
++}
++
++#[test]
++fn revision_increases_on_release() {
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = CompletionReceiptStore::with_revision(Arc::clone(&revision));
++    let (owner, receipt_id) = arm_receipt(&store, "release-rev");
++    let before = store.revision();
++    store
++        .cancel(receipt_id, &owner, CancellationReason::Released)
++        .expect("release");
++    assert!(store.revision() > before);
++}
++
++#[test]
++fn read_failure_returns_explicit_error_not_empty_snapshot() {
++    // Provider missing is an explicit error, never an empty snapshot.
++    let store = codex_extension_api::ExtensionData::new("thread");
++    let result = codex_extension_api::read_pending_work(&store);
++    assert_eq!(result, Err(PendingWorkReadError::ProviderMissing));
++    assert_ne!(
++        result,
++        Ok(PendingWorkSnapshot::empty(0)),
++        "a failed read must not masquerade as empty"
++    );
++
++    // A provider that fails stays failed; mapping it to empty is rejected.
++    let failing = codex_extension_api::PendingWorkProvider::new(|| {
++        Err(PendingWorkReadError::SessionUnavailable)
++    });
++    let result = failing.read();
++    assert_eq!(result, Err(PendingWorkReadError::SessionUnavailable));
++    assert_ne!(
++        result,
++        Ok(PendingWorkSnapshot::empty(0)),
++        "a failed read must not masquerade as empty"
++    );
++}
++
++#[tokio::test]
++async fn mailbox_contended_read_fails_explicitly_not_empty() {
++    let queue = InputQueue::new();
++    let _held = queue.test_hold_runtime_lock().await;
++    let result = queue.try_snapshot_runtime_mailbox();
++    assert!(
++        result.is_err(),
++        "contended mailbox must fail, not return empty"
++    );
++}
++
++#[test]
++fn store_contended_read_fails_explicitly_not_empty() {
++    let store = CompletionReceiptStore::default();
++    store.test_with_held_lock(|| {
++        let result = store.try_list_pending();
++        assert_eq!(
++            result,
++            Err(crate::unified_exec::completion_receipt::ReceiptError::LockContended)
++        );
++    });
++}
++
++#[tokio::test]
++async fn armed_to_queued_is_atomic_for_concurrent_readers() {
++    use tokio::sync::Barrier;
++
++    let revision = Arc::new(AtomicU64::new(0));
++    let store = Arc::new(CompletionReceiptStore::with_revision(Arc::clone(&revision)));
++    let mailbox = Arc::new(tokio::sync::Mutex::new(RuntimeMailbox::with_revision(
++        Arc::clone(&revision),
++    )));
++
++    // One receipt starts Armed. The writer publishes it to Queued while
++    // readers snapshot concurrently; no reader may observe neither set.
++    let owner = test_owner("atomic");
++    let receipt_id = store.reserve(owner.clone()).expect("reserve");
++    store
++        .resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm)
++        .expect("arm");
++    let handle = receipt_id.model_handle();
++
++    let readers = 4;
++    let iterations = 200;
++    let barrier = Arc::new(Barrier::new(readers + 1));
++    let mut joins = Vec::new();
++    for _ in 0..readers {
++        let store = Arc::clone(&store);
++        let mailbox = Arc::clone(&mailbox);
++        let barrier = Arc::clone(&barrier);
++        let handle = handle.clone();
++        joins.push(tokio::spawn(async move {
++            barrier.wait().await;
++            for _ in 0..iterations {
++                let lists = store.try_list_pending().expect("list");
++                let entries = mailbox.lock().await.snapshot_entries();
++                let snapshot = build_snapshot(lists, &entries, 0);
++                let armed = snapshot
++                    .armed()
++                    .iter()
++                    .any(|receipt| receipt.receipt_id() == handle);
++                let queued = snapshot
++                    .queued()
++                    .iter()
++                    .chain(snapshot.leased())
++                    .any(|receipt| receipt.receipt_id() == handle);
++                assert!(
++                    armed || queued,
++                    "concurrent reader saw receipt in neither set"
++                );
++                assert!(
++                    !(armed && queued),
++                    "concurrent reader saw receipt in both sets"
++                );
++            }
++        }));
++    }
++
++    let writer_store = Arc::clone(&store);
++    let writer_barrier = Arc::clone(&barrier);
++    let writer = tokio::spawn(async move {
++        writer_barrier.wait().await;
++        // Flip Armed -> Queued once; readers race this single transition.
++        // The store holds one lock across the move, so readers see exactly
++        // one side.
++        let _ = writer_store.publish_exit(receipt_id, &owner, test_terminal());
++    });
++
++    writer.await.expect("writer");
++    for join in joins {
++        join.await.expect("reader");
++    }
++
++    // Post-transition the receipt is Queued (store) even before any mailbox
++    // enqueue, so it stays pending without a gap.
++    let lists = store.try_list_pending().expect("list");
++    let entries = mailbox.lock().await.snapshot_entries();
++    let snapshot = build_snapshot(lists, &entries, 0);
++    assert!(
++        snapshot
++            .queued()
++            .iter()
++            .any(|receipt| receipt.receipt_id() == handle)
++    );
++}
+diff --git a/codex-rs/core/src/session/runtime_mailbox.rs b/codex-rs/core/src/session/runtime_mailbox.rs
+index 212c16ecbc..4a7314ab52 100644
+--- a/codex-rs/core/src/session/runtime_mailbox.rs
++++ b/codex-rs/core/src/session/runtime_mailbox.rs
+@@ -25,6 +25,9 @@
+ //! [iac]: codex_protocol::protocol::InterAgentCommunication
+ 
+ use std::collections::VecDeque;
++use std::sync::Arc;
++use std::sync::atomic::AtomicU64;
++use std::sync::atomic::Ordering;
+ 
+ use uuid::Uuid;
+ 
+@@ -53,11 +56,15 @@ pub(crate) const MAX_RUNTIME_SAMPLING_ATTEMPTS: u32 = 3;
+ /// presented to acknowledge or fail the lease. Callers cannot mint leases.
+ /// The completion snapshot was captured at mailbox admission and is what the
+ /// record path renders; story D acknowledges the lease after sampling.
++/// The owner is the B receipt owner captured at admission; the sampling
++/// acceptance path uses it to retire the receipt store claim together with
++/// the mailbox entry so sampled work never resurrects as pending.
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub(crate) struct RuntimeLease {
+     receipt_id: ReceiptId,
+     token: Uuid,
+     completion: ExecCompletion,
++    owner: ReceiptOwner,
+ }
+ 
+ impl RuntimeLease {
+@@ -68,14 +75,18 @@ impl RuntimeLease {
+     pub(crate) fn completion(&self) -> &ExecCompletion {
+         &self.completion
+     }
++
++    pub(crate) fn owner(&self) -> &ReceiptOwner {
++        &self.owner
++    }
+ }
+ 
+ /// One pending runtime notification carrying a receipt reference.
+ #[derive(Debug)]
+ struct PendingRuntimeNotification {
+     receipt_id: ReceiptId,
+-    // Carries the B receipt owner for retained-output reads (story E).
+-    #[allow(dead_code)]
++    // Carries the B receipt owner: leases clone it so sampling acceptance
++    // can retire the store claim, and retained-output reads use it (story E).
+     owner: ReceiptOwner,
+     completion: ExecCompletion,
+     suspended: bool,
+@@ -85,6 +96,14 @@ struct PendingRuntimeNotification {
+     attempts: u32,
+ }
+ 
++/// Read-only view of one mailbox entry for pending-work snapshots.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct MailboxEntrySnapshot {
++    pub(crate) receipt_id: ReceiptId,
++    pub(crate) leased: bool,
++    pub(crate) suspended: bool,
++}
++
+ /// Mailbox-side lease tracking for runtime notifications.
+ ///
+ /// Entries are removed only by acknowledgement or cancellation. Draining
+@@ -92,13 +111,48 @@ struct PendingRuntimeNotification {
+ #[derive(Debug, Default)]
+ pub(crate) struct RuntimeMailbox {
+     entries: VecDeque<PendingRuntimeNotification>,
++    revision: Arc<AtomicU64>,
+ }
+ 
+ impl RuntimeMailbox {
++    #[cfg(test)]
+     pub(crate) fn new() -> Self {
+         Self::default()
+     }
+ 
++    /// Creates a mailbox sharing the given pending-work revision.
++    pub(crate) fn with_revision(revision: Arc<AtomicU64>) -> Self {
++        Self {
++            entries: VecDeque::new(),
++            revision,
++        }
++    }
++
++    /// Returns the current pending-work revision.
++    #[cfg(test)]
++    pub(crate) fn revision(&self) -> u64 {
++        self.revision.load(Ordering::SeqCst)
++    }
++
++    fn bump_revision(&self) {
++        self.revision.fetch_add(1, Ordering::SeqCst);
++    }
++
++    /// Snapshots every entry's lease and suspension state.
++    ///
++    /// Callers hold the mailbox lock once across this read so Queued, Leased,
++    /// and suspended views stay consistent.
++    pub(crate) fn snapshot_entries(&self) -> Vec<MailboxEntrySnapshot> {
++        self.entries
++            .iter()
++            .map(|entry| MailboxEntrySnapshot {
++                receipt_id: entry.receipt_id,
++                leased: entry.lease.is_some(),
++                suspended: entry.suspended,
++            })
++            .collect()
++    }
++
+     /// Enqueues a runtime notification for a completion receipt.
+     ///
+     /// Returns `false` without duplicating when the receipt is already
+@@ -125,6 +179,7 @@ impl RuntimeMailbox {
+             lease: None,
+             attempts: 0,
+         });
++        self.bump_revision();
+         true
+     }
+ 
+@@ -174,8 +229,12 @@ impl RuntimeMailbox {
+                 receipt_id: entry.receipt_id,
+                 token,
+                 completion: entry.completion.clone(),
++                owner: entry.owner.clone(),
+             });
+         }
++        if !leases.is_empty() {
++            self.bump_revision();
++        }
+         leases
+     }
+ 
+@@ -197,6 +256,7 @@ impl RuntimeMailbox {
+             return false;
+         }
+         self.entries.remove(index);
++        self.bump_revision();
+         true
+     }
+ 
+@@ -222,10 +282,10 @@ impl RuntimeMailbox {
+         entry.lease = None;
+         entry.attempts = entry.attempts.saturating_add(1);
+         let exhausted = entry.attempts >= MAX_RUNTIME_SAMPLING_ATTEMPTS;
+-        let receipt_id = entry.receipt_id;
+         if exhausted {
+-            self.suspend(receipt_id);
++            entry.suspended = true;
+         }
++        self.bump_revision();
+         true
+     }
+ 
+@@ -254,6 +314,7 @@ impl RuntimeMailbox {
+             return false;
+         };
+         self.entries.remove(index);
++        self.bump_revision();
+         true
+     }
+ 
+@@ -270,6 +331,7 @@ impl RuntimeMailbox {
+             return false;
+         };
+         entry.suspended = true;
++        self.bump_revision();
+         true
+     }
+ }
+diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
+index 824cf589cd..995aa82f2f 100644
+--- a/codex-rs/core/src/session/session.rs
++++ b/codex-rs/core/src/session/session.rs
+@@ -1674,13 +1674,17 @@ impl Session {
+             );
+             let reasoning_effort_override_enabled =
+                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
++            let pending_work_revision = Arc::new(AtomicU64::new(0));
++            let input_queue =
++                InputQueue::new_with_revision(Arc::clone(&pending_work_revision));
+             let services = SessionServices {
+                 // Start with an empty connection set. The initialized set is
+                 // published after SessionConfigured so MCP events follow it.
+                 mcp_runtime,
+                 mcp_handler_cache: Default::default(),
+-                unified_exec_manager: UnifiedExecProcessManager::new(
++                unified_exec_manager: UnifiedExecProcessManager::new_with_revision(
+                     config.background_terminal_max_timeout,
++                    Arc::clone(&pending_work_revision),
+                 ),
+                 elicitations: crate::elicitation::ElicitationService::new(),
+                 shell_zsh_path: config.zsh_path.clone(),
+@@ -1802,13 +1806,26 @@ impl Session {
+                 .then(|| Mutex::new(Default::default())),
+                 active_turn: Mutex::new(None),
+                 async_hook_results,
+-                input_queue: InputQueue::new(),
++                input_queue,
+                 services,
+                 git_enrichment_policy,
+                 fork_persistence,
+                 forked_from_ordinal_exclusive,
+                 next_internal_sub_id: AtomicU64::new(0),
+             });
++            {
++                let weak = Arc::downgrade(&sess);
++                sess.services.thread_extension_data.insert(
++                    codex_extension_api::PendingWorkProvider::new(move || {
++                        let Some(session) = weak.upgrade() else {
++                            return Err(
++                                codex_extension_api::PendingWorkReadError::SessionUnavailable,
++                            );
++                        };
++                        super::pending_work::try_read_snapshot(session.as_ref())
++                    }),
++                );
++            }
+             if let Some(startup) = &startup {
+                 let _ = startup.session.set(Arc::clone(&sess));
+             }
+diff --git a/codex-rs/core/src/unified_exec/completion_receipt.rs b/codex-rs/core/src/unified_exec/completion_receipt.rs
+index 413978525c..be9f60e63f 100644
+--- a/codex-rs/core/src/unified_exec/completion_receipt.rs
++++ b/codex-rs/core/src/unified_exec/completion_receipt.rs
+@@ -10,8 +10,11 @@ use std::collections::HashMap;
+ use std::collections::VecDeque;
+ use std::fmt::Debug;
+ use std::fmt::Formatter;
++use std::sync::Arc;
+ use std::sync::Mutex;
+ use std::sync::MutexGuard;
++use std::sync::atomic::AtomicU64;
++use std::sync::atomic::Ordering;
+ 
+ use codex_protocol::ThreadId;
+ use thiserror::Error;
+@@ -173,6 +176,16 @@ pub(crate) enum ReceiptError {
+     IdGenerationFailed,
+     #[error("completion receipt lock was poisoned by a panic")]
+     LockPoisoned,
++    #[error("completion receipt lock is contended")]
++    LockContended,
++}
++
++/// Pending receipt ids by state, read under one lock.
++#[derive(Clone, Debug, Default, PartialEq, Eq)]
++pub(crate) struct PendingReceiptLists {
++    pub(crate) armed: Vec<ReceiptId>,
++    pub(crate) queued: Vec<ReceiptId>,
++    pub(crate) leased: Vec<ReceiptId>,
+ }
+ 
+ /// A sampling claim. Its fields are private so a caller cannot mint a lease.
+@@ -199,6 +212,7 @@ impl SamplingLease {
+ #[derive(Default)]
+ pub(crate) struct CompletionReceiptStore {
+     state: Mutex<StoreState>,
++    revision: Arc<AtomicU64>,
+ }
+ 
+ #[derive(Default)]
+@@ -306,6 +320,49 @@ impl CompletionReceiptStore {
+         self.state.lock().map_err(|_| ReceiptError::LockPoisoned)
+     }
+ 
++    /// Creates a store sharing the given pending-work revision.
++    pub(crate) fn with_revision(revision: Arc<AtomicU64>) -> Self {
++        Self {
++            state: Mutex::new(StoreState::default()),
++            revision,
++        }
++    }
++
++    /// Returns the current pending-work revision.
++    #[cfg(test)]
++    pub(crate) fn revision(&self) -> u64 {
++        self.revision.load(Ordering::SeqCst)
++    }
++
++    fn bump_revision(&self) {
++        self.revision.fetch_add(1, Ordering::SeqCst);
++    }
++
++    /// Lists pending receipt ids by state under one lock.
++    ///
++    /// Uses a non-blocking lock so snapshot readers fail with an explicit
++    /// error instead of stalling a turn. Armed, Queued, and LeasedToSampling
++    /// are read atomically: a receipt appears in exactly one list.
++    pub(crate) fn try_list_pending(&self) -> Result<PendingReceiptLists, ReceiptError> {
++        let state = self.state.try_lock().map_err(|err| match err {
++            std::sync::TryLockError::Poisoned(_) => ReceiptError::LockPoisoned,
++            std::sync::TryLockError::WouldBlock => ReceiptError::LockContended,
++        })?;
++        let mut lists = PendingReceiptLists::default();
++        for (receipt_id, record) in &state.active {
++            match &record.phase {
++                ReceiptPhase::Armed => lists.armed.push(*receipt_id),
++                ReceiptPhase::Queued(_) => lists.queued.push(*receipt_id),
++                ReceiptPhase::LeasedToSampling { .. } => lists.leased.push(*receipt_id),
++                ReceiptPhase::Reserved { .. }
++                | ReceiptPhase::InlineResult
++                | ReceiptPhase::Sampled { .. }
++                | ReceiptPhase::Cancelled(_) => {}
++            }
++        }
++        Ok(lists)
++    }
++
+     /// Reserves capacity before the caller launches an opted-in process.
+     pub(crate) fn reserve(&self, owner: ReceiptOwner) -> Result<ReceiptId, ReceiptError> {
+         let mut state = self.lock_state()?;
+@@ -331,6 +388,7 @@ impl CompletionReceiptStore {
+                 phase: ReceiptPhase::Reserved { completion: None },
+             },
+         );
++        self.bump_revision();
+         Ok(receipt_id)
+     }
+ 
+@@ -383,28 +441,30 @@ impl CompletionReceiptStore {
+             None => return Err(state.terminal_error(receipt_id, owner)),
+         };
+ 
+-        match action {
++        let outcome = match action {
+             Action::Inline(completion) => {
+                 state.retire(receipt_id, ReceiptPhase::InlineResult)?;
+-                Ok(InitialResponseOutcome::InlineResult(completion))
++                InitialResponseOutcome::InlineResult(completion)
+             }
+             Action::Armed => {
+                 if let Some(record) = state.active.get_mut(&receipt_id) {
+                     record.phase = ReceiptPhase::Armed;
+-                    Ok(InitialResponseOutcome::Armed)
++                    InitialResponseOutcome::Armed
+                 } else {
+-                    Err(ReceiptError::UnknownReceipt)
++                    return Err(ReceiptError::UnknownReceipt);
+                 }
+             }
+             Action::Queued(completion) => {
+                 if let Some(record) = state.active.get_mut(&receipt_id) {
+                     record.phase = ReceiptPhase::Queued(completion);
+-                    Ok(InitialResponseOutcome::Queued)
++                    InitialResponseOutcome::Queued
+                 } else {
+-                    Err(ReceiptError::UnknownReceipt)
++                    return Err(ReceiptError::UnknownReceipt);
+                 }
+             }
+-        }
++        };
++        self.bump_revision();
++        Ok(outcome)
+     }
+ 
+     /// Publishes a fully finalized exit, retaining it if the response is undecided.
+@@ -421,19 +481,23 @@ impl CompletionReceiptStore {
+             None => return Err(state.terminal_error(receipt_id, owner)),
+         };
+ 
+-        match &mut record.phase {
++        let outcome = match &mut record.phase {
+             ReceiptPhase::Reserved { completion: stored } if stored.is_none() => {
+                 *stored = Some(completion);
+-                Ok(ExitPublicationOutcome::RetainedUntilDecision)
++                ExitPublicationOutcome::RetainedUntilDecision
+             }
+             ReceiptPhase::Armed => {
+                 record.phase = ReceiptPhase::Queued(completion);
+-                Ok(ExitPublicationOutcome::Queued)
++                ExitPublicationOutcome::Queued
+             }
+-            phase => Err(ReceiptError::InvalidTransition {
+-                actual: phase.status(),
+-            }),
+-        }
++            phase => {
++                return Err(ReceiptError::InvalidTransition {
++                    actual: phase.status(),
++                });
++            }
++        };
++        self.bump_revision();
++        Ok(outcome)
+     }
+ 
+     /// Leases the single queued claim to either the pushed or terminal-stdin path.
+@@ -450,7 +514,7 @@ impl CompletionReceiptStore {
+             None => return Err(state.terminal_error(receipt_id, owner)),
+         };
+ 
+-        match &record.phase {
++        let lease = match &record.phase {
+             ReceiptPhase::Queued(completion) => {
+                 let completion = *completion;
+                 let token = Uuid::new_v4();
+@@ -459,18 +523,22 @@ impl CompletionReceiptStore {
+                     token,
+                     source,
+                 };
+-                Ok(SamplingLease {
++                SamplingLease {
+                     receipt_id,
+                     owner: owner.clone(),
+                     token,
+                     source,
+-                })
++                }
+             }
+-            ReceiptPhase::LeasedToSampling { .. } => Err(ReceiptError::AlreadyLeased),
+-            phase => Err(ReceiptError::InvalidTransition {
+-                actual: phase.status(),
+-            }),
+-        }
++            ReceiptPhase::LeasedToSampling { .. } => return Err(ReceiptError::AlreadyLeased),
++            phase => {
++                return Err(ReceiptError::InvalidTransition {
++                    actual: phase.status(),
++                });
++            }
++        };
++        self.bump_revision();
++        Ok(lease)
+     }
+ 
+     /// A failed sampling attempt requeues the same receipt without another claim.
+@@ -490,10 +558,11 @@ impl CompletionReceiptStore {
+             } if *token == lease.token && *source == lease.source => {
+                 let completion = *completion;
+                 record.phase = ReceiptPhase::Queued(completion);
+-                Ok(())
+             }
+-            _ => Err(ReceiptError::StaleLease),
++            _ => return Err(ReceiptError::StaleLease),
+         }
++        self.bump_revision();
++        Ok(())
+     }
+ 
+     /// Acknowledges the claim only after its contents were included in sampling.
+@@ -521,6 +590,7 @@ impl CompletionReceiptStore {
+                 source: lease.source,
+             },
+         )?;
++        self.bump_revision();
+         Ok(completion)
+     }
+ 
+@@ -544,7 +614,9 @@ impl CompletionReceiptStore {
+             }
+         }
+ 
+-        state.retire(receipt_id, ReceiptPhase::Cancelled(reason))
++        state.retire(receipt_id, ReceiptPhase::Cancelled(reason))?;
++        self.bump_revision();
++        Ok(())
+     }
+ 
+     /// Returns the number of receipts currently holding an active slot.
+@@ -556,6 +628,16 @@ impl CompletionReceiptStore {
+         Ok(self.lock_state()?.active.len())
+     }
+ 
++    /// Holds the store lock while running `f`, for contended-read tests.
++    #[cfg(test)]
++    pub(crate) fn test_with_held_lock<R>(&self, f: impl FnOnce() -> R) -> R {
++        let _guard = self
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        f()
++    }
++
+     /// Returns the current state for the matching owner, including recent outcomes.
+     pub(crate) fn status(
+         &self,
+diff --git a/codex-rs/core/src/unified_exec/mod.rs b/codex-rs/core/src/unified_exec/mod.rs
+index e660844332..023756cdcc 100644
+--- a/codex-rs/core/src/unified_exec/mod.rs
++++ b/codex-rs/core/src/unified_exec/mod.rs
+@@ -190,11 +190,24 @@ pub(crate) struct UnifiedExecProcessManager {
+ 
+ impl UnifiedExecProcessManager {
+     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
++        Self::new_with_revision(
++            max_write_stdin_yield_time_ms,
++            Arc::new(std::sync::atomic::AtomicU64::new(0)),
++        )
++    }
++
++    /// Creates a manager sharing the given pending-work revision.
++    pub(crate) fn new_with_revision(
++        max_write_stdin_yield_time_ms: u64,
++        revision: Arc<std::sync::atomic::AtomicU64>,
++    ) -> Self {
+         Self {
+             process_store: Mutex::new(ProcessStore::default()),
+             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
+                 .max(MIN_EMPTY_YIELD_TIME_MS),
+-            receipt_store: Arc::new(completion_receipt::CompletionReceiptStore::default()),
++            receipt_store: Arc::new(completion_receipt::CompletionReceiptStore::with_revision(
++                revision,
++            )),
+             receipt_hooks: Arc::new(Mutex::new(receipt_hooks::ReceiptHooksState::default())),
+             receipt_generation: receipt_hooks::next_receipt_generation(),
+         }
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 0fa79cfb44..358a18d4d6 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -1,6 +1,7 @@
+ mod capabilities;
+ mod contributors;
+ mod goal_activity;
++mod pending_work;
+ mod registry;
+ mod session_isolation;
+ mod state;
+@@ -10,6 +11,11 @@ mod user_instructions;
+ 
+ pub use goal_activity::GoalActivity;
+ pub use goal_activity::GoalActivityState;
++pub use pending_work::PendingWorkProvider;
++pub use pending_work::PendingWorkReadError;
++pub use pending_work::PendingWorkReceipt;
++pub use pending_work::PendingWorkSnapshot;
++pub use pending_work::read_pending_work;
+ pub use session_isolation::IsolatedSessionExtensions;
+ pub use session_isolation::SessionIsolation;
+ pub use tool_policy::ToolPolicy;
+diff --git a/codex-rs/ext/extension-api/src/pending_work.rs b/codex-rs/ext/extension-api/src/pending_work.rs
+new file mode 100644
+index 0000000000..22a86d3b62
+--- /dev/null
++++ b/codex-rs/ext/extension-api/src/pending_work.rs
+@@ -0,0 +1,197 @@
++//! Thread-level pending exec-completion work snapshot.
++//!
++//! Core publishes a [`PendingWorkProvider`] into the thread's [`ExtensionData`]
++//! so goal continuation can read pending work without a core-to-goal
++//! dependency. The snapshot is minimal and read-only: Armed receipts from the
++//! receipt state machine, unsampled non-suspended Queued/Leased mailbox
++//! entries, and a monotonically increasing work revision.
++//!
++//! A failed read returns [`PendingWorkReadError`], never an empty snapshot, so
++//! callers can distinguish "no work" from "unknown". Suspended entries are
++//! excluded. Live processes without receipts (including servers) are never
++//! included; this snapshot never consults process liveness.
++//!
++//! [`ExtensionData`]: crate::ExtensionData
++
++use std::fmt::Display;
++use std::fmt::Formatter;
++use std::sync::Arc;
++
++use crate::ExtensionData;
++
++/// One pending receipt in a [`PendingWorkSnapshot`].
++///
++/// The identifier is the opaque model-visible handle. No process liveness,
++/// output, or command data is exposed here.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct PendingWorkReceipt {
++    receipt_id: String,
++}
++
++impl PendingWorkReceipt {
++    /// Creates a receipt entry from its opaque handle.
++    pub fn new(receipt_id: impl Into<String>) -> Self {
++        Self {
++            receipt_id: receipt_id.into(),
++        }
++    }
++
++    /// Returns the opaque receipt handle.
++    pub fn receipt_id(&self) -> &str {
++        &self.receipt_id
++    }
++}
++
++/// Minimal typed read-only snapshot of pending exec-completion work.
++///
++/// `armed` holds receipts awaiting exit publication. `queued` and `leased`
++/// hold unsampled non-suspended entries (queued = unleased, leased = handed to
++/// a turn but not yet acknowledged as sampled). Suspended, acknowledged,
++/// cancelled, and inline-settled receipts are excluded, as are live processes
++/// without receipts.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct PendingWorkSnapshot {
++    armed: Vec<PendingWorkReceipt>,
++    queued: Vec<PendingWorkReceipt>,
++    leased: Vec<PendingWorkReceipt>,
++    revision: u64,
++}
++
++impl PendingWorkSnapshot {
++    /// Creates a snapshot. Core builds this from live stores; tests and fake
++    /// providers build it directly.
++    pub fn new(
++        armed: Vec<PendingWorkReceipt>,
++        queued: Vec<PendingWorkReceipt>,
++        leased: Vec<PendingWorkReceipt>,
++        revision: u64,
++    ) -> Self {
++        Self {
++            armed,
++            queued,
++            leased,
++            revision,
++        }
++    }
++
++    /// Creates an empty snapshot at the given revision.
++    pub fn empty(revision: u64) -> Self {
++        Self::new(Vec::new(), Vec::new(), Vec::new(), revision)
++    }
++
++    /// Receipts awaiting exit publication.
++    pub fn armed(&self) -> &[PendingWorkReceipt] {
++        &self.armed
++    }
++
++    /// Unsampled non-suspended entries not currently leased to a turn.
++    pub fn queued(&self) -> &[PendingWorkReceipt] {
++        &self.queued
++    }
++
++    /// Unsampled non-suspended entries leased to a turn but not yet sampled.
++    pub fn leased(&self) -> &[PendingWorkReceipt] {
++        &self.leased
++    }
++
++    /// Monotonically increasing work revision.
++    ///
++    /// Changes on every arm, queue, lease, fail-back, acknowledge, cancel,
++    /// suspend, and release transition. Callers compare revisions to detect
++    /// concurrent work changes.
++    pub fn revision(&self) -> u64 {
++        self.revision
++    }
++
++    /// Reports whether no pending work exists in this snapshot.
++    pub fn is_empty(&self) -> bool {
++        self.armed.is_empty() && self.queued.is_empty() && self.leased.is_empty()
++    }
++
++    /// Counts pending receipts across all states.
++    pub fn len(&self) -> usize {
++        self.armed.len() + self.queued.len() + self.leased.len()
++    }
++}
++
++/// Explicit failure reading pending work, distinct from an empty snapshot.
++///
++/// Callers must treat `Err` as unknown, never as "no work".
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub enum PendingWorkReadError {
++    /// No provider was published for this thread.
++    ProviderMissing,
++    /// The owning thread runtime is gone.
++    SessionUnavailable,
++    /// The receipt store could not be read.
++    ReceiptStoreUnavailable { reason: String },
++    /// The runtime mailbox could not be read.
++    MailboxUnavailable { reason: String },
++}
++
++impl Display for PendingWorkReadError {
++    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::ProviderMissing => write!(formatter, "pending-work provider is missing"),
++            Self::SessionUnavailable => {
++                write!(formatter, "pending-work session is unavailable")
++            }
++            Self::ReceiptStoreUnavailable { reason } => {
++                write!(
++                    formatter,
++                    "pending-work receipt store unavailable: {reason}"
++                )
++            }
++            Self::MailboxUnavailable { reason } => {
++                write!(formatter, "pending-work mailbox unavailable: {reason}")
++            }
++        }
++    }
++}
++
++impl std::error::Error for PendingWorkReadError {}
++
++/// Synchronous reader for [`PendingWorkSnapshot`], published by core.
++///
++/// Core inserts one provider per thread into [`ExtensionData`]. The closure
++/// reads live stores with non-blocking locks and returns an explicit error on
++/// contention, poisoning, or a gone runtime — never an empty snapshot.
++#[derive(Clone)]
++pub struct PendingWorkProvider {
++    reader: Arc<dyn Fn() -> Result<PendingWorkSnapshot, PendingWorkReadError> + Send + Sync>,
++}
++
++impl PendingWorkProvider {
++    /// Creates a provider from a synchronous reader closure.
++    pub fn new(
++        reader: impl Fn() -> Result<PendingWorkSnapshot, PendingWorkReadError> + Send + Sync + 'static,
++    ) -> Self {
++        Self {
++            reader: Arc::new(reader),
++        }
++    }
++
++    /// Reads the current snapshot or returns an explicit error.
++    pub fn read(&self) -> Result<PendingWorkSnapshot, PendingWorkReadError> {
++        (self.reader)()
++    }
++}
++
++impl std::fmt::Debug for PendingWorkProvider {
++    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("PendingWorkProvider(<opaque>)")
++    }
++}
++
++/// Reads pending work through the provider published on `thread_store`.
++///
++/// Returns [`PendingWorkReadError::ProviderMissing`] when core published no
++/// provider. A failure is always `Err`, never `Ok` with an empty snapshot.
++pub fn read_pending_work(
++    thread_store: &ExtensionData,
++) -> Result<PendingWorkSnapshot, PendingWorkReadError> {
++    let Some(provider) = thread_store.get::<PendingWorkProvider>() else {
++        return Err(PendingWorkReadError::ProviderMissing);
++    };
++    provider.read()
++}
+diff --git a/codex-rs/ext/goal/tests/pending_work.rs b/codex-rs/ext/goal/tests/pending_work.rs
+new file mode 100644
+index 0000000000..40746e9223
+--- /dev/null
++++ b/codex-rs/ext/goal/tests/pending_work.rs
+@@ -0,0 +1,70 @@
++//! Goal-side unit tests for the pending-work snapshot API.
++//!
++//! These tests use only `codex-extension-api` types through the thread
++//! extension data, proving ext/goal can read pending work with no new
++//! core-to-goal dependency. Core publishes the provider; goal only reads it.
++
++use codex_extension_api::ExtensionData;
++use codex_extension_api::PendingWorkProvider;
++use codex_extension_api::PendingWorkReadError;
++use codex_extension_api::PendingWorkReceipt;
++use codex_extension_api::PendingWorkSnapshot;
++use codex_extension_api::read_pending_work;
++use pretty_assertions::assert_eq;
++
++#[test]
++fn goal_reads_pending_work_through_extension_api() {
++    let store = ExtensionData::new("thread");
++    let snapshot = PendingWorkSnapshot::new(
++        vec![PendingWorkReceipt::new("armed-1")],
++        vec![PendingWorkReceipt::new("queued-1")],
++        vec![PendingWorkReceipt::new("leased-1")],
++        7,
++    );
++    let expected = snapshot.clone();
++    store.insert(PendingWorkProvider::new(move || Ok(snapshot.clone())));
++
++    let observed = read_pending_work(&store).expect("read");
++    assert_eq!(observed, expected);
++    assert_eq!(observed.revision(), 7);
++    assert!(!observed.is_empty());
++    assert_eq!(observed.len(), 3);
++    assert_eq!(observed.armed()[0].receipt_id(), "armed-1");
++    assert_eq!(observed.queued()[0].receipt_id(), "queued-1");
++    assert_eq!(observed.leased()[0].receipt_id(), "leased-1");
++}
++
++#[test]
++fn goal_read_failure_is_explicit_error_not_empty() {
++    // Missing provider is an error, never an empty snapshot.
++    let store = ExtensionData::new("thread");
++    let result = read_pending_work(&store);
++    assert_eq!(result, Err(PendingWorkReadError::ProviderMissing));
++    assert_ne!(
++        result,
++        Ok(PendingWorkSnapshot::empty(0)),
++        "missing provider must not masquerade as empty"
++    );
++
++    // A failing provider stays failed.
++    let store = ExtensionData::new("thread");
++    store.insert(PendingWorkProvider::new(|| {
++        Err(PendingWorkReadError::SessionUnavailable)
++    }));
++    let result = read_pending_work(&store);
++    assert_eq!(result, Err(PendingWorkReadError::SessionUnavailable));
++    assert_ne!(
++        result,
++        Ok(PendingWorkSnapshot::empty(0)),
++        "failed read must not masquerade as empty"
++    );
++
++    // An empty snapshot is still Ok when there is genuinely no work.
++    let store = ExtensionData::new("thread");
++    store.insert(PendingWorkProvider::new(|| {
++        Ok(PendingWorkSnapshot::empty(3))
++    }));
++    let observed = read_pending_work(&store).expect("empty is ok");
++    assert!(observed.is_empty());
++    assert_eq!(observed.revision(), 3);
++}
