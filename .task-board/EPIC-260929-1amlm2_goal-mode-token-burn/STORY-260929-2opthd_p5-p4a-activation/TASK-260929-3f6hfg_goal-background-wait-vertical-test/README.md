@@ -1,10 +1,10 @@
 # TASK-260929-3f6hfg: goal-background-wait-vertical-test
 
 ## Description
-app-server/tests/suite/v2 vertical test: zero model requests before a controlled exit, exactly one wake with progress after; headless and unopted-server negatives. Detailed AC before spawn.
+App-server vertical test for completion notifications plus the goal background wait (final plan section 10 vertical test; leaf 2 of STORY p5-p4a-activation). Intra-story order: runs after sibling TASK-260929-3r7peh (F1) is accepted and checkpointed. New app-server/tests/suite/v2/goal_background_wait.rs using real JSON-RPC and tool dispatch with the mock model server: create a goal, then launch a barrier-controlled process with notify_on_exit, then end the turn. Prove ZERO continuation model requests while the process is still running. Release the barrier and prove EXACTLY ONE wake request containing the exec-completion fragment with the receipt, followed by goal progress. A stalled runtime (no wake after exit) must fail the test. Negatives: headless or incapable host (no notify_on_exit advertised, no wake promise); an unopted server process (no gating); a user message queued or burst during the wait (admitted immediately, with no lost or duplicate input). Use the repo's remote-tests and auto-env helpers so it runs on the hosted Linux lane (macOS local is optional). Deterministic barriers or latches, no sleeps. Fix any production defect it exposes, inside F's scope.
 
 ## Scope
 (define task scope)
 
 ## Acceptance Criteria
-(define acceptance criteria)
+AC1 Before the barrier is released, zero continuation requests reach the mock server (asserted request count). AC2 After release, exactly one wake request carries the exec-completion fragment for the right receipt, and the goal then makes progress. AC3 A stalled runtime makes the test fail (mutant: drop the wake); prove the test kills it. AC4 On a headless or incapable host, notify_on_exit is not advertised and no wake is promised. AC5 An unopted server process does not gate continuation. AC6 User input queued or burst during the wait is admitted immediately, with no loss or duplication. AC7 The test runs on the hosted app-server lane; any platform skips are explicit and justified.

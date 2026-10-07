@@ -1,0 +1,3948 @@
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+index 289cb63953..57debfd7a6 100644
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -24,6 +24,7 @@ use codex_app_server_protocol::ThreadSectionAppearance;
+ use codex_app_server_protocol::ThreadSectionMoveParams;
+ use codex_app_server_protocol::ThreadSectionMoveResponse;
+ use codex_config::types::WindowsSandboxModeToml;
++use codex_extension_api::AsyncNotificationSupport;
+ use codex_extension_api::ExtensionDataInit;
+ use codex_extension_api::ThreadIdleCause;
+ use codex_protocol::SanitizedGitUrl;
+@@ -1467,6 +1468,13 @@ impl ThreadRequestProcessor {
+         if !selected_capability_roots.is_empty() {
+             thread_extension_init.insert(selected_capability_roots);
+         }
++        // Seed the host async-notification decision for this root thread.
++        // Headless exec (and its descendants via explicit inheritance) stays
++        // unavailable; only verified persistent hosts advertise completion
++        // wakes. Children never consult a session source for this.
++        thread_extension_init.insert(AsyncNotificationSupport::for_host_session_source(
++            &listener_task_context.thread_manager.session_source(),
++        ));
+         let mut start_options = StartThreadOptions::new(config);
+         let reserved_thread_id = if start_options.config.ephemeral {
+             None
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+index ba195d8e0c..847a38d4f9 100644
+--- a/codex-rs/core/src/thread_manager.rs
++++ b/codex-rs/core/src/thread_manager.rs
+@@ -2036,6 +2036,32 @@ impl ThreadManagerState {
+             .unwrap_or_default()
+     }
+ 
++    /// Resolves async-notification support for a thread whose init seeds none.
++    ///
++    /// Children inherit their parent's stored value explicitly, so a child of
++    /// a headless parent stays `Unavailable` even though the child's own
++    /// session source is never `Exec`. A child whose parent is unknown or
++    /// unloaded fails closed to `Unavailable`. Parentless roots (including
++    /// resumes) take the host decision for this manager's session source.
++    async fn inherited_async_notification_support(
++        &self,
++        parent_thread_id: Option<ThreadId>,
++    ) -> codex_extension_api::AsyncNotificationSupport {
++        let Some(parent_thread_id) = parent_thread_id else {
++            return codex_extension_api::AsyncNotificationSupport::for_host_session_source(
++                &self.session_source,
++            );
++        };
++        self.get_thread(parent_thread_id)
++            .await
++            .map(|parent| {
++                codex_extension_api::AsyncNotificationSupport::read_from(
++                    &parent.session.services.thread_extension_data,
++                )
++            })
++            .unwrap_or(codex_extension_api::AsyncNotificationSupport::Unavailable)
++    }
++
+     /// Spawn a new thread with optional history and register it with the manager.
+     async fn spawn_thread(&self, request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+         let ThreadSpawnRequest {
+@@ -2169,6 +2195,17 @@ impl ThreadManagerState {
+                 }) => Some(*parent_thread_id),
+                 _ => None,
+             });
++        if thread_extension_init
++            .get::<codex_extension_api::AsyncNotificationSupport>()
++            .is_none()
++        {
++            thread_extension_init.insert(
++                self.inherited_async_notification_support(
++                    parent_thread_id.or(forked_from_thread_id),
++                )
++                .await,
++            );
++        }
+         // Host controllers can already be shared with live threads. Publish root settings
+         // only after registration succeeds, so a failed start cannot update their tree.
+         let initial_host_config = (self.agent_control_factory.is_some()
+diff --git a/codex-rs/core/src/thread_manager_tests.rs b/codex-rs/core/src/thread_manager_tests.rs
+index 99321ce694..7183bd07ca 100644
+--- a/codex-rs/core/src/thread_manager_tests.rs
++++ b/codex-rs/core/src/thread_manager_tests.rs
+@@ -14,6 +14,7 @@ use crate::session::tests::make_session_and_context;
+ use crate::tasks::InterruptedTurnHistoryMarker;
+ use crate::tasks::interrupted_turn_history_marker;
+ use crate::windows_sandbox::WindowsSandboxLevelExt;
++use codex_extension_api::AsyncNotificationSupport;
+ use codex_extension_api::empty_extension_registry;
+ use codex_history::InitialHistory;
+ use codex_history::ResumedHistory;
+@@ -3311,3 +3312,167 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
+         1,
+     );
+ }
++
++fn stored_async_notification_support(thread: &NewThread) -> Option<AsyncNotificationSupport> {
++    thread
++        .thread
++        .thread_extension_data()
++        .get::<AsyncNotificationSupport>()
++        .map(|support| *support)
++}
++
++fn manager_with_host_source(config: &Config, session_source: SessionSource) -> ThreadManager {
++    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
++    ThreadManager::new(
++        config,
++        Arc::clone(&auth_manager),
++        build_models_manager(config, auth_manager),
++        crate::CodexAppsToolsCache::default(),
++        session_source,
++        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
++        empty_extension_registry(),
++        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
++        /*analytics_events_client*/ None,
++        passthrough_image_store(),
++        thread_store_from_config(config, /*state_db*/ None),
++        /*agent_graph_store*/ None,
++        TEST_INSTALLATION_ID.to_string(),
++        /*attestation_provider*/ None,
++        /*external_time_provider*/ None,
++    )
++}
++
++#[tokio::test]
++async fn async_notification_roots_follow_host_session_source() {
++    let temp_dir = tempdir().expect("tempdir");
++    let mut config = test_config().await;
++    config.codex_home = temp_dir.path().join("codex-home").abs();
++    config.cwd = config.codex_home.abs();
++    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
++
++    for (source, expected) in [
++        (SessionSource::Cli, AsyncNotificationSupport::Available),
++        (SessionSource::VSCode, AsyncNotificationSupport::Available),
++        (SessionSource::Exec, AsyncNotificationSupport::Unavailable),
++        // Non-exec but unverified hosts stay unavailable: "not Exec" alone
++        // never enables notifications.
++        (SessionSource::Mcp, AsyncNotificationSupport::Unavailable),
++        (
++            SessionSource::Custom("other".to_string()),
++            AsyncNotificationSupport::Unavailable,
++        ),
++        (
++            SessionSource::Unknown,
++            AsyncNotificationSupport::Unavailable,
++        ),
++    ] {
++        let manager = manager_with_host_source(&config, source.clone());
++        let thread = manager
++            .start_thread(StartThreadOptions::new(config.clone()))
++            .await
++            .expect("root thread should start");
++        assert_eq!(
++            stored_async_notification_support(&thread),
++            Some(expected),
++            "host source {source:?} should seed {expected:?}"
++        );
++    }
++}
++
++#[tokio::test]
++async fn async_notification_explicit_init_overrides_host_source() {
++    let temp_dir = tempdir().expect("tempdir");
++    let mut config = test_config().await;
++    config.codex_home = temp_dir.path().join("codex-home").abs();
++    config.cwd = config.codex_home.abs();
++    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
++
++    let manager = manager_with_host_source(&config, SessionSource::Exec);
++    let mut options = StartThreadOptions::new(config.clone());
++    options
++        .thread_extension_init
++        .insert(AsyncNotificationSupport::Available);
++    let thread = manager
++        .start_thread(options)
++        .await
++        .expect("root thread should start");
++    assert_eq!(
++        stored_async_notification_support(&thread),
++        Some(AsyncNotificationSupport::Available),
++        "explicit host seeding should win over the manager source"
++    );
++}
++
++#[tokio::test]
++async fn async_notification_child_of_headless_parent_stays_unavailable() {
++    let temp_dir = tempdir().expect("tempdir");
++    let mut config = test_config().await;
++    config.codex_home = temp_dir.path().join("codex-home").abs();
++    config.cwd = config.codex_home.abs();
++    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
++
++    let manager = manager_with_host_source(&config, SessionSource::Exec);
++    let parent = manager
++        .start_thread(StartThreadOptions::new(config.clone()))
++        .await
++        .expect("parent thread should start");
++    assert_eq!(
++        stored_async_notification_support(&parent),
++        Some(AsyncNotificationSupport::Unavailable)
++    );
++    // The child's own session source is Internal, never Exec: deriving from
++    // "not Exec" would wrongly enable it.
++    let child = manager
++        .spawn_internal_session(
++            parent.thread_id,
++            StartThreadOptions {
++                session_source: Some(SessionSource::Internal(
++                    InternalSessionSource::MemoryConsolidation,
++                )),
++                ..StartThreadOptions::new(config.clone())
++            },
++        )
++        .await
++        .expect("child thread should start");
++    assert_eq!(
++        stored_async_notification_support(&child),
++        Some(AsyncNotificationSupport::Unavailable),
++        "a child of a headless parent should stay unavailable"
++    );
++}
++
++#[tokio::test]
++async fn async_notification_child_of_available_parent_inherits_available() {
++    let temp_dir = tempdir().expect("tempdir");
++    let mut config = test_config().await;
++    config.codex_home = temp_dir.path().join("codex-home").abs();
++    config.cwd = config.codex_home.abs();
++    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
++
++    let manager = manager_with_host_source(&config, SessionSource::VSCode);
++    let parent = manager
++        .start_thread(StartThreadOptions::new(config.clone()))
++        .await
++        .expect("parent thread should start");
++    assert_eq!(
++        stored_async_notification_support(&parent),
++        Some(AsyncNotificationSupport::Available)
++    );
++    let child = manager
++        .spawn_internal_session(
++            parent.thread_id,
++            StartThreadOptions {
++                session_source: Some(SessionSource::Internal(
++                    InternalSessionSource::MemoryConsolidation,
++                )),
++                ..StartThreadOptions::new(config.clone())
++            },
++        )
++        .await
++        .expect("child thread should start");
++    assert_eq!(
++        stored_async_notification_support(&child),
++        Some(AsyncNotificationSupport::Available),
++        "a child of an available parent should inherit availability"
++    );
++}
+diff --git a/codex-rs/core/src/tools/context.rs b/codex-rs/core/src/tools/context.rs
+index 1b02ab7abf..ba96dd7940 100644
+--- a/codex-rs/core/src/tools/context.rs
++++ b/codex-rs/core/src/tools/context.rs
+@@ -391,6 +391,13 @@ pub struct ExecCommandToolOutput {
+     /// Bytes omitted by the output collection cap before model-facing truncation.
+     pub output_omitted_bytes: Option<NonZeroUsize>,
+     pub hook_command: Option<String>,
++    /// Model-visible receipt handle acknowledging an armed completion wake.
++    ///
++    /// Set only when `notify_on_exit` was accepted and the subscription armed
++    /// (or a raced exit queued): its presence is the wake promise, and the
++    /// handle is the key for `exec_notification` read/release. Absent on every
++    /// other response, including default launches and inline results.
++    pub completion_receipt: Option<String>,
+ }
+ 
+ impl ToolOutput for ExecCommandToolOutput {
+@@ -539,6 +546,12 @@ impl ExecCommandToolOutput {
+             sections.push(format!("Process running with session ID {process_id}"));
+         }
+ 
++        if let Some(receipt) = &self.completion_receipt {
++            sections.push(format!(
++                "Completion notification armed with receipt ID {receipt}; the runtime will deliver completion when the process exits"
++            ));
++        }
++
+         if let Some(original_token_count) = self.original_token_count {
+             sections.push(format!("Original token count: {original_token_count}"));
+         }
+diff --git a/codex-rs/core/src/tools/context_tests.rs b/codex-rs/core/src/tools/context_tests.rs
+index bd0cb0c5b5..e7d0be7a4d 100644
+--- a/codex-rs/core/src/tools/context_tests.rs
++++ b/codex-rs/core/src/tools/context_tests.rs
+@@ -424,6 +424,7 @@ fn exec_command_tool_output_formats_truncated_response() {
+         original_token_count: Some(10),
+         output_omitted_bytes: None,
+         hook_command: None,
++        completion_receipt: None,
+     };
+     assert_eq!(
+         output.log_output(),
+@@ -481,6 +482,7 @@ fn exec_command_tool_output_reserves_metadata_budget_and_preserves_policy_units(
+             original_token_count: Some(123),
+             output_omitted_bytes: None,
+             hook_command: None,
++            completion_receipt: None,
+         }
+         .to_response_item("call-42", &payload);
+ 
+@@ -525,6 +527,7 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
+         original_token_count: Some(42_000),
+         output_omitted_bytes: NonZeroUsize::new(/*n*/ 123_456),
+         hook_command: None,
++        completion_receipt: None,
+     };
+     let expected_header = "Chunk ID: abc123\nWall time: 1.2500 seconds\nProcess exited with code 0\nOriginal token count: 42000\nOutput:\n";
+     assert_eq!(
+diff --git a/codex-rs/core/src/tools/handlers/mod.rs b/codex-rs/core/src/tools/handlers/mod.rs
+index eda8b66519..1ee4fc4f93 100644
+--- a/codex-rs/core/src/tools/handlers/mod.rs
++++ b/codex-rs/core/src/tools/handlers/mod.rs
+@@ -79,6 +79,7 @@ pub use test_sync::TestSyncHandler;
+ pub(crate) use tool_search::ToolSearchHandlerCache;
+ pub use unified_exec::ExecCommandHandler;
+ pub(crate) use unified_exec::ExecCommandHandlerOptions;
++pub use unified_exec::ExecNotificationHandler;
+ pub use unified_exec::WriteStdinHandler;
+ pub use view_image::ViewImageHandler;
+ pub(crate) use wait_for_environment::WaitForEnvironmentHandler;
+diff --git a/codex-rs/core/src/tools/handlers/shell_spec.rs b/codex-rs/core/src/tools/handlers/shell_spec.rs
+index 3b578bbb8e..0ac4c45eb2 100644
+--- a/codex-rs/core/src/tools/handlers/shell_spec.rs
++++ b/codex-rs/core/src/tools/handlers/shell_spec.rs
+@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
+ pub struct CommandToolOptions {
+     pub allow_login_shell: bool,
+     pub exec_permission_approvals_enabled: bool,
++    pub async_notifications_available: bool,
+ }
+ 
+ #[cfg(test)]
+@@ -21,6 +22,15 @@ pub fn create_exec_command_tool(options: CommandToolOptions) -> ToolSpec {
+     )
+ }
+ 
++/// Description suffix for `exec_command` on hosts that can promise a wake.
++///
++/// States exactly what is promised: a wake on exit only when `notify_on_exit`
++/// was accepted, and that release disarms without killing. No wait/end-turn
++/// guidance is promised here; that depends on a later pacing stage.
++fn async_notification_description_suffix() -> &'static str {
++    " When notify_on_exit is accepted, the runtime delivers completion after the process exits; use exec_notification to read the retained terminal output or release the subscription without terminating the process. A session ID alone does not promise a wake."
++}
++
+ pub(crate) fn create_exec_command_tool_with_environment_id(
+     options: CommandToolOptions,
+     include_environment_id: bool,
+@@ -62,6 +72,15 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
+             )),
+         ),
+     ]);
++    if options.async_notifications_available {
++        properties.insert(
++            "notify_on_exit".to_string(),
++            JsonSchema::boolean(Some(
++                "Request a completion wake when the process exits. The subscription is acknowledged with a receipt ID in the tool response; without that acknowledgment no wake is promised. Defaults to false."
++                    .to_string(),
++            )),
++        );
++    }
+     if include_shell_parameter {
+         properties.insert(
+             "shell".to_string(),
+@@ -92,17 +111,24 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
+         options.exec_permission_approvals_enabled,
+     ));
+ 
++    let mut description = if include_windows_shell_guidance {
++        format!(
++            "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
++            windows_shell_guidance()
++        )
++    } else {
++        "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
++            .to_string()
++    };
++    // Incapable hosts keep the base description byte-identical: no wake is
++    // promised there.
++    if options.async_notifications_available {
++        description.push_str(async_notification_description_suffix());
++    }
++
+     ToolSpec::Function(ResponsesApiTool {
+         name: "exec_command".to_string(),
+-        description: if include_windows_shell_guidance {
+-            format!(
+-                "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
+-                windows_shell_guidance()
+-            )
+-        } else {
+-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+-                .to_string()
+-        },
++        description,
+         strict: false,
+         defer_loading: None,
+         parameters: JsonSchema::object(
+@@ -158,6 +184,59 @@ pub fn create_write_stdin_tool() -> ToolSpec {
+     })
+ }
+ 
++/// Default output token budget for `exec_notification` reads.
++pub(crate) const EXEC_NOTIFICATION_READ_DEFAULT_MAX_TOKENS: usize = 2_000;
++
++/// Maximum output token budget for `exec_notification` reads.
++///
++/// Keeps every read response strictly under the 10K-token per-item bound with
++/// room for the response header.
++pub(crate) const EXEC_NOTIFICATION_READ_MAX_TOKENS: usize = 9_000;
++
++pub fn create_exec_notification_tool() -> ToolSpec {
++    let properties = BTreeMap::from([
++        (
++            "action".to_string(),
++            JsonSchema::string_enum(
++                vec![json!("read"), json!("release")],
++                Some(
++                    "read returns the retained terminal output without waiting; release disarms the completion wake without terminating the process."
++                        .to_string(),
++                ),
++            ),
++        ),
++        (
++            "receipt_id".to_string(),
++            JsonSchema::string(Some(
++                "Receipt ID acknowledged by exec_command when the notify_on_exit subscription was accepted."
++                    .to_string(),
++            )),
++        ),
++        (
++            "max_output_tokens".to_string(),
++            JsonSchema::integer(Some(
++                "Output token budget for read. Defaults to 2000 tokens; capped below 10000 tokens per response."
++                    .to_string(),
++            )),
++        ),
++    ]);
++
++    ToolSpec::Function(ResponsesApiTool {
++        name: "exec_notification".to_string(),
++        description:
++            "Reads retained terminal output for an acknowledged exec completion subscription, or releases the subscription. Releasing disarms the completion wake without terminating the process."
++                .to_string(),
++        strict: false,
++        defer_loading: None,
++        parameters: JsonSchema::object(
++            properties,
++            Some(vec!["action".to_string(), "receipt_id".to_string()]),
++            Some(false.into()),
++        ),
++        output_schema: None,
++    })
++}
++
+ pub fn create_request_permissions_tool(description: String) -> ToolSpec {
+     let properties = BTreeMap::from([
+         (
+diff --git a/codex-rs/core/src/tools/handlers/shell_spec_tests.rs b/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
+index 03a4fbae32..1a4ab3ffa0 100644
+--- a/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
++++ b/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
+@@ -18,6 +18,7 @@ fn exec_command_tool_matches_expected_spec() {
+     let tool = create_exec_command_tool(CommandToolOptions {
+         allow_login_shell: true,
+         exec_permission_approvals_enabled: false,
++        async_notifications_available: false,
+     });
+ 
+     let description = if cfg!(windows) {
+@@ -104,6 +105,7 @@ fn exec_command_tool_can_hide_shell_parameter() {
+         CommandToolOptions {
+             allow_login_shell: true,
+             exec_permission_approvals_enabled: false,
++            async_notifications_available: false,
+         },
+         /*include_environment_id*/ false,
+         /*include_shell_parameter*/ false,
+@@ -202,3 +204,92 @@ fn request_permissions_tool_includes_full_permission_schema() {
+         })
+     );
+ }
++
++fn command_options(async_notifications_available: bool) -> CommandToolOptions {
++    CommandToolOptions {
++        allow_login_shell: false,
++        exec_permission_approvals_enabled: false,
++        async_notifications_available,
++    }
++}
++
++fn spec_description(tool: &ToolSpec) -> &str {
++    match tool {
++        ToolSpec::Function(spec) => spec.description.as_str(),
++        ToolSpec::Namespace(_)
++        | ToolSpec::ToolSearch { .. }
++        | ToolSpec::WebSearch { .. }
++        | ToolSpec::Freeform(_) => panic!("expected a function spec"),
++    }
++}
++
++#[test]
++fn exec_command_schema_gates_notify_on_exit_on_host_capability() {
++    let available = create_exec_command_tool(command_options(true));
++    assert!(has_parameter(&available, "notify_on_exit"));
++    let description = spec_description(&available);
++    assert!(
++        description.contains("notify_on_exit")
++            && description.contains("without terminating the process")
++            && description.contains("A session ID alone does not promise a wake"),
++        "available description must state the wake promise exactly: {description}"
++    );
++    assert!(
++        !description.contains("end the turn"),
++        "no-wait/end-turn guidance is deferred: {description}"
++    );
++
++    let unavailable = create_exec_command_tool(command_options(false));
++    assert!(!has_parameter(&unavailable, "notify_on_exit"));
++    let base_description = if cfg!(windows) {
++        format!(
++            "Runs a command in a PTY, returning output or a session ID for ongoing interaction.{}",
++            windows_shell_guidance_description()
++        )
++    } else {
++        "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
++            .to_string()
++    };
++    assert_eq!(
++        spec_description(&unavailable),
++        base_description.as_str(),
++        "incapable hosts keep the base description with no wake promise"
++    );
++    assert!(
++        !spec_description(&unavailable).contains("notify_on_exit"),
++        "incapable hosts promise no wake"
++    );
++}
++
++#[test]
++fn exec_notification_tool_matches_expected_spec() {
++    let tool = create_exec_notification_tool();
++
++    assert!(has_parameter(&tool, "action"));
++    assert!(has_parameter(&tool, "receipt_id"));
++    assert!(has_parameter(&tool, "max_output_tokens"));
++    let description = spec_description(&tool);
++    assert!(
++        description
++            .contains("Releasing disarms the completion wake without terminating the process"),
++        "release must promise disarm-without-kill: {description}"
++    );
++
++    let parameters = serde_json::to_value(&tool)
++        .expect("tool spec should serialize")
++        .pointer("/parameters")
++        .expect("function spec should have parameters")
++        .clone();
++    assert_eq!(
++        parameters
++            .pointer("/required")
++            .expect("required should exist"),
++        &serde_json::json!(["action", "receipt_id"])
++    );
++    assert_eq!(
++        parameters
++            .pointer("/properties/action/enum")
++            .expect("action should be an enum"),
++        &serde_json::json!(["read", "release"])
++    );
++}
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec.rs b/codex-rs/core/src/tools/handlers/unified_exec.rs
+index aeac6b0178..b4b3fd8557 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec.rs
+@@ -18,10 +18,12 @@ use std::sync::Arc;
+ use crate::tools::handlers::parse_arguments;
+ 
+ mod exec_command;
++mod exec_notification;
+ mod write_stdin;
+ 
+ pub use exec_command::ExecCommandHandler;
+ pub(crate) use exec_command::ExecCommandHandlerOptions;
++pub use exec_notification::ExecNotificationHandler;
+ pub use write_stdin::WriteStdinHandler;
+ 
+ #[derive(Debug, Deserialize)]
+@@ -48,6 +50,13 @@ pub(crate) struct ExecCommandArgs {
+         deserialize_with = "codex_tools::arguments::option_usize::deserialize"
+     )]
+     max_output_tokens: Option<usize>,
++    /// Opt-in completion wake, advertised only on capable hosts.
++    ///
++    /// Defaults to false: default launches never reserve a receipt, a slot,
++    /// or a wake. Passing true where notifications are unavailable (or for
++    /// one-shot execution) is refused before execution.
++    #[serde(default)]
++    pub(crate) notify_on_exit: bool,
+     #[serde(default)]
+     sandbox_permissions: Option<SandboxPermissions>,
+     #[serde(default)]
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+index df3a7f8cfe..f46dde9501 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+@@ -30,7 +30,9 @@ use crate::unified_exec::ExecCommandRequest;
+ use crate::unified_exec::UnifiedExecContext;
+ use crate::unified_exec::UnifiedExecError;
+ use crate::unified_exec::UnifiedExecProcessManager;
++use crate::unified_exec::completion_receipt::ExecCompletionMode;
+ use crate::unified_exec::generate_chunk_id;
++use codex_extension_api::AsyncNotificationSupport;
+ use codex_features::Feature;
+ use codex_otel::SessionTelemetry;
+ use codex_otel::TOOL_CALL_UNIFIED_EXEC_METRIC;
+@@ -64,6 +66,7 @@ pub(crate) struct ExecCommandHandlerOptions {
+     pub(crate) include_environment_id: bool,
+     pub(crate) include_shell_parameter: bool,
+     pub(crate) include_windows_shell_guidance: bool,
++    pub(crate) async_notifications: AsyncNotificationSupport,
+ }
+ 
+ #[derive(Clone, Copy)]
+@@ -88,6 +91,7 @@ impl Default for ExecCommandHandler {
+                 include_environment_id: false,
+                 include_shell_parameter: true,
+                 include_windows_shell_guidance: cfg!(windows),
++                async_notifications: AsyncNotificationSupport::Unavailable,
+             },
+         }
+     }
+@@ -119,6 +123,8 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
+             CommandToolOptions {
+                 allow_login_shell: self.options.allow_login_shell,
+                 exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
++                async_notifications_available: self.options.async_notifications.is_available()
++                    && matches!(self.lifetime, ExecCommandLifetime::Interactive),
+             },
+             self.options.include_environment_id,
+             self.options.include_shell_parameter,
+@@ -249,6 +255,26 @@ impl ExecCommandHandler {
+                 "TTY execution is disabled by config; omit `tty` or set it to false.".to_string(),
+             ));
+         }
++        // Refuse an unpromiseable wake before any approval, permission, or
++        // execution work. Nothing is armed implicitly: only an explicit
++        // opt-in on a capable interactive host subscribes.
++        if args.notify_on_exit {
++            if matches!(self.lifetime, ExecCommandLifetime::OneShot) {
++                return Err(FunctionCallError::RespondToModel(
++                    "notify_on_exit is not supported for one-shot execution; resumable sessions are disabled here. Retry without notify_on_exit."
++                        .to_string(),
++                ));
++            }
++            if !AsyncNotificationSupport::read_from(&session.services.thread_extension_data)
++                .is_available()
++            {
++                return Err(FunctionCallError::RespondToModel(
++                    "notify_on_exit is not supported on this host; no completion wake can be promised. Retry without notify_on_exit."
++                        .to_string(),
++                ));
++            }
++        }
++        let notify_on_exit = args.notify_on_exit;
+         let sandbox_permissions =
+             resolve_sandbox_permissions(args.sandbox_permissions, args.justification.as_deref())?;
+         let hook_command = args.cmd.clone();
+@@ -401,6 +427,7 @@ impl ExecCommandHandler {
+                 original_token_count: None,
+                 output_omitted_bytes: None,
+                 hook_command: None,
++                completion_receipt: None,
+             }));
+         }
+ 
+@@ -436,12 +463,21 @@ impl ExecCommandHandler {
+             justification,
+             prefix_rule,
+         };
++        let completion_mode = if notify_on_exit {
++            ExecCompletionMode::NotifyOnExit
++        } else {
++            ExecCompletionMode::Default
++        };
+         let result = match completion_timeout {
+             Some(timeout) => {
+                 UnifiedExecProcessManager::exec_command_to_completion(request, &context, timeout)
+                     .await
+             }
+-            None => manager.exec_command(request, &context).await,
++            None => {
++                manager
++                    .exec_command_with_completion_mode(request, &context, completion_mode)
++                    .await
++            }
+         };
+         match result {
+             Ok(response) => Ok(boxed_tool_output(response)),
+@@ -468,8 +504,14 @@ impl ExecCommandHandler {
+                     original_token_count: Some(original_token_count),
+                     output_omitted_bytes,
+                     hook_command: Some(hook_command),
++                    completion_receipt: None,
+                 }))
+             }
++            Err(UnifiedExecError::ReceiptCapacityExceeded { capacity }) => {
++                Err(FunctionCallError::RespondToModel(format!(
++                    "completion notification capacity is full ({capacity} receipt slots in use); release an unused subscription with exec_notification, or retry without notify_on_exit."
++                )))
++            }
+             Err(err) => {
+                 let message = format!("exec_command failed: {err:?}");
+                 Err(FunctionCallError::RespondToModel(truncate_middle_chars(
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/exec_notification.rs b/codex-rs/core/src/tools/handlers/unified_exec/exec_notification.rs
+new file mode 100644
+index 0000000000..48f2d833d1
+--- /dev/null
++++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_notification.rs
+@@ -0,0 +1,265 @@
++use crate::function_tool::FunctionCallError;
++use crate::tools::context::FunctionToolOutput;
++use crate::tools::context::ToolInvocation;
++use crate::tools::context::ToolPayload;
++use crate::tools::context::boxed_tool_output;
++use crate::tools::handlers::parse_arguments;
++use crate::tools::registry::CoreToolRuntime;
++use crate::tools::registry::PostToolUsePayload;
++use crate::tools::registry::PreToolUsePayload;
++use crate::tools::registry::ToolExecutor;
++use crate::unified_exec::UnifiedExecContext;
++use crate::unified_exec::completion_receipt::CancellationReason;
++use crate::unified_exec::completion_receipt::ReceiptError;
++use crate::unified_exec::completion_receipt::ReceiptId;
++use crate::unified_exec::completion_receipt::ReceiptStatus;
++use codex_extension_api::AsyncNotificationSupport;
++use codex_tools::ToolName;
++use codex_tools::ToolSpec;
++use codex_utils_output_truncation::TruncationPolicy;
++use codex_utils_output_truncation::formatted_truncate_text;
++use serde::Deserialize;
++
++use super::super::shell_spec::EXEC_NOTIFICATION_READ_DEFAULT_MAX_TOKENS;
++use super::super::shell_spec::EXEC_NOTIFICATION_READ_MAX_TOKENS;
++use super::super::shell_spec::create_exec_notification_tool;
++
++#[derive(Debug, Deserialize)]
++struct ExecNotificationArgs {
++    action: String,
++    receipt_id: String,
++    #[serde(
++        default,
++        deserialize_with = "codex_tools::arguments::option_usize::deserialize"
++    )]
++    max_output_tokens: Option<usize>,
++}
++
++pub struct ExecNotificationHandler;
++
++impl ToolExecutor<ToolInvocation> for ExecNotificationHandler {
++    fn tool_name(&self) -> ToolName {
++        ToolName::plain("exec_notification")
++    }
++
++    fn spec(&self) -> ToolSpec {
++        create_exec_notification_tool()
++    }
++
++    fn supports_parallel_tool_calls(&self) -> bool {
++        true
++    }
++
++    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
++    where
++        ToolInvocation: 'a,
++    {
++        Box::pin(self.handle_call(invocation))
++    }
++}
++
++impl ExecNotificationHandler {
++    async fn handle_call(
++        &self,
++        invocation: ToolInvocation,
++    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
++        let ToolInvocation {
++            session,
++            step_context,
++            cancellation_token,
++            call_id,
++            payload,
++            ..
++        } = invocation;
++
++        let arguments = match payload {
++            ToolPayload::Function { arguments } => arguments,
++            _ => {
++                return Err(FunctionCallError::RespondToModel(
++                    "exec_notification handler received unsupported payload".to_string(),
++                ));
++            }
++        };
++
++        // The tool is advertised only on capable hosts; refuse outright if it
++        // is somehow invoked where no wake could have been promised.
++        if !AsyncNotificationSupport::read_from(&session.services.thread_extension_data)
++            .is_available()
++        {
++            return Err(FunctionCallError::RespondToModel(
++                "exec_notification is not supported on this host; no completion subscription could have been acknowledged here."
++                    .to_string(),
++            ));
++        }
++
++        let args: ExecNotificationArgs = parse_arguments(&arguments)?;
++        let receipt_id = ReceiptId::from_model_handle(&args.receipt_id)
++            .ok_or_else(|| FunctionCallError::RespondToModel(unknown_receipt_message()))?;
++        let context =
++            UnifiedExecContext::new(session.clone(), step_context, cancellation_token, call_id);
++        let manager = &session.services.unified_exec_manager;
++        let owner = manager
++            .notification_owner_for_receipt(receipt_id, &context)
++            .await
++            .map_err(|err| FunctionCallError::RespondToModel(receipt_error_message(err)))?;
++
++        match args.action.as_str() {
++            "read" => {
++                let budget = args
++                    .max_output_tokens
++                    .unwrap_or(EXEC_NOTIFICATION_READ_DEFAULT_MAX_TOKENS)
++                    .clamp(1, EXEC_NOTIFICATION_READ_MAX_TOKENS);
++                let snapshot = manager
++                    .read_retained_output(receipt_id, &owner)
++                    .await
++                    .map_err(|err| FunctionCallError::RespondToModel(receipt_error_message(err)))?;
++                Ok(boxed_tool_output(FunctionToolOutput::from_text(
++                    render_read_response(
++                        &args.receipt_id,
++                        &snapshot.bytes,
++                        snapshot.truncated,
++                        snapshot.omitted_bytes,
++                        budget,
++                    ),
++                    Some(true),
++                )))
++            }
++            "release" => {
++                manager
++                    .release_completion_receipt(receipt_id, &owner)
++                    .await
++                    .map_err(|err| FunctionCallError::RespondToModel(receipt_error_message(err)))?;
++                // Drop a pending wake for the disarmed subscription, if any.
++                // A later exit publishes nothing for a released receipt, so
++                // together these guarantee no wake after release.
++                session
++                    .input_queue
++                    .cancel_runtime_notification(receipt_id)
++                    .await;
++                Ok(boxed_tool_output(FunctionToolOutput::from_text(
++                    format!(
++                        "Released receipt {}; the completion wake is disarmed and the process was not terminated.",
++                        args.receipt_id.trim(),
++                    ),
++                    Some(true),
++                )))
++            }
++            action => Err(FunctionCallError::RespondToModel(format!(
++                "unknown exec_notification action \"{action}\"; use \"read\" or \"release\"."
++            ))),
++        }
++    }
++}
++
++impl CoreToolRuntime for ExecNotificationHandler {
++    fn matches_kind(&self, payload: &ToolPayload) -> bool {
++        matches!(payload, ToolPayload::Function { .. })
++    }
++
++    fn pre_tool_use_payload(&self, _invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
++        // Control-plane reads and releases act on an acknowledged
++        // subscription, not a new command, so no command review hook applies.
++        None
++    }
++
++    fn post_tool_use_payload(
++        &self,
++        _invocation: &ToolInvocation,
++        _result: &dyn crate::tools::context::ToolOutput,
++    ) -> Option<PostToolUsePayload> {
++        None
++    }
++}
++
++fn render_read_response(
++    handle: &str,
++    bytes: &[u8],
++    truncated: bool,
++    omitted_bytes: usize,
++    budget_tokens: usize,
++) -> String {
++    let text = String::from_utf8_lossy(bytes).into_owned();
++    let mut header = format!(
++        "Receipt {}: terminal output, {} bytes retained.",
++        handle.trim(),
++        bytes.len()
++    );
++    if truncated {
++        header.push_str(&format!(
++            " {omitted_bytes} bytes omitted to fit the retention cap."
++        ));
++    }
++    let output = formatted_truncate_text(&text, TruncationPolicy::Tokens(budget_tokens));
++    format!("{header}\n{output}")
++}
++
++fn unknown_receipt_message() -> String {
++    "unknown or expired exec receipt id; only receipts acknowledged on this thread can be read or released."
++        .to_string()
++}
++
++/// Maps a receipt error to the model-facing refusal for this tool.
++///
++/// Every stale state (released, cancelled, consumed, retired, never armed)
++/// is rejected; only a live binding with retained terminal output reads, and
++/// only a live or sampled binding releases.
++fn receipt_error_message(err: ReceiptError) -> String {
++    match err {
++        ReceiptError::UnknownReceipt => unknown_receipt_message(),
++        ReceiptError::ForeignOwner => {
++            "exec receipt belongs to a different thread or runtime generation and cannot be used here."
++                .to_string()
++        }
++        ReceiptError::Retired => {
++            "exec receipt output was retired to free capacity; the subscription is gone."
++                .to_string()
++        }
++        ReceiptError::AlreadyConsumed => {
++            "exec receipt was already consumed; no output remains.".to_string()
++        }
++        ReceiptError::Cancelled { reason } => match reason {
++            CancellationReason::Released => {
++                "exec receipt was already released; no subscription remains.".to_string()
++            }
++            CancellationReason::OwnerStopped
++            | CancellationReason::Shutdown
++            | CancellationReason::Interrupted => {
++                format!("exec receipt was cancelled ({reason:?}); no subscription remains.")
++            }
++        },
++        ReceiptError::InvalidTransition { actual } => match actual {
++            ReceiptStatus::Reserved | ReceiptStatus::Armed => {
++                "the process has not exited yet; read returns retained terminal output and never waits."
++                    .to_string()
++            }
++            ReceiptStatus::Queued | ReceiptStatus::LeasedToSampling { .. } => {
++                "terminal output is not retained yet; try again.".to_string()
++            }
++            ReceiptStatus::InlineResult => {
++                "the process finished during the launching call; no subscription was armed."
++                    .to_string()
++            }
++            ReceiptStatus::Sampled { .. } => {
++                "exec receipt was already consumed; no output remains.".to_string()
++            }
++            ReceiptStatus::Cancelled { .. } => {
++                "exec receipt is no longer active; no subscription remains.".to_string()
++            }
++        },
++        ReceiptError::LockPoisoned | ReceiptError::LockContended => {
++            "the completion receipt store is unavailable; try again.".to_string()
++        }
++        ReceiptError::CapacityExceeded { .. }
++        | ReceiptError::InvalidOwner
++        | ReceiptError::AlreadyLeased
++        | ReceiptError::StaleLease
++        | ReceiptError::AlreadyTerminal
++        | ReceiptError::IdGenerationFailed => {
++            format!("cannot use this exec receipt right now: {err}.")
++        }
++    }
++}
++
++#[cfg(test)]
++#[path = "exec_notification_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/exec_notification_tests.rs b/codex-rs/core/src/tools/handlers/unified_exec/exec_notification_tests.rs
+new file mode 100644
+index 0000000000..10a121b8ae
+--- /dev/null
++++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_notification_tests.rs
+@@ -0,0 +1,488 @@
++use super::*;
++use crate::session::step_context::StepContext;
++use crate::session::tests::make_session_and_context;
++use crate::tools::context::ToolCallSource;
++use crate::tools::context::ToolInvocation;
++use crate::tools::context::ToolPayload;
++use crate::tools::registry::ToolExecutor;
++use crate::turn_diff_tracker::TurnDiffTracker;
++use crate::unified_exec::UnifiedExecContext;
++use crate::unified_exec::completion_receipt::InitialResponseDecision;
++use crate::unified_exec::completion_receipt::ReceiptOwner;
++use crate::unified_exec::completion_receipt::TerminalCompletion;
++use codex_extension_api::AsyncNotificationSupport;
++use pretty_assertions::assert_eq;
++use std::sync::Arc;
++use tokio::sync::Mutex;
++
++async fn invocation_with_session(
++    call_id: &str,
++    arguments: serde_json::Value,
++) -> (ToolInvocation, Arc<crate::session::session::Session>) {
++    let (session, turn) = make_session_and_context().await;
++    let turn = Arc::new(turn);
++    let session = Arc::new(session);
++    session
++        .services
++        .thread_extension_data
++        .insert(AsyncNotificationSupport::Available);
++    let invocation = ToolInvocation {
++        session: Arc::clone(&session),
++        step_context: StepContext::for_test(Arc::clone(&turn)),
++        turn,
++        cancellation_token: tokio_util::sync::CancellationToken::new(),
++        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
++        call_id: call_id.to_string(),
++        tool_name: codex_tools::ToolName::plain("exec_notification"),
++        source: ToolCallSource::Direct,
++        payload: ToolPayload::Function {
++            arguments: arguments.to_string(),
++        },
++    };
++    (invocation, session)
++}
++
++fn launch_owner(
++    session: &Arc<crate::session::session::Session>,
++    invocation: &ToolInvocation,
++    call_id: &str,
++) -> ReceiptOwner {
++    let context = UnifiedExecContext::new(
++        Arc::clone(session),
++        Arc::clone(&invocation.step_context),
++        invocation.cancellation_token.clone(),
++        call_id.to_string(),
++    );
++    session
++        .services
++        .unified_exec_manager
++        .receipt_owner_for(&context)
++        .expect("launch owner should build")
++}
++
++/// Reserves, arms, publishes, and retains output: exactly what an opted-in
++/// launch plus a watched exit leaves behind.
++async fn exited_subscription(
++    session: &Arc<crate::session::session::Session>,
++    invocation: &ToolInvocation,
++    output: &[u8],
++    omitted_bytes: usize,
++) -> String {
++    let manager = &session.services.unified_exec_manager;
++    let owner = launch_owner(session, invocation, "launch-call");
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ 4242)
++        .await
++        .expect("reservation should succeed");
++    manager
++        .receipt_store()
++        .resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm)
++        .expect("arm should succeed");
++    manager
++        .receipt_store()
++        .publish_exit(
++            receipt_id,
++            &owner,
++            TerminalCompletion {
++                exit_code: Some(0),
++                timed_out: false,
++            },
++        )
++        .expect("publish should succeed");
++    manager
++        .watcher_receipt_hook(receipt_id, owner.clone())
++        .hooks
++        .lock()
++        .await
++        .retention
++        .insert_pending(receipt_id, owner, output.to_vec(), omitted_bytes);
++    receipt_id.model_handle()
++}
++
++/// Drives the handler on a fresh session and returns the refusal message.
++/// Only for rejections that need no stored subscription (unknown handles,
++/// malformed input).
++async fn read_rejection_text(arguments: serde_json::Value) -> String {
++    let (invocation, _) = invocation_with_session("read-call", arguments.clone()).await;
++    let Err(error) = ExecNotificationHandler.handle(invocation).await else {
++        panic!("expected a refusal for {arguments}");
++    };
++    let FunctionCallError::RespondToModel(message) = error else {
++        panic!("expected a model-facing refusal, got {error:?}");
++    };
++    message
++}
++
++#[tokio::test]
++async fn read_returns_retained_terminal_output() {
++    let (invocation, session) = invocation_with_session("read-call", serde_json::json!({})).await;
++    let handle = exited_subscription(&session, &invocation, b"hello terminal", 0).await;
++    let (invocation, _) = invocation_with_session(
++        "read-call-2",
++        serde_json::json!({ "action": "read", "receipt_id": handle }),
++    )
++    .await;
++    // Rebind to the session holding the subscription.
++    let invocation = ToolInvocation {
++        session,
++        ..invocation
++    };
++    let output = ExecNotificationHandler
++        .handle(invocation)
++        .await
++        .expect("read should succeed");
++    let text = output.log_output();
++    assert!(
++        text.contains("hello terminal"),
++        "read should return retained output: {text}"
++    );
++    assert!(
++        text.contains(&handle),
++        "read should name the receipt: {text}"
++    );
++    assert!(
++        !text.contains("truncated") && !text.contains("omitted"),
++        "untruncated output should not claim truncation: {text}"
++    );
++}
++
++#[tokio::test]
++async fn read_indicates_truncation_and_stays_under_token_bound() {
++    let (invocation, session) = invocation_with_session("read-call", serde_json::json!({})).await;
++    let output = vec![b'x'; 100_000];
++    let handle = exited_subscription(&session, &invocation, &output, 12_345).await;
++    for max_output_tokens in [None, Some(1_000_000)] {
++        let mut arguments = serde_json::json!({ "action": "read", "receipt_id": handle });
++        if let Some(max) = max_output_tokens {
++            arguments["max_output_tokens"] = serde_json::json!(max);
++        }
++        let (invocation, _) = invocation_with_session("read-call-budget", arguments).await;
++        let invocation = ToolInvocation {
++            session: Arc::clone(&session),
++            ..invocation
++        };
++        let text = ExecNotificationHandler
++            .handle(invocation)
++            .await
++            .expect("read should succeed")
++            .log_output();
++        assert!(
++            text.contains("12345 bytes omitted to fit the retention cap"),
++            "retention truncation should be indicated: {}",
++            text.lines().next().unwrap_or_default()
++        );
++        assert!(
++            text.contains("truncated output"),
++            "read truncation should be indicated"
++        );
++        assert!(
++            codex_utils_output_truncation::approx_token_count(&text) < 10_000,
++            "read response must stay under 10K tokens"
++        );
++    }
++}
++
++#[tokio::test]
++async fn read_rejects_unknown_receipt() {
++    let text = read_rejection_text(serde_json::json!({
++        "action": "read",
++        "receipt_id": "01234567-89ab-cdef-0123-456789abcdef",
++    }))
++    .await;
++    assert!(text.contains("unknown or expired"), "got: {text}");
++}
++
++#[tokio::test]
++async fn read_rejects_malformed_receipt_handle() {
++    let text = read_rejection_text(serde_json::json!({
++        "action": "read",
++        "receipt_id": "not-a-receipt",
++    }))
++    .await;
++    assert!(text.contains("unknown or expired"), "got: {text}");
++}
++
++#[tokio::test]
++async fn read_rejects_foreign_receipt() {
++    let (_, session) = invocation_with_session("read-call", serde_json::json!({})).await;
++    let manager = &session.services.unified_exec_manager;
++    let foreign_owner = ReceiptOwner::new(
++        codex_protocol::ThreadId::from_u128(0x018f_0000_0000_7000_8000_0000_0000_00c3),
++        /*runtime_generation*/ 999_999,
++        "foreign-call",
++    )
++    .expect("foreign owner should build");
++    let receipt_id = manager
++        .reserve_completion_receipt(foreign_owner, /*process_id*/ 4343)
++        .await
++        .expect("reservation should succeed");
++    let handle = receipt_id.model_handle();
++    let (invocation, _) = invocation_with_session(
++        "read-call-foreign",
++        serde_json::json!({ "action": "read", "receipt_id": handle }),
++    )
++    .await;
++    let invocation = ToolInvocation {
++        session,
++        ..invocation
++    };
++    let Err(error) = ExecNotificationHandler.handle(invocation).await else {
++        panic!("foreign receipt read should be rejected");
++    };
++    let FunctionCallError::RespondToModel(message) = error else {
++        panic!("expected a model-facing refusal, got {error:?}");
++    };
++    assert!(
++        message.contains("different thread or runtime generation"),
++        "unexpected refusal: {message}"
++    );
++}
++
++#[tokio::test]
++async fn read_rejects_stale_receipt_after_release() {
++    let (invocation, session) = invocation_with_session("setup-call", serde_json::json!({})).await;
++    let handle = exited_subscription(&session, &invocation, b"gone", 0).await;
++    let (invocation, _) = invocation_with_session(
++        "release-call",
++        serde_json::json!({ "action": "release", "receipt_id": handle }),
++    )
++    .await;
++    ExecNotificationHandler
++        .handle(ToolInvocation {
++            session: Arc::clone(&session),
++            ..invocation
++        })
++        .await
++        .expect("release should succeed");
++    let (invocation, _) = invocation_with_session(
++        "read-call-stale",
++        serde_json::json!({ "action": "read", "receipt_id": handle }),
++    )
++    .await;
++    let Err(error) = ExecNotificationHandler
++        .handle(ToolInvocation {
++            session,
++            ..invocation
++        })
++        .await
++    else {
++        panic!("read after release should be rejected");
++    };
++    let FunctionCallError::RespondToModel(message) = error else {
++        panic!("expected a model-facing refusal, got {error:?}");
++    };
++    assert!(
++        message.contains("unknown or expired"),
++        "released receipt should read as expired: {message}"
++    );
++}
++
++#[tokio::test]
++async fn read_before_exit_is_rejected_without_waiting() {
++    let (invocation, session) = invocation_with_session("setup-call", serde_json::json!({})).await;
++    let manager = &session.services.unified_exec_manager;
++    let owner = launch_owner(&session, &invocation, "launch-call");
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ 4444)
++        .await
++        .expect("reservation should succeed");
++    manager
++        .receipt_store()
++        .resolve_initial_response(receipt_id, &owner, InitialResponseDecision::Arm)
++        .expect("arm should succeed");
++    let handle = receipt_id.model_handle();
++    let (invocation, _) = invocation_with_session(
++        "read-call-early",
++        serde_json::json!({ "action": "read", "receipt_id": handle }),
++    )
++    .await;
++    let Err(error) = ExecNotificationHandler
++        .handle(ToolInvocation {
++            session,
++            ..invocation
++        })
++        .await
++    else {
++        panic!("read before exit should be rejected");
++    };
++    let FunctionCallError::RespondToModel(message) = error else {
++        panic!("expected a model-facing refusal, got {error:?}");
++    };
++    assert!(
++        message.contains("has not exited yet") && message.contains("never waits"),
++        "unexpected refusal: {message}"
++    );
++}
++
++#[tokio::test]
++async fn release_disarms_frees_slot_and_cancels_pending_wake() {
++    let (invocation, session) = invocation_with_session("setup-call", serde_json::json!({})).await;
++    let manager = &session.services.unified_exec_manager;
++    let handle = exited_subscription(&session, &invocation, b"bye", 0).await;
++    assert_eq!(
++        manager
++            .receipt_capacity_used()
++            .await
++            .expect("capacity should read"),
++        1
++    );
++    // Stage a pending wake as the watcher would, then release before it fires.
++    let owner = launch_owner(&session, &invocation, "launch-call");
++    let receipt_id = crate::unified_exec::completion_receipt::ReceiptId::from_model_handle(&handle)
++        .expect("handle should parse");
++    session
++        .input_queue
++        .enqueue_runtime_notification(
++            receipt_id,
++            owner,
++            crate::context::ExecCompletion {
++                process_id: 4242,
++                exit_code: Some(0),
++                timed_out: false,
++                failure: None,
++                retention: crate::context::ExecOutputRetention::Absent,
++            },
++        )
++        .await;
++    assert!(session.input_queue.has_pending_mailbox_items().await);
++
++    let (invocation, _) = invocation_with_session(
++        "release-call",
++        serde_json::json!({ "action": "release", "receipt_id": handle }),
++    )
++    .await;
++    let text = ExecNotificationHandler
++        .handle(ToolInvocation {
++            session: Arc::clone(&session),
++            ..invocation
++        })
++        .await
++        .expect("release should succeed")
++        .log_output();
++    assert!(
++        text.contains("disarmed") && text.contains("not terminated"),
++        "release should promise disarm-without-kill: {text}"
++    );
++    assert_eq!(
++        manager
++            .receipt_capacity_used()
++            .await
++            .expect("capacity should read"),
++        0,
++        "release should free the slot"
++    );
++    assert!(
++        !session.input_queue.has_pending_mailbox_items().await,
++        "release should cancel the pending wake"
++    );
++}
++
++#[tokio::test]
++async fn release_rejects_unknown_receipt() {
++    let (invocation, _) = invocation_with_session(
++        "release-call",
++        serde_json::json!({
++            "action": "release",
++            "receipt_id": "01234567-89ab-cdef-0123-456789abcdef",
++        }),
++    )
++    .await;
++    let Err(error) = ExecNotificationHandler.handle(invocation).await else {
++        panic!("unknown receipt release should be rejected");
++    };
++    let FunctionCallError::RespondToModel(message) = error else {
++        panic!("expected a model-facing refusal, got {error:?}");
++    };
++    assert!(message.contains("unknown or expired"), "got: {message}");
++}
++
++#[tokio::test]
++async fn unknown_action_is_rejected() {
++    let (invocation, session) = invocation_with_session("setup-call", serde_json::json!({})).await;
++    let handle = exited_subscription(&session, &invocation, b"data", 0).await;
++    let (invocation, _) = invocation_with_session(
++        "bogus-call",
++        serde_json::json!({ "action": "poll", "receipt_id": handle }),
++    )
++    .await;
++    let Err(error) = ExecNotificationHandler
++        .handle(ToolInvocation {
++            session,
++            ..invocation
++        })
++        .await
++    else {
++        panic!("unknown action should be rejected");
++    };
++    let FunctionCallError::RespondToModel(message) = error else {
++        panic!("expected a model-facing refusal, got {error:?}");
++    };
++    assert!(
++        message.contains("unknown exec_notification action"),
++        "unexpected refusal: {message}"
++    );
++}
++
++#[tokio::test]
++async fn handler_refused_on_unavailable_host() {
++    let (session, turn) = make_session_and_context().await;
++    let turn = Arc::new(turn);
++    let session = Arc::new(session);
++    // No capability marker: nothing could have been acknowledged here.
++    let invocation = ToolInvocation {
++        session,
++        step_context: StepContext::for_test(Arc::clone(&turn)),
++        turn,
++        cancellation_token: tokio_util::sync::CancellationToken::new(),
++        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
++        call_id: "notify-unavailable".to_string(),
++        tool_name: codex_tools::ToolName::plain("exec_notification"),
++        source: ToolCallSource::Direct,
++        payload: ToolPayload::Function {
++            arguments: serde_json::json!({
++                "action": "read",
++                "receipt_id": "01234567-89ab-cdef-0123-456789abcdef",
++            })
++            .to_string(),
++        },
++    };
++    let Err(error) = ExecNotificationHandler.handle(invocation).await else {
++        panic!("handler should be refused on an unavailable host");
++    };
++    let FunctionCallError::RespondToModel(message) = error else {
++        panic!("expected a model-facing refusal, got {error:?}");
++    };
++    assert!(
++        message.contains("not supported on this host"),
++        "unexpected refusal: {message}"
++    );
++}
++
++#[test]
++fn receipt_error_map_covers_stale_states() {
++    assert!(
++        receipt_error_message(ReceiptError::Retired).contains("retired"),
++        "retired output should be named"
++    );
++    assert!(
++        receipt_error_message(ReceiptError::Cancelled {
++            reason: CancellationReason::Released
++        })
++        .contains("already released"),
++        "released receipts should be named"
++    );
++    assert!(
++        receipt_error_message(ReceiptError::InvalidTransition {
++            actual: ReceiptStatus::Armed
++        })
++        .contains("has not exited yet"),
++        "armed receipts have no terminal output yet"
++    );
++    assert!(
++        receipt_error_message(ReceiptError::InvalidTransition {
++            actual: ReceiptStatus::InlineResult
++        })
++        .contains("no subscription was armed"),
++        "inline results armed nothing"
++    );
++}
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec_tests.rs b/codex-rs/core/src/tools/handlers/unified_exec_tests.rs
+index b68a230d26..a471d9a907 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec_tests.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec_tests.rs
+@@ -443,6 +443,7 @@ async fn exec_command_post_tool_use_payload_uses_output_for_noninteractive_one_s
+         original_token_count: None,
+         output_omitted_bytes: None,
+         hook_command: Some("echo three".to_string()),
++        completion_receipt: None,
+     };
+     let invocation = invocation_for_payload("exec_command", "call-43", payload).await;
+     let handler = ExecCommandHandler::default();
+@@ -474,6 +475,7 @@ async fn exec_command_post_tool_use_payload_uses_output_for_interactive_completi
+         original_token_count: None,
+         output_omitted_bytes: None,
+         hook_command: Some("echo three".to_string()),
++        completion_receipt: None,
+     };
+     let invocation = invocation_for_payload("exec_command", "call-44", payload).await;
+     let handler = ExecCommandHandler::default();
+@@ -506,6 +508,7 @@ async fn exec_command_post_tool_use_payload_skips_running_sessions() {
+         original_token_count: None,
+         output_omitted_bytes: None,
+         hook_command: Some("echo three".to_string()),
++        completion_receipt: None,
+     };
+     let invocation = invocation_for_payload("exec_command", "call-45", payload).await;
+     let handler = ExecCommandHandler::default();
+@@ -533,6 +536,7 @@ async fn write_stdin_post_tool_use_payload_uses_original_exec_call_id_and_comman
+         original_token_count: None,
+         output_omitted_bytes: None,
+         hook_command: Some("sleep 1; echo finished".to_string()),
++        completion_receipt: None,
+     };
+     let invocation = invocation_for_payload("write_stdin", "write-stdin-call", payload).await;
+     let handler = WriteStdinHandler;
+@@ -565,6 +569,7 @@ async fn write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separ
+         original_token_count: None,
+         output_omitted_bytes: None,
+         hook_command: Some("sleep 2; echo alpha".to_string()),
++        completion_receipt: None,
+     };
+     let output_b = ExecCommandToolOutput {
+         event_call_id: "exec-call-b".to_string(),
+@@ -578,6 +583,7 @@ async fn write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separ
+         original_token_count: None,
+         output_omitted_bytes: None,
+         hook_command: Some("sleep 1; echo beta".to_string()),
++        completion_receipt: None,
+     };
+     let invocation_b = invocation_for_payload("write_stdin", "write-call-b", payload.clone()).await;
+     let invocation_a = invocation_for_payload("write_stdin", "write-call-a", payload).await;
+@@ -691,3 +697,134 @@ async fn write_stdin_rejects_fractional_and_wrong_typed_integer_fields() {
+         );
+     }
+ }
++
++async fn invocation_with_session_for_payload(
++    tool_name: &str,
++    call_id: &str,
++    payload: ToolPayload,
++) -> (ToolInvocation, Arc<crate::session::session::Session>) {
++    let (session, turn) = make_session_and_context().await;
++    let turn = Arc::new(turn);
++    let session = Arc::new(session);
++    let invocation = ToolInvocation {
++        session: Arc::clone(&session),
++        step_context: StepContext::for_test(Arc::clone(&turn)),
++        turn,
++        cancellation_token: tokio_util::sync::CancellationToken::new(),
++        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
++        call_id: call_id.to_string(),
++        tool_name: codex_tools::ToolName::plain(tool_name),
++        source: ToolCallSource::Direct,
++        payload,
++    };
++    (invocation, session)
++}
++
++fn exec_handler_options(
++    async_notifications: codex_extension_api::AsyncNotificationSupport,
++) -> ExecCommandHandlerOptions {
++    ExecCommandHandlerOptions {
++        allow_login_shell: false,
++        allow_tty: true,
++        exec_permission_approvals_enabled: false,
++        include_environment_id: false,
++        include_shell_parameter: true,
++        include_windows_shell_guidance: false,
++        async_notifications,
++    }
++}
++
++#[test]
++fn exec_command_args_default_notify_on_exit_to_false() -> anyhow::Result<()> {
++    let default_args: ExecCommandArgs = parse_arguments(r#"{"cmd": "echo hi"}"#)?;
++    assert!(!default_args.notify_on_exit);
++
++    let opted_in: ExecCommandArgs =
++        parse_arguments(r#"{"cmd": "echo hi", "notify_on_exit": true}"#)?;
++    assert!(opted_in.notify_on_exit);
++    Ok(())
++}
++
++#[test]
++fn default_exec_command_spec_omits_notify_on_exit() {
++    let spec = ExecCommandHandler::default().spec();
++    let serialized = serde_json::to_value(&spec).expect("spec should serialize");
++    assert!(
++        serialized
++            .pointer("/parameters/properties/notify_on_exit")
++            .is_none(),
++        "default (unavailable) handler spec should omit notify_on_exit"
++    );
++}
++
++#[tokio::test]
++async fn notify_on_exit_refused_before_execution_on_unavailable_host() {
++    let arguments = serde_json::json!({ "cmd": "echo hi", "notify_on_exit": true }).to_string();
++    let (invocation, session) = invocation_with_session_for_payload(
++        "exec_command",
++        "notify-unavailable",
++        ToolPayload::Function { arguments },
++    )
++    .await;
++    // No capability marker seeded: the host cannot promise a wake.
++
++    let Err(error) = ExecCommandHandler::default().handle(invocation).await else {
++        panic!("notify_on_exit on an unavailable host should be refused");
++    };
++    let FunctionCallError::RespondToModel(message) = error else {
++        panic!("expected a model-facing refusal, got {error:?}");
++    };
++    assert!(
++        message.contains("notify_on_exit is not supported on this host"),
++        "unexpected refusal: {message}"
++    );
++    assert_eq!(
++        session
++            .services
++            .unified_exec_manager
++            .receipt_capacity_used()
++            .await
++            .expect("capacity should read"),
++        0,
++        "refusal must precede receipt reservation"
++    );
++}
++
++#[tokio::test]
++async fn notify_on_exit_refused_for_one_shot_handler() {
++    let arguments = serde_json::json!({ "cmd": "echo hi", "notify_on_exit": true }).to_string();
++    let (invocation, session) = invocation_with_session_for_payload(
++        "exec_command",
++        "notify-oneshot",
++        ToolPayload::Function { arguments },
++    )
++    .await;
++    session
++        .services
++        .thread_extension_data
++        .insert(codex_extension_api::AsyncNotificationSupport::Available);
++    let handler = ExecCommandHandler::one_shot(exec_handler_options(
++        codex_extension_api::AsyncNotificationSupport::Available,
++    ));
++
++    let Err(error) = handler.handle(invocation).await else {
++        panic!("notify_on_exit on a one-shot handler should be refused");
++    };
++    let FunctionCallError::RespondToModel(message) = error else {
++        panic!("expected a model-facing refusal, got {error:?}");
++    };
++    assert!(
++        message.contains("not supported for one-shot execution"),
++        "unexpected refusal: {message}"
++    );
++    assert_eq!(
++        session
++            .services
++            .unified_exec_manager
++            .receipt_capacity_used()
++            .await
++            .expect("capacity should read"),
++        0,
++        "refusal must precede receipt reservation"
++    );
++}
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index f824a0dd9e..411e1e2e93 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -13,6 +13,7 @@ use crate::tools::handlers::CurrentTimeHandler;
+ use crate::tools::handlers::DynamicToolHandler;
+ use crate::tools::handlers::ExecCommandHandler;
+ use crate::tools::handlers::ExecCommandHandlerOptions;
++use crate::tools::handlers::ExecNotificationHandler;
+ use crate::tools::handlers::GetContextRemainingHandler;
+ use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
+ use crate::tools::handlers::ListMcpResourceTemplatesHandler;
+@@ -61,6 +62,7 @@ use crate::tools::registry::ToolRegistry;
+ use crate::tools::router::ToolRouter;
+ use crate::tools::tool_namespaces_info::collect_tool_namespaces_info;
+ use codex_connectors::apps_config_from_layer_stack;
++use codex_extension_api::AsyncNotificationSupport;
+ use codex_extension_api::ExtensionData;
+ use codex_extension_api::GoalActivity;
+ use codex_features::Feature;
+@@ -112,6 +114,7 @@ struct CoreToolPlanContext<'a> {
+     turn_context: &'a TurnContext,
+     model_info: &'a ModelInfo,
+     goal_activity_present: bool,
++    async_notifications: AsyncNotificationSupport,
+     environments: &'a TurnEnvironmentSnapshot,
+     mcp: &'a codex_mcp::McpBinding,
+     tool_suggest_candidates: Option<&'a crate::tools::router::ToolSuggestCandidates>,
+@@ -147,6 +150,9 @@ pub(crate) fn build_tool_router(
+             .thread_extension_data
+             .get::<GoalActivity>()
+             .is_some(),
++        async_notifications: AsyncNotificationSupport::read_from(
++            &session.services.thread_extension_data,
++        ),
+         environments,
+         mcp,
+         tool_suggest_candidates,
+@@ -293,6 +299,7 @@ pub(crate) fn build_core_tool_registry(
+         turn_context,
+         model_info,
+         goal_activity_present: false,
++        async_notifications: AsyncNotificationSupport::Unavailable,
+         environments,
+         mcp,
+         tool_suggest_candidates,
+@@ -1112,10 +1119,17 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
+             context.environments,
+         ),
+         include_windows_shell_guidance: should_include_windows_shell_guidance(context.environments),
++        async_notifications: context.async_notifications,
+     };
+     if features.enabled(Feature::UnifiedExec) {
+         registry.add(ExecCommandHandler::new(options));
+         registry.add(WriteStdinHandler);
++        // The notification control tool exists only where the host can
++        // promise a wake; incapable hosts neither advertise it nor accept
++        // notify_on_exit.
++        if context.async_notifications.is_available() {
++            registry.add(ExecNotificationHandler);
++        }
+     } else {
+         // Managed requirements are the only configuration path that can keep
+         // unified exec disabled. Preserve command execution without exposing a
+diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
+index 1518558409..2c1514c52e 100644
+--- a/codex-rs/core/src/tools/spec_plan_tests.rs
++++ b/codex-rs/core/src/tools/spec_plan_tests.rs
+@@ -2,6 +2,7 @@ use crate::session::tests::update_turn_settings_for_test;
+ use std::collections::BTreeMap;
+ use std::sync::Arc;
+ 
++use codex_extension_api::AsyncNotificationSupport;
+ use codex_features::Feature;
+ use codex_login::AuthManager;
+ use codex_login::CodexAuth;
+@@ -3409,3 +3410,80 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
+     bedrock_with_standalone_web_search.assert_visible_contains(&["web_search"]);
+     bedrock_with_standalone_web_search.assert_visible_lacks(&["web"]);
+ }
++
++fn exec_command_spec_has_notify_on_exit(router: &ToolRouter) -> bool {
++    router
++        .model_visible_specs()
++        .iter()
++        .find(|spec| spec.name() == "exec_command")
++        .and_then(|spec| match spec {
++            ToolSpec::Function(spec) => spec
++                .parameters
++                .properties
++                .as_ref()
++                .map(|properties| properties.contains_key("notify_on_exit")),
++            ToolSpec::Namespace(_)
++            | ToolSpec::ToolSearch { .. }
++            | ToolSpec::WebSearch { .. }
++            | ToolSpec::Freeform(_) => None,
++        })
++        .unwrap_or(false)
++}
++
++async fn visible_tool_names_for_support(
++    support: Option<AsyncNotificationSupport>,
++) -> (Vec<String>, bool) {
++    let (session, turn) = make_session_and_context().await;
++    if let Some(support) = support {
++        session.services.thread_extension_data.insert(support);
++    }
++    let turn = Arc::new(turn);
++    let step_context = StepContext::for_test(Arc::clone(&turn));
++    let router = super::build_tool_router(
++        &session,
++        step_context.turn.as_ref(),
++        &step_context.settings.model_info,
++        &step_context.environments,
++        &step_context.mcp,
++        /*apps_enabled*/ false,
++        &turn.extension_data,
++        /*tool_suggest_candidates*/ None,
++    )
++    .expect("tool router should build");
++    let names = router
++        .model_visible_specs()
++        .iter()
++        .map(|spec| spec.name().to_string())
++        .collect::<Vec<_>>();
++    let has_notify_on_exit = exec_command_spec_has_notify_on_exit(&router);
++    (names, has_notify_on_exit)
++}
++
++#[tokio::test]
++async fn available_host_lists_exec_notification_and_notify_on_exit() {
++    let (names, has_notify_on_exit) =
++        visible_tool_names_for_support(Some(AsyncNotificationSupport::Available)).await;
++    assert!(
++        names.iter().any(|name| name == "exec_notification"),
++        "available host should list exec_notification in {names:?}"
++    );
++    assert!(
++        has_notify_on_exit,
++        "available host exec_command schema should include notify_on_exit"
++    );
++}
++
++#[tokio::test]
++async fn unavailable_host_hides_exec_notification_and_notify_on_exit() {
++    for support in [None, Some(AsyncNotificationSupport::Unavailable)] {
++        let (names, has_notify_on_exit) = visible_tool_names_for_support(support).await;
++        assert!(
++            !names.iter().any(|name| name == "exec_notification"),
++            "unavailable host should not list exec_notification in {names:?} (support: {support:?})"
++        );
++        assert!(
++            !has_notify_on_exit,
++            "unavailable host exec_command schema should omit notify_on_exit (support: {support:?})"
++        );
++    }
++}
+diff --git a/codex-rs/core/src/unified_exec/async_watcher.rs b/codex-rs/core/src/unified_exec/async_watcher.rs
+index 7434ab627e..d24b4766e2 100644
+--- a/codex-rs/core/src/unified_exec/async_watcher.rs
++++ b/codex-rs/core/src/unified_exec/async_watcher.rs
+@@ -10,6 +10,7 @@ use tokio::time::Sleep;
+ use super::ExitWatcherReceiptHook;
+ use super::SharedPluginMetricsSidecar;
+ use super::UnifiedExecContext;
++use super::completion_receipt::ExitPublicationOutcome;
+ use super::completion_receipt::TerminalCompletion;
+ use super::process::OutputBuffers;
+ use super::process::OutputHandles;
+@@ -206,11 +207,15 @@ pub(crate) fn spawn_exit_watcher(
+                     timed_out: process.timed_out(),
+                 },
+             };
+-            if hook
++            let publication = hook
+                 .store
+-                .publish_exit(hook.receipt_id, &hook.owner, completion)
+-                .is_ok()
+-            {
++                .publish_exit(hook.receipt_id, &hook.owner, completion);
++            // A retained exit only feeds the arm/inline rendezvous: the arm
++            // path enqueues the wake when it observes the raced exit, and the
++            // inline path drops this retention with the slot. Only a queued
++            // exit earns a mailbox entry here.
++            let queue_wake = matches!(publication, Ok(ExitPublicationOutcome::Queued));
++            if publication.is_ok() {
+                 let (transcript, omitted_bytes) = {
+                     let guard = output_buffer.lock().await;
+                     (
+@@ -224,6 +229,20 @@ pub(crate) fn spawn_exit_watcher(
+                     transcript,
+                     omitted_bytes,
+                 );
++                if queue_wake {
++                    session_ref
++                        .services
++                        .unified_exec_manager
++                        .enqueue_published_completion(
++                            &session_ref,
++                            hook.receipt_id,
++                            &hook.owner,
++                            completion,
++                            process_id,
++                            failure_message.clone(),
++                        )
++                        .await;
++                }
+             }
+         }
+ 
+diff --git a/codex-rs/core/src/unified_exec/completion_receipt.rs b/codex-rs/core/src/unified_exec/completion_receipt.rs
+index 1e79286942..22bac2ea72 100644
+--- a/codex-rs/core/src/unified_exec/completion_receipt.rs
++++ b/codex-rs/core/src/unified_exec/completion_receipt.rs
+@@ -50,6 +50,16 @@ impl ReceiptOwner {
+             call_id: call_id.into_boxed_str(),
+         })
+     }
++
++    /// Owning thread for tool-path ownership checks.
++    pub(crate) fn thread_id(&self) -> ThreadId {
++        self.thread_id
++    }
++
++    /// Owning runtime generation for tool-path ownership checks.
++    pub(crate) fn runtime_generation(&self) -> u64 {
++        self.runtime_generation
++    }
+ }
+ 
+ impl Debug for ReceiptOwner {
+@@ -72,11 +82,20 @@ impl ReceiptId {
+     /// Model-visible handle for this receipt: the hyphenated lowercase UUID.
+     ///
+     /// [`Debug`] stays opaque so logs never leak handles; use this only for
+-    /// model-visible context. The format is stable: a later story parses it
+-    /// back for retained-output reads.
++    /// model-visible context. The format is stable: `exec_notification`
++    /// parses it back with [`ReceiptId::from_model_handle`].
+     pub(crate) fn model_handle(&self) -> String {
+         self.0.hyphenated().to_string()
+     }
++
++    /// Parses a model-supplied handle back into a receipt id.
++    ///
++    /// Surrounding whitespace is tolerated; anything that is not a UUID is
++    /// `None` and the caller rejects it as an unknown receipt. A parsed id is
++    /// still only a lookup key: ownership is verified separately.
++    pub(crate) fn from_model_handle(handle: &str) -> Option<Self> {
++        Uuid::parse_str(handle.trim()).ok().map(Self)
++    }
+ }
+ 
+ /// The finalized process outcome retained by the receipt state machine.
+@@ -114,7 +133,7 @@ pub(crate) enum InitialResponseDecision {
+ pub(crate) enum InitialResponseOutcome {
+     InlineResult(TerminalCompletion),
+     Armed,
+-    Queued,
++    Queued(TerminalCompletion),
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -479,7 +498,7 @@ impl CompletionReceiptStore {
+             Action::Queued(completion) => {
+                 if let Some(record) = state.active.get_mut(&receipt_id) {
+                     record.phase = ReceiptPhase::Queued(completion);
+-                    InitialResponseOutcome::Queued
++                    InitialResponseOutcome::Queued(completion)
+                 } else {
+                     return Err(ReceiptError::UnknownReceipt);
+                 }
+diff --git a/codex-rs/core/src/unified_exec/completion_receipt_tests.rs b/codex-rs/core/src/unified_exec/completion_receipt_tests.rs
+index f0ff5ba93f..99a630a3c0 100644
+--- a/codex-rs/core/src/unified_exec/completion_receipt_tests.rs
++++ b/codex-rs/core/src/unified_exec/completion_receipt_tests.rs
+@@ -12,6 +12,7 @@ use super::InitialResponseDecision;
+ use super::InitialResponseOutcome;
+ use super::MAX_COMPLETION_RECEIPTS;
+ use super::ReceiptError;
++use super::ReceiptId;
+ use super::ReceiptOwner;
+ use super::ReceiptStatus;
+ use super::SamplingSource;
+@@ -193,7 +194,7 @@ fn completion_receipt_exit_and_initial_response_are_linearized_in_both_orders()
+             &early_armed_owner,
+             InitialResponseDecision::Arm,
+         ),
+-        Ok(InitialResponseOutcome::Queued)
++        Ok(InitialResponseOutcome::Queued(completion(Some(27))))
+     );
+     let lease = early_armed_store
+         .lease_for_sampling(
+@@ -921,7 +922,7 @@ fn completion_receipt_duplicate_exit_while_reserved_preserves_first_completion()
+             &queued_owner,
+             InitialResponseDecision::Arm,
+         ),
+-        Ok(InitialResponseOutcome::Queued)
++        Ok(InitialResponseOutcome::Queued(first_queued_completion))
+     );
+     let lease = queued_store
+         .lease_for_sampling(
+@@ -1296,3 +1297,19 @@ fn completion_receipt_poisoned_lock_returns_a_structured_error_after_panic() {
+         Err(ReceiptError::LockPoisoned)
+     );
+ }
++
++#[test]
++fn model_handle_round_trips_and_rejects_non_uuids() {
++    let store = CompletionReceiptStore::default();
++    let owner = receipt_owner(1);
++    let receipt_id = store.reserve(owner).expect("reservation should succeed");
++    let handle = receipt_id.model_handle();
++    assert_eq!(ReceiptId::from_model_handle(&handle), Some(receipt_id));
++    assert_eq!(
++        ReceiptId::from_model_handle(&format!("  {handle}\n")),
++        Some(receipt_id),
++        "surrounding whitespace should be tolerated"
++    );
++    assert_eq!(ReceiptId::from_model_handle("not-a-receipt"), None);
++    assert_eq!(ReceiptId::from_model_handle(""), None);
++}
+diff --git a/codex-rs/core/src/unified_exec/mod_tests.rs b/codex-rs/core/src/unified_exec/mod_tests.rs
+index 6c09065f36..c769bdc9bb 100644
+--- a/codex-rs/core/src/unified_exec/mod_tests.rs
++++ b/codex-rs/core/src/unified_exec/mod_tests.rs
+@@ -215,6 +215,7 @@ async fn exec_command_with_tty(
+         original_token_count: Some(original_token_count),
+         output_omitted_bytes,
+         hook_command: Some(cmd.to_string()),
++        completion_receipt: None,
+     })
+ }
+ 
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+index d16450411d..34c90cc2a3 100644
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -64,6 +64,7 @@ use crate::unified_exec::clamp_yield_time;
+ use crate::unified_exec::completion_receipt::CancellationReason;
+ use crate::unified_exec::completion_receipt::ExecCompletionMode;
+ use crate::unified_exec::completion_receipt::InitialResponseDecision;
++use crate::unified_exec::completion_receipt::InitialResponseOutcome;
+ use crate::unified_exec::completion_receipt::ReceiptError;
+ use crate::unified_exec::completion_receipt::TerminalCompletion;
+ use crate::unified_exec::generate_chunk_id;
+@@ -514,13 +515,14 @@ impl UnifiedExecProcessManager {
+             outcome = tracing::field::Empty,
+         )
+     )]
+-    pub(crate) async fn exec_command(
++    pub(crate) async fn exec_command_with_completion_mode(
+         &self,
+         request: ExecCommandRequest,
+         context: &UnifiedExecContext,
++        completion_mode: ExecCompletionMode,
+     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+         let result = self
+-            .exec_command_with_completion_mode(request, context, ExecCompletionMode::Default)
++            .exec_command_inner(request, context, /*completion*/ None, completion_mode)
+             .await;
+         let outcome = match &result {
+             Ok(output) if output.process_id.is_some() => "yielded",
+@@ -532,16 +534,6 @@ impl UnifiedExecProcessManager {
+         result
+     }
+ 
+-    pub(crate) async fn exec_command_with_completion_mode(
+-        &self,
+-        request: ExecCommandRequest,
+-        context: &UnifiedExecContext,
+-        completion_mode: ExecCompletionMode,
+-    ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+-        self.exec_command_inner(request, context, /*completion*/ None, completion_mode)
+-            .await
+-    }
+-
+     pub(super) async fn exec_command_inner(
+         &self,
+         request: ExecCommandRequest,
+@@ -799,6 +791,10 @@ impl UnifiedExecProcessManager {
+             return Err(UnifiedExecError::process_failed(message));
+         }
+         let process_id = request.process_id;
++        // Model-visible receipt handle when the opt-in subscription armed.
++        // Every other path settles inline or fails before arming, so no wake
++        // is acknowledged there.
++        let mut armed_receipt: Option<String> = None;
+         let (response_process_id, exit_code) = if process_started_alive {
+             match self.refresh_process_state(process_id).await {
+                 ProcessStatus::Alive {
+@@ -809,12 +805,31 @@ impl UnifiedExecProcessManager {
+                     if let Some((receipt_id, owner)) = opted_in_receipt.as_ref() {
+                         // Arm the subscription; a concurrent exit publication
+                         // already queued the completion and is equally
+-                        // exactly-once.
+-                        let _ = self.receipt_store.resolve_initial_response(
++                        // exactly-once. A queued exit raced arming: retention
++                        // was already inserted by the watcher, so only the
++                        // mailbox wake is still missing here.
++                        match self.receipt_store.resolve_initial_response(
+                             *receipt_id,
+                             owner,
+                             InitialResponseDecision::Arm,
+-                        );
++                        ) {
++                            Ok(InitialResponseOutcome::Armed) => {
++                                armed_receipt = Some(receipt_id.model_handle());
++                            }
++                            Ok(InitialResponseOutcome::Queued(completion)) => {
++                                armed_receipt = Some(receipt_id.model_handle());
++                                self.enqueue_published_completion(
++                                    &context.session,
++                                    *receipt_id,
++                                    owner,
++                                    completion,
++                                    process_id,
++                                    process.failure_message(),
++                                )
++                                .await;
++                            }
++                            Ok(InitialResponseOutcome::InlineResult(_)) | Err(_) => {}
++                        }
+                     }
+                     (Some(process_id), exit_code)
+                 }
+@@ -983,6 +998,7 @@ impl UnifiedExecProcessManager {
+             original_token_count: Some(original_token_count),
+             output_omitted_bytes,
+             hook_command: Some(request.hook_command.clone()),
++            completion_receipt: armed_receipt,
+         };
+ 
+         Ok(response)
+@@ -1254,6 +1270,7 @@ impl UnifiedExecProcessManager {
+             original_token_count: Some(original_token_count),
+             output_omitted_bytes,
+             hook_command: Some(hook_command),
++            completion_receipt: None,
+         };
+ 
+         let should_emit_interaction = !request.input.is_empty() || response.process_id.is_some();
+diff --git a/codex-rs/core/src/unified_exec/receipt_hooks.rs b/codex-rs/core/src/unified_exec/receipt_hooks.rs
+index 88842c68db..05ada7d024 100644
+--- a/codex-rs/core/src/unified_exec/receipt_hooks.rs
++++ b/codex-rs/core/src/unified_exec/receipt_hooks.rs
+@@ -33,12 +33,32 @@ use super::completion_receipt::TerminalCompletion;
+ use super::receipt_output::RetainedOutputSnapshot;
+ use super::receipt_output::RetentionLookup;
+ use super::receipt_output::RetentionState;
++use crate::context::ExecCompletion;
++use crate::context::ExecOutputRetention;
++use crate::session::session::Session;
+ 
+ pub(crate) fn next_receipt_generation() -> u64 {
+     static NEXT_RECEIPT_GENERATION: AtomicU64 = AtomicU64::new(1);
+     NEXT_RECEIPT_GENERATION.fetch_add(1, Ordering::Relaxed)
+ }
+ 
++/// Maximum failure detail stored on a mailbox completion entry.
++///
++/// The wake fragment truncates the whole payload to fit its own cap; this
++/// bound keeps the transient entry small regardless of the raw message.
++const MAX_COMPLETION_FAILURE_BYTES: usize = 512;
++
++fn truncate_failure_detail(message: String) -> String {
++    if message.len() <= MAX_COMPLETION_FAILURE_BYTES {
++        return message;
++    }
++    let mut end = MAX_COMPLETION_FAILURE_BYTES.min(message.len());
++    while end > 0 && !message.is_char_boundary(end) {
++        end -= 1;
++    }
++    format!("{}...", message[..end].trim_end())
++}
++
+ struct ReceiptBinding {
+     owner: ReceiptOwner,
+     process_id: Option<i32>,
+@@ -102,6 +122,19 @@ impl ReceiptHooksState {
+         Some((receipt_id, binding.owner.clone()))
+     }
+ 
++    /// Returns the launch owner bound to `receipt_id`, if the binding survives.
++    ///
++    /// Bindings are removed on inline settle, cancel, and release, so a live
++    /// (or sampled, still-readable) receipt resolves here while a
++    /// released/cancelled/inline receipt does not. Retention alone never
++    /// resolves: a release racing the exit watcher could otherwise resurrect
++    /// readable output for a disarmed subscription.
++    fn owner_for_receipt(&self, receipt_id: ReceiptId) -> Option<ReceiptOwner> {
++        self.bindings
++            .get(&receipt_id)
++            .map(|binding| binding.owner.clone())
++    }
++
+     fn binding_owner_mismatch(&self, receipt_id: ReceiptId, owner: &ReceiptOwner) -> bool {
+         self.bindings
+             .get(&receipt_id)
+@@ -268,6 +301,99 @@ impl UnifiedExecProcessManager {
+         }
+     }
+ 
++    /// Resolves the launch owner for a tool-supplied receipt id.
++    ///
++    /// `exec_notification` calls arrive under a different call id than the
++    /// launching `exec_command`, so the tool cannot rebuild the owner from its
++    /// own context: the stored launch owner is resolved from the binding and
++    /// only its thread and runtime generation are verified against the caller.
++    /// A receipt bound to another thread or generation is foreign; a receipt
++    /// with no surviving binding (unknown, released, cancelled, or inline
++    /// settled) is unknown.
++    pub(crate) async fn notification_owner_for_receipt(
++        &self,
++        receipt_id: ReceiptId,
++        context: &UnifiedExecContext,
++    ) -> Result<ReceiptOwner, ReceiptError> {
++        let owner = self
++            .receipt_hooks
++            .lock()
++            .await
++            .owner_for_receipt(receipt_id)
++            .ok_or(ReceiptError::UnknownReceipt)?;
++        if owner.thread_id() != context.session.thread_id
++            || owner.runtime_generation() != self.receipt_generation
++        {
++            return Err(ReceiptError::ForeignOwner);
++        }
++        Ok(owner)
++    }
++
++    /// Enqueues a freshly published exit for an idle wake, then wakes.
++    ///
++    /// Called by the exit watcher on `Armed -> Queued` publication and by the
++    /// initial-response arm when an exit raced arming (retention was already
++    /// inserted by the watcher in both cases). The post-enqueue liveness
++    /// recheck below is the single load-bearing guard: a pre-enqueue check
++    /// cannot close the race (a release can land between the check and the
++    /// enqueue across the await), so a receipt that is no longer live
++    /// `Queued` at recheck is cleaned up instead of skipped up front. The
++    /// cleanup drops ghost retention and cancels the just-enqueued entry, so
++    /// a disarmed receipt leaves no surviving mailbox entry, no retained
++    /// output, and no wake.
++    pub(crate) async fn enqueue_published_completion(
++        &self,
++        session: &Arc<Session>,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++        completion: TerminalCompletion,
++        process_id: i32,
++        failure: Option<String>,
++    ) {
++        let retention = self
++            .receipt_hooks
++            .lock()
++            .await
++            .retention
++            .retained_sizes(receipt_id, owner)
++            .map_or(ExecOutputRetention::Absent, |(bytes, omitted_bytes)| {
++                ExecOutputRetention::Retained {
++                    bytes,
++                    omitted_bytes,
++                }
++            });
++        session
++            .input_queue
++            .enqueue_runtime_notification(
++                receipt_id,
++                owner.clone(),
++                ExecCompletion {
++                    process_id,
++                    exit_code: completion.exit_code,
++                    timed_out: completion.timed_out,
++                    failure: failure.map(truncate_failure_detail),
++                    retention,
++                },
++            )
++            .await;
++        if !self.is_live_queued_receipt(receipt_id, owner) {
++            self.receipt_hooks.lock().await.retention.drop(receipt_id);
++            session
++                .input_queue
++                .cancel_runtime_notification(receipt_id)
++                .await;
++            return;
++        }
++        session.maybe_start_turn_for_pending_work().await;
++    }
++
++    fn is_live_queued_receipt(&self, receipt_id: ReceiptId, owner: &ReceiptOwner) -> bool {
++        matches!(
++            self.receipt_store.status(receipt_id, owner),
++            Ok(ReceiptStatus::Queued)
++        )
++    }
++
+     /// Reads retained output by receipt id for the matching owner.
+     pub(crate) async fn read_retained_output(
+         &self,
+diff --git a/codex-rs/core/src/unified_exec/receipt_hooks_tests.rs b/codex-rs/core/src/unified_exec/receipt_hooks_tests.rs
+index 7d30c82bca..8a720d2355 100644
+--- a/codex-rs/core/src/unified_exec/receipt_hooks_tests.rs
++++ b/codex-rs/core/src/unified_exec/receipt_hooks_tests.rs
+@@ -1673,3 +1673,434 @@ async fn default_launches_reserve_no_receipts() -> anyhow::Result<()> {
+     }
+     Ok(())
+ }
++
++#[tokio::test]
++async fn notification_owner_resolves_launch_owner_across_tool_calls() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let launch = test_context(&session, &turn, "launch-call");
++    let owner = manager.receipt_owner_for(&launch)?;
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ 5001)
++        .await?;
++
++    // A later exec_notification call carries a different call id; only the
++    // thread and runtime generation are verified against the caller.
++    let tool_call = test_context(&session, &turn, "exec-notification-call");
++    assert_eq!(
++        manager
++            .notification_owner_for_receipt(receipt_id, &tool_call)
++            .await?,
++        owner
++    );
++
++    // Unknown: an id reserved on a separate store.
++    let separate = CompletionReceiptStore::default();
++    let unknown_id = separate.reserve(owner.clone())?;
++    assert_eq!(
++        manager
++            .notification_owner_for_receipt(unknown_id, &tool_call)
++            .await,
++        Err(ReceiptError::UnknownReceipt)
++    );
++
++    // Foreign: same store, different thread, generation, or (with a
++    // generation mismatch) call.
++    let other_manager = UnifiedExecProcessManager::default();
++    for (index, foreign_owner) in foreign_receipt_owners(
++        session.thread_id,
++        other_manager.receipt_generation,
++        "launch-call",
++    )
++    .into_iter()
++    .enumerate()
++    {
++        let foreign_id = manager
++            .reserve_completion_receipt(foreign_owner, /*process_id*/ -(5100 + index as i32))
++            .await?;
++        assert_eq!(
++            manager
++                .notification_owner_for_receipt(foreign_id, &tool_call)
++                .await,
++            Err(ReceiptError::ForeignOwner)
++        );
++    }
++    Ok(())
++}
++
++#[tokio::test]
++async fn enqueue_published_completion_enqueues_live_queued_receipt() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let context = test_context(&session, &turn, "launch-call");
++    let owner = manager.receipt_owner_for(&context)?;
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ 5201)
++        .await?;
++    assert_eq!(
++        manager.receipt_store().resolve_initial_response(
++            receipt_id,
++            &owner,
++            InitialResponseDecision::Arm,
++        ),
++        Ok(InitialResponseOutcome::Armed)
++    );
++    let completion = TerminalCompletion {
++        exit_code: Some(3),
++        timed_out: false,
++    };
++    manager
++        .receipt_store()
++        .publish_exit(receipt_id, &owner, completion)?;
++    manager
++        .watcher_receipt_hook(receipt_id, owner.clone())
++        .hooks
++        .lock()
++        .await
++        .retention
++        .insert_pending(
++            receipt_id,
++            owner.clone(),
++            b"kept".to_vec(),
++            /*omitted_bytes*/ 0,
++        );
++
++    // Suppress the idle wake: an active turn makes the wake attempt a no-op,
++    // so this test observes the enqueue decision deterministically.
++    *session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
++    manager
++        .enqueue_published_completion(
++            &session,
++            receipt_id,
++            &owner,
++            completion,
++            /*process_id*/ 5201,
++            Some("boom".to_string()),
++        )
++        .await;
++    *session.active_turn.lock().await = None;
++
++    assert!(session.input_queue.has_pending_mailbox_items().await);
++    let leases = session.input_queue.lease_runtime_notifications().await;
++    assert_eq!(leases.len(), 1);
++    assert_eq!(leases[0].receipt_id(), receipt_id);
++    assert_eq!(leases[0].completion().process_id, 5201);
++    assert_eq!(leases[0].completion().exit_code, Some(3));
++    assert_eq!(leases[0].completion().failure.as_deref(), Some("boom"));
++    assert!(
++        manager
++            .read_retained_output(receipt_id, &owner)
++            .await
++            .is_ok(),
++        "enqueue should keep retained output"
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn enqueue_published_completion_skips_disarmed_receipt() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let context = test_context(&session, &turn, "launch-call");
++    let owner = manager.receipt_owner_for(&context)?;
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ 5301)
++        .await?;
++    manager.receipt_store().resolve_initial_response(
++        receipt_id,
++        &owner,
++        InitialResponseDecision::Arm,
++    )?;
++    manager.receipt_store().publish_exit(
++        receipt_id,
++        &owner,
++        TerminalCompletion {
++            exit_code: Some(0),
++            timed_out: false,
++        },
++    )?;
++    manager
++        .watcher_receipt_hook(receipt_id, owner.clone())
++        .hooks
++        .lock()
++        .await
++        .retention
++        .insert_pending(
++            receipt_id,
++            owner.clone(),
++            b"kept".to_vec(),
++            /*omitted_bytes*/ 0,
++        );
++    manager
++        .release_completion_receipt(receipt_id, &owner)
++        .await?;
++
++    // No active-turn guard needed: a disarmed receipt earns no wake attempt.
++    manager
++        .enqueue_published_completion(
++            &session,
++            receipt_id,
++            &owner,
++            TerminalCompletion {
++                exit_code: Some(0),
++                timed_out: false,
++            },
++            /*process_id*/ 5301,
++            None,
++        )
++        .await;
++
++    assert!(
++        !session.input_queue.has_pending_mailbox_items().await,
++        "disarmed receipt should earn no mailbox entry"
++    );
++    assert_eq!(
++        manager.read_retained_output(receipt_id, &owner).await,
++        Err(ReceiptError::Cancelled {
++            reason: CancellationReason::Released
++        })
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn enqueue_published_completion_drops_ghost_retention() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let context = test_context(&session, &turn, "launch-call");
++    let owner = manager.receipt_owner_for(&context)?;
++    let receipt_id = manager
++        .reserve_completion_receipt(owner.clone(), /*process_id*/ 5401)
++        .await?;
++    manager.receipt_store().resolve_initial_response(
++        receipt_id,
++        &owner,
++        InitialResponseDecision::Arm,
++    )?;
++    manager.receipt_store().publish_exit(
++        receipt_id,
++        &owner,
++        TerminalCompletion {
++            exit_code: Some(0),
++            timed_out: false,
++        },
++    )?;
++    // Simulate a release racing the watcher insert: the store is cancelled
++    // but retention was inserted afterwards anyway.
++    manager
++        .receipt_store()
++        .cancel(receipt_id, &owner, CancellationReason::Released)?;
++    manager
++        .watcher_receipt_hook(receipt_id, owner.clone())
++        .hooks
++        .lock()
++        .await
++        .retention
++        .insert_pending(
++            receipt_id,
++            owner.clone(),
++            b"ghost".to_vec(),
++            /*omitted_bytes*/ 0,
++        );
++
++    manager
++        .enqueue_published_completion(
++            &session,
++            receipt_id,
++            &owner,
++            TerminalCompletion {
++                exit_code: Some(0),
++                timed_out: false,
++            },
++            /*process_id*/ 5401,
++            None,
++        )
++        .await;
++
++    assert!(
++        !session.input_queue.has_pending_mailbox_items().await,
++        "disarmed receipt should earn no mailbox entry"
++    );
++    assert_eq!(
++        manager
++            .receipt_hooks
++            .lock()
++            .await
++            .retention
++            .lookup(receipt_id, &owner),
++        crate::unified_exec::receipt_output::RetentionLookup::Absent,
++        "ghost retention should be dropped"
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn default_launch_acknowledges_no_receipt() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let output = exec_command_for_hooks(
++        &session,
++        &turn,
++        "call-default-no-receipt",
++        "sleep 5",
++        /*yield_time_ms*/ 250,
++        ExecCompletionMode::Default,
++    )
++    .await?;
++    let process_id = output.process_id.expect("default launch should yield");
++    assert_eq!(
++        output.completion_receipt, None,
++        "default launch should acknowledge no receipt"
++    );
++    assert!(
++        manager.receipt_for_process(process_id).await.is_none(),
++        "default launch should bind no receipt"
++    );
++    assert_eq!(manager.receipt_capacity_used().await?, 0);
++    assert!(manager.terminate_process(process_id).await);
++    Ok(())
++}
++
++#[tokio::test]
++async fn opted_in_launch_arms_and_release_silences_later_exit() -> anyhow::Result<()> {
++    let (session, turn, rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    let output = exec_command_for_hooks(
++        &session,
++        &turn,
++        "call-opted-in",
++        "sleep 30",
++        /*yield_time_ms*/ 250,
++        ExecCompletionMode::NotifyOnExit,
++    )
++    .await?;
++    let process_id = output.process_id.expect("opted-in launch should yield");
++    let handle = output
++        .completion_receipt
++        .clone()
++        .expect("opted-in yield should acknowledge a receipt");
++    assert_eq!(manager.receipt_capacity_used().await?, 1);
++    let (receipt_id, owner) = manager
++        .receipt_for_process(process_id)
++        .await
++        .expect("opted-in launch should bind a receipt");
++    assert_eq!(receipt_id.model_handle(), handle);
++
++    manager
++        .release_completion_receipt(receipt_id, &owner)
++        .await?;
++    assert_eq!(
++        manager.receipt_capacity_used().await?,
++        0,
++        "release should free the slot"
++    );
++    // The process survives release: termination still finds it alive.
++    assert!(
++        manager.terminate_process(process_id).await,
++        "release should not kill the process"
++    );
++    // The watcher ran to its terminal event; a released receipt publishes
++    // nothing, so no wake or retention follows.
++    await_command_end(&rx_event).await?;
++    assert!(
++        !session.input_queue.has_pending_mailbox_items().await,
++        "later exit after release should produce no wake"
++    );
++    assert_eq!(
++        manager.read_retained_output(receipt_id, &owner).await,
++        Err(ReceiptError::Cancelled {
++            reason: CancellationReason::Released
++        })
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn opted_in_exit_enqueues_wake_without_turn() -> anyhow::Result<()> {
++    let (session, turn, rx_event) = hook_test_session().await;
++    // Suppress the idle wake so the enqueued entry stays observable.
++    *session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
++    let output = exec_command_for_hooks(
++        &session,
++        &turn,
++        "call-opted-in-exit",
++        "sleep 1",
++        /*yield_time_ms*/ 250,
++        ExecCompletionMode::NotifyOnExit,
++    )
++    .await?;
++    assert!(
++        output.completion_receipt.is_some(),
++        "opted-in yield should acknowledge a receipt"
++    );
++    await_command_end(&rx_event).await?;
++    assert!(
++        session.input_queue.has_pending_mailbox_items().await,
++        "opted-in exit should enqueue a wake"
++    );
++    let leases = session.input_queue.lease_runtime_notifications().await;
++    assert_eq!(leases.len(), 1);
++    assert_eq!(leases[0].completion().exit_code, Some(0));
++    *session.active_turn.lock().await = None;
++    Ok(())
++}
++
++#[tokio::test]
++async fn sixty_fifth_opted_in_launch_refused_before_execution() -> anyhow::Result<()> {
++    let (session, turn, _rx_event) = hook_test_session().await;
++    let manager = &session.services.unified_exec_manager;
++    for index in 0..MAX_COMPLETION_RECEIPTS {
++        let context = test_context(&session, &turn, &format!("call-fill-{index}"));
++        let owner = manager.receipt_owner_for(&context)?;
++        manager
++            .reserve_completion_receipt(owner, -(6000 + index as i32))
++            .await?;
++    }
++    assert_eq!(
++        manager.receipt_capacity_used().await?,
++        MAX_COMPLETION_RECEIPTS
++    );
++
++    let Err(err) = exec_command_for_hooks(
++        &session,
++        &turn,
++        "call-65th",
++        "echo hi",
++        /*yield_time_ms*/ 250,
++        ExecCompletionMode::NotifyOnExit,
++    )
++    .await
++    else {
++        panic!("65th opted-in launch should be refused");
++    };
++    assert!(
++        matches!(
++            err,
++            UnifiedExecError::ReceiptCapacityExceeded { capacity }
++                if capacity == MAX_COMPLETION_RECEIPTS
++        ),
++        "expected receipt capacity refusal, got {err:?}"
++    );
++    assert_eq!(
++        manager.receipt_capacity_used().await?,
++        MAX_COMPLETION_RECEIPTS
++    );
++    assert!(
++        manager.list_processes().await.is_empty(),
++        "refusal should precede process launch"
++    );
++
++    // The process cap is independent: a default launch still runs while
++    // receipt slots are full.
++    let output = exec_command_for_hooks(
++        &session,
++        &turn,
++        "call-default-while-full",
++        "echo hi",
++        /*yield_time_ms*/ 250,
++        ExecCompletionMode::Default,
++    )
++    .await?;
++    assert_eq!(output.completion_receipt, None);
++    Ok(())
++}
+diff --git a/codex-rs/core/src/unified_exec/receipt_output.rs b/codex-rs/core/src/unified_exec/receipt_output.rs
+index cb84385902..62772fd5a0 100644
+--- a/codex-rs/core/src/unified_exec/receipt_output.rs
++++ b/codex-rs/core/src/unified_exec/receipt_output.rs
+@@ -167,6 +167,27 @@ impl RetentionState {
+         RetentionLookup::Absent
+     }
+ 
++    /// Returns retained `(bytes, omitted_bytes)` without cloning output.
++    ///
++    /// Used to snapshot retention metadata for the mailbox completion entry.
++    /// Only entries owned by `owner` report sizes; anything else (including
++    /// retired markers and absent entries) reports `None`.
++    pub(crate) fn retained_sizes(
++        &self,
++        receipt_id: ReceiptId,
++        owner: &ReceiptOwner,
++    ) -> Option<(u64, u64)> {
++        if let Some(pending) = self.pending.get(&receipt_id) {
++            return (pending.owner == *owner)
++                .then_some((pending.bytes.len() as u64, pending.omitted_bytes as u64));
++        }
++        if let Some(sampled) = self.sampled.get(&receipt_id) {
++            return (sampled.owner == *owner)
++                .then_some((sampled.bytes.len() as u64, sampled.omitted_bytes as u64));
++        }
++        None
++    }
++
+     pub(crate) fn sampled_count(&self) -> usize {
+         self.sampled.len()
+     }
+diff --git a/codex-rs/core/tests/suite/exec_notification.rs b/codex-rs/core/tests/suite/exec_notification.rs
+new file mode 100644
+index 0000000000..82aa5fce51
+--- /dev/null
++++ b/codex-rs/core/tests/suite/exec_notification.rs
+@@ -0,0 +1,726 @@
++use anyhow::Context;
++use anyhow::Result;
++use codex_core::TurnInputRequest;
++use codex_extension_api::AsyncNotificationSupport;
++use codex_protocol::config_types::CollaborationMode;
++use codex_protocol::config_types::ModeKind;
++use codex_protocol::config_types::Settings;
++use codex_protocol::models::PermissionProfile;
++use codex_protocol::models::ResponseItem;
++use codex_protocol::protocol::AskForApproval;
++use codex_protocol::protocol::EventMsg;
++use codex_protocol::protocol::Op;
++use codex_protocol::protocol::ThreadSettingsOverrides;
++use codex_protocol::user_input::UserInput;
++use core_test_support::responses::ev_assistant_message;
++use core_test_support::responses::ev_completed;
++use core_test_support::responses::ev_function_call;
++use core_test_support::responses::ev_response_created;
++use core_test_support::responses::mount_sse_once;
++use core_test_support::responses::mount_sse_sequence;
++use core_test_support::responses::sse;
++use core_test_support::responses::sse_completed;
++use core_test_support::responses::start_mock_server;
++use core_test_support::skip_if_no_network;
++use core_test_support::skip_if_sandbox;
++use core_test_support::skip_if_target_windows;
++use core_test_support::test_codex::TestCodex;
++use core_test_support::test_codex::test_codex;
++use core_test_support::test_codex::turn_permission_fields;
++use core_test_support::wait_for_event;
++use core_test_support::wait_for_event_match;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++use std::time::Duration;
++
++const EXEC_COMPLETION_WRAPPER: &str = "source=\"exec_completion\"";
++const ARMED_RECEIPT_PREFIX: &str = "Completion notification armed with receipt ID ";
++const SESSION_ID_PREFIX: &str = "Process running with session ID ";
++
++async fn submit_exec_turn(test: &TestCodex, prompt: &str) -> Result<()> {
++    let session_model = test.session_configured.model.clone();
++    let (sandbox_policy, permission_profile) =
++        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
++
++    test.codex
++        .start_or_steer_turn(
++            TurnInputRequest::user_input(vec![UserInput::Text {
++                text: prompt.into(),
++                text_elements: Vec::new(),
++            }])
++            .with_thread_settings(ThreadSettingsOverrides {
++                approval_policy: Some(AskForApproval::Never),
++                sandbox_policy: Some(sandbox_policy),
++                permission_profile,
++                collaboration_mode: Some(CollaborationMode {
++                    mode: ModeKind::Default,
++                    settings: Settings {
++                        model: session_model,
++                        reasoning_effort: None,
++                        developer_instructions: None,
++                    },
++                }),
++                ..Default::default()
++            }),
++        )
++        .await?;
++    Ok(())
++}
++
++async fn wait_for_turn_complete(test: &TestCodex) {
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++}
++
++async fn wait_for_function_output(test: &TestCodex, call_id: &str) -> String {
++    wait_for_event_match(&test.codex, |event| match event {
++        EventMsg::RawResponseItem(raw) => match &raw.item {
++            ResponseItem::FunctionCallOutput {
++                call_id: Some(output_call_id),
++                output,
++                ..
++            } if output_call_id == call_id => output.text_content().map(str::to_string),
++            _ => None,
++        },
++        _ => None,
++    })
++    .await
++}
++
++fn armed_receipt_handle(output: &str) -> Option<String> {
++    output.lines().find_map(|line| {
++        line.strip_prefix(ARMED_RECEIPT_PREFIX)
++            .and_then(|rest| rest.split(';').next())
++            .map(|handle| handle.trim().to_string())
++    })
++}
++
++fn running_session_id(output: &str) -> Option<i64> {
++    output
++        .lines()
++        .find_map(|line| line.strip_prefix(SESSION_ID_PREFIX))
++        .and_then(|id| id.trim().parse::<i64>().ok())
++}
++
++/// Barrier proving the session has settled before asserting silence.
++async fn settle_session(test: &TestCodex) {
++    test.codex
++        .submit(Op::RealtimeConversationListVoices)
++        .await
++        .expect("submit settle barrier");
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::RealtimeConversationListVoicesResponse(_))
++    })
++    .await;
++}
++
++fn seed_available_host(test: &TestCodex) {
++    test.codex
++        .thread_extension_data()
++        .insert(AsyncNotificationSupport::Available);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn exec_notification_opt_in_arms_and_read_returns_terminal_output() -> Result<()> {
++    skip_if_target_windows!(Ok(()), "uses POSIX sleep/echo");
++    skip_if_no_network!(Ok(()));
++    skip_if_sandbox!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mut builder = test_codex().with_model("gpt-5.2");
++    let test = builder.build_with_auto_env(&server).await?;
++    seed_available_host(&test);
++
++    let launch_args = json!({
++        "cmd": "sleep 2; echo done-mark".to_string(),
++        "yield_time_ms": 250,
++        "notify_on_exit": true,
++    });
++    let mock = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-1"),
++                ev_function_call(
++                    "call-launch",
++                    "exec_command",
++                    &serde_json::to_string(&launch_args)?,
++                ),
++                ev_completed("resp-1"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-2"),
++                ev_assistant_message("msg-1", "launched"),
++                ev_completed("resp-2"),
++            ]),
++            // Idle wake for the opted-in exit.
++            sse(vec![
++                ev_response_created("resp-3"),
++                ev_assistant_message("msg-2", "noted the completion"),
++                ev_completed("resp-3"),
++            ]),
++        ],
++    )
++    .await;
++
++    submit_exec_turn(&test, "launch with notification").await?;
++    let launch_output = wait_for_function_output(&test, "call-launch").await;
++    let handle = armed_receipt_handle(&launch_output)
++        .with_context(|| format!("launch should acknowledge a receipt: {launch_output}"))?;
++    wait_for_turn_complete(&test).await;
++
++    // The exit (~2s) wakes an idle turn before the explicit read below.
++    wait_for_turn_complete(&test).await;
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 3, "launch, final, then the wake");
++    assert!(
++        requests[2].body_contains_text(EXEC_COMPLETION_WRAPPER),
++        "wake request should carry the completion fragment"
++    );
++
++    // The read call needs the acknowledged handle, so it mounts after the
++    // launch turn revealed it.
++    let read_args = json!({ "action": "read", "receipt_id": handle });
++    mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-6"),
++                ev_function_call(
++                    "call-read",
++                    "exec_notification",
++                    &serde_json::to_string(&read_args)?,
++                ),
++                ev_completed("resp-6"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-7"),
++                ev_assistant_message("msg-4", "read it"),
++                ev_completed("resp-7"),
++            ]),
++        ],
++    )
++    .await;
++    submit_exec_turn(&test, "read the retained output").await?;
++    let read_output = wait_for_function_output(&test, "call-read").await;
++    assert!(
++        read_output.contains("done-mark"),
++        "read should return terminal output: {read_output}"
++    );
++    wait_for_turn_complete(&test).await;
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn exec_notification_default_launch_arms_and_wakes_nothing() -> Result<()> {
++    skip_if_target_windows!(Ok(()), "uses POSIX sleep");
++    skip_if_no_network!(Ok(()));
++    skip_if_sandbox!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mut builder = test_codex().with_model("gpt-5.2");
++    let test = builder.build_with_auto_env(&server).await?;
++    seed_available_host(&test);
++
++    let launch_args = json!({
++        "cmd": "sleep 2".to_string(),
++        "yield_time_ms": 250,
++    });
++    let mock = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-1"),
++                ev_function_call(
++                    "call-launch",
++                    "exec_command",
++                    &serde_json::to_string(&launch_args)?,
++                ),
++                ev_completed("resp-1"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-2"),
++                ev_assistant_message("msg-1", "launched"),
++                ev_completed("resp-2"),
++            ]),
++        ],
++    )
++    .await;
++
++    submit_exec_turn(&test, "launch without notification").await?;
++    let launch_output = wait_for_function_output(&test, "call-launch").await;
++    assert!(
++        !launch_output.contains(ARMED_RECEIPT_PREFIX),
++        "default launch should acknowledge no receipt: {launch_output}"
++    );
++    wait_for_turn_complete(&test).await;
++
++    // The exit produces no wake: after the terminal event, a settle
++    // barrier, and a grace window, no further sampling request exists. The
++    // scripted sequence is exhausted by then, and an unmatched request would
++    // 404 without being recorded, so the trailing sentinel (a bare
++    // `mount_sse_once` with no `.expect`, safe to leave unconsumed) is what
++    // makes this silence proof real: any wake turn would be recorded on it.
++    let sentinel = mount_sse_once(&server, sse_completed("must-stay-silent")).await;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::ExecCommandEnd(_))
++    })
++    .await;
++    settle_session(&test).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(
++        mock.requests().len(),
++        2,
++        "default launch should wake nothing after exit"
++    );
++    assert_eq!(
++        sentinel.requests().len(),
++        0,
++        "no wake turn should follow the default exit"
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn exec_notification_opt_in_refused_on_headless_exec() -> Result<()> {
++    skip_if_target_windows!(Ok(()), "uses POSIX echo");
++    skip_if_no_network!(Ok(()));
++    skip_if_sandbox!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mut builder = test_codex().with_model("gpt-5.2");
++    let test = builder.build_with_auto_env(&server).await?;
++    // No capability seeded: the test host reports SessionSource::Exec, which
++    // seeds Unavailable, exactly like headless exec.
++
++    let launch_args = json!({
++        "cmd": "echo hi".to_string(),
++        "yield_time_ms": 250,
++        "notify_on_exit": true,
++    });
++    let mock = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-1"),
++                ev_function_call(
++                    "call-launch",
++                    "exec_command",
++                    &serde_json::to_string(&launch_args)?,
++                ),
++                ev_completed("resp-1"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-2"),
++                ev_assistant_message("msg-1", "refused"),
++                ev_completed("resp-2"),
++            ]),
++        ],
++    )
++    .await;
++
++    submit_exec_turn(&test, "opt in on a headless host").await?;
++    let launch_output = wait_for_function_output(&test, "call-launch").await;
++    assert!(
++        launch_output.contains("notify_on_exit is not supported on this host"),
++        "opt-in should be refused before execution: {launch_output}"
++    );
++    wait_for_turn_complete(&test).await;
++
++    let request = mock.requests().into_iter().next().context("one request")?;
++    let tools = request
++        .body_json()
++        .get("tools")
++        .and_then(serde_json::Value::as_array)
++        .cloned()
++        .unwrap_or_default();
++    assert!(
++        !tools
++            .iter()
++            .any(|tool| tool.get("name").and_then(serde_json::Value::as_str)
++                == Some("exec_notification")),
++        "headless host should not advertise exec_notification"
++    );
++    let exec_command = tools
++        .iter()
++        .find(|tool| tool.get("name").and_then(serde_json::Value::as_str) == Some("exec_command"))
++        .context("exec_command should be advertised")?;
++    assert!(
++        exec_command
++            .pointer("/parameters/properties/notify_on_exit")
++            .is_none(),
++        "headless host schema should omit notify_on_exit"
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn exec_notification_capacity_refuses_65th_and_default_still_runs() -> Result<()> {
++    skip_if_target_windows!(Ok(()), "uses POSIX echo");
++    skip_if_no_network!(Ok(()));
++    skip_if_sandbox!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mut builder = test_codex().with_model("gpt-5.2");
++    let test = builder.build_with_auto_env(&server).await?;
++    seed_available_host(&test);
++
++    for _ in 0..64 {
++        assert!(
++            test.codex.test_arm_exec_receipt_for_background_wait().await,
++            "first 64 reservations should succeed"
++        );
++    }
++    assert!(
++        !test.codex.test_arm_exec_receipt_for_background_wait().await,
++        "65th direct reservation should fail"
++    );
++
++    let refused_args = json!({
++        "cmd": "echo refused".to_string(),
++        "yield_time_ms": 250,
++        "notify_on_exit": true,
++    });
++    mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-1"),
++                ev_function_call(
++                    "call-refused",
++                    "exec_command",
++                    &serde_json::to_string(&refused_args)?,
++                ),
++                ev_completed("resp-1"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-2"),
++                ev_assistant_message("msg-1", "refused"),
++                ev_completed("resp-2"),
++            ]),
++        ],
++    )
++    .await;
++    submit_exec_turn(&test, "opt in past capacity").await?;
++    let refused_output = wait_for_function_output(&test, "call-refused").await;
++    assert!(
++        refused_output.contains("completion notification capacity is full"),
++        "65th opted-in launch should be refused: {refused_output}"
++    );
++    wait_for_turn_complete(&test).await;
++
++    // The process cap is independent: a default launch still runs while
++    // receipt slots are full.
++    let default_args = json!({
++        "cmd": "echo still-runs".to_string(),
++        "yield_time_ms": 5_000,
++    });
++    mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-3"),
++                ev_function_call(
++                    "call-default",
++                    "exec_command",
++                    &serde_json::to_string(&default_args)?,
++                ),
++                ev_completed("resp-3"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-4"),
++                ev_assistant_message("msg-2", "ran"),
++                ev_completed("resp-4"),
++            ]),
++        ],
++    )
++    .await;
++    submit_exec_turn(&test, "run a default launch").await?;
++    let default_output = wait_for_function_output(&test, "call-default").await;
++    assert!(
++        default_output.contains("still-runs"),
++        "default launch should run while receipts are full: {default_output}"
++    );
++    wait_for_turn_complete(&test).await;
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn exec_notification_release_disarms_without_killing() -> Result<()> {
++    skip_if_target_windows!(Ok(()), "uses POSIX sleep");
++    skip_if_no_network!(Ok(()));
++    skip_if_sandbox!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mut builder = test_codex().with_model("gpt-5.2");
++    let test = builder.build_with_auto_env(&server).await?;
++    seed_available_host(&test);
++
++    // A file-gated process: it loops until this test lands the stop file
++    // from a later turn, so the live-after-release poll cannot race a
++    // natural exit the way a fixed `sleep 5` could on a loaded machine.
++    // (Stdin is EOF at spawn, so a `read`-blocked gate exits immediately;
++    // the gate must be a file both turns address through the session cwd.)
++    let stop_file = format!(".exec-notif-stop-{}", std::process::id());
++    let launch_args = json!({
++        "cmd": format!("while [ ! -f {stop_file} ]; do sleep 0.2; done; echo done"),
++        "yield_time_ms": 250,
++        "notify_on_exit": true,
++    });
++    mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-1"),
++                ev_function_call(
++                    "call-launch",
++                    "exec_command",
++                    &serde_json::to_string(&launch_args)?,
++                ),
++                ev_completed("resp-1"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-2"),
++                ev_assistant_message("msg-1", "launched"),
++                ev_completed("resp-2"),
++            ]),
++        ],
++    )
++    .await;
++    submit_exec_turn(&test, "launch with notification").await?;
++    let launch_output = wait_for_function_output(&test, "call-launch").await;
++    let handle = armed_receipt_handle(&launch_output)
++        .with_context(|| format!("launch should acknowledge a receipt: {launch_output}"))?;
++    let session_id = running_session_id(&launch_output)
++        .with_context(|| format!("launch should report a session: {launch_output}"))?;
++    wait_for_turn_complete(&test).await;
++
++    let release_args = json!({ "action": "release", "receipt_id": handle });
++    mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-3"),
++                ev_function_call(
++                    "call-release",
++                    "exec_notification",
++                    &serde_json::to_string(&release_args)?,
++                ),
++                ev_completed("resp-3"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-4"),
++                ev_assistant_message("msg-2", "released"),
++                ev_completed("resp-4"),
++            ]),
++        ],
++    )
++    .await;
++    submit_exec_turn(&test, "release the subscription").await?;
++    let release_output = wait_for_function_output(&test, "call-release").await;
++    assert!(
++        release_output.contains("disarmed") && release_output.contains("not terminated"),
++        "release should disarm without killing: {release_output}"
++    );
++    wait_for_turn_complete(&test).await;
++
++    // The process survived release: an empty poll still reaches the live
++    // session.
++    let poll_args = json!({ "session_id": session_id, "yield_time_ms": 500 });
++    mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-5"),
++                ev_function_call(
++                    "call-poll",
++                    "write_stdin",
++                    &serde_json::to_string(&poll_args)?,
++                ),
++                ev_completed("resp-5"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-6"),
++                ev_assistant_message("msg-3", "polled"),
++                ev_completed("resp-6"),
++            ]),
++        ],
++    )
++    .await;
++    submit_exec_turn(&test, "poll the live session").await?;
++    let poll_output = wait_for_function_output(&test, "call-poll").await;
++    assert!(
++        poll_output.contains(&format!("session ID {session_id}")),
++        "live session should still answer after release: {poll_output}"
++    );
++    wait_for_turn_complete(&test).await;
++
++    // The released receipt is stale: a later read is rejected.
++    let stale_args = json!({ "action": "read", "receipt_id": handle });
++    let stale_mock = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-7"),
++                ev_function_call(
++                    "call-stale",
++                    "exec_notification",
++                    &serde_json::to_string(&stale_args)?,
++                ),
++                ev_completed("resp-7"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-8"),
++                ev_assistant_message("msg-4", "stale"),
++                ev_completed("resp-8"),
++            ]),
++        ],
++    )
++    .await;
++    submit_exec_turn(&test, "read after release").await?;
++    let stale_output = wait_for_function_output(&test, "call-stale").await;
++    assert!(
++        stale_output.contains("unknown or expired"),
++        "released receipt should read as expired: {stale_output}"
++    );
++    wait_for_turn_complete(&test).await;
++
++    // Tell the process to stop by landing the stop file from a default
++    // one-shot turn. No wake is armed for this turn, so it cannot disturb
++    // the silence proof below.
++    let land_args = json!({
++        "cmd": format!("echo stop > {stop_file}"),
++        "yield_time_ms": 5_000,
++    });
++    let land_mock = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-9"),
++                ev_function_call(
++                    "call-land",
++                    "exec_command",
++                    &serde_json::to_string(&land_args)?,
++                ),
++                ev_completed("resp-9"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-10"),
++                ev_assistant_message("msg-5", "landed"),
++                ev_completed("resp-10"),
++            ]),
++        ],
++    )
++    .await;
++    submit_exec_turn(&test, "land the stop file").await?;
++    wait_for_function_output(&test, "call-land").await;
++    wait_for_turn_complete(&test).await;
++
++    // Observe the exit through a blocking poll of the released session: the
++    // terminal output proves the file gate drove a controlled exit (a
++    // spontaneous death would print nothing), and no event wait can be
++    // missed however the exit interleaves with the turns.
++    let observe_args = json!({ "session_id": session_id, "yield_time_ms": 10_000 });
++    let observe_mock = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-11"),
++                ev_function_call(
++                    "call-observe",
++                    "write_stdin",
++                    &serde_json::to_string(&observe_args)?,
++                ),
++                ev_completed("resp-11"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-12"),
++                ev_assistant_message("msg-6", "observed"),
++                ev_completed("resp-12"),
++            ]),
++        ],
++    )
++    .await;
++    submit_exec_turn(&test, "observe the stopped session").await?;
++    let observe_output = wait_for_function_output(&test, "call-observe").await;
++    assert!(
++        observe_output.contains("exited") && observe_output.contains("done"),
++        "released session should exit through the file gate: {observe_output}"
++    );
++    wait_for_turn_complete(&test).await;
++
++    // The later exit produces no wake. As in the default-launch test, the
++    // trailing sentinel is the real silence proof: every scripted sequence
++    // is exhausted here, so only the sentinel would record a wake turn.
++    let sentinel = mount_sse_once(&server, sse_completed("must-stay-silent")).await;
++    settle_session(&test).await;
++    tokio::time::sleep(Duration::from_millis(500)).await;
++    assert_eq!(
++        stale_mock.requests().len(),
++        2,
++        "stale read should consume exactly its scripted turn"
++    );
++    assert_eq!(
++        land_mock.requests().len(),
++        2,
++        "stop-file turn should consume exactly its scripted turn"
++    );
++    assert_eq!(
++        observe_mock.requests().len(),
++        2,
++        "observe turn should consume exactly its scripted turn"
++    );
++    assert_eq!(
++        sentinel.requests().len(),
++        0,
++        "no wake should follow the released exit"
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn exec_notification_unknown_receipt_rejected() -> Result<()> {
++    skip_if_target_windows!(Ok(()), "uses POSIX echo");
++    skip_if_no_network!(Ok(()));
++    skip_if_sandbox!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mut builder = test_codex().with_model("gpt-5.2");
++    let test = builder.build_with_auto_env(&server).await?;
++    seed_available_host(&test);
++
++    let read_args = json!({
++        "action": "read",
++        "receipt_id": "01234567-89ab-cdef-0123-456789abcdef",
++    });
++    mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-1"),
++                ev_function_call(
++                    "call-read",
++                    "exec_notification",
++                    &serde_json::to_string(&read_args)?,
++                ),
++                ev_completed("resp-1"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-2"),
++                ev_assistant_message("msg-1", "rejected"),
++                ev_completed("resp-2"),
++            ]),
++        ],
++    )
++    .await;
++    submit_exec_turn(&test, "read an unknown receipt").await?;
++    let read_output = wait_for_function_output(&test, "call-read").await;
++    assert!(
++        read_output.contains("unknown or expired"),
++        "unknown receipt should be rejected: {read_output}"
++    );
++    wait_for_turn_complete(&test).await;
++    Ok(())
++}
+diff --git a/codex-rs/core/tests/suite/goal_background_wait.rs b/codex-rs/core/tests/suite/goal_background_wait.rs
+index 325d3622e1..e5530b9fdd 100644
+--- a/codex-rs/core/tests/suite/goal_background_wait.rs
++++ b/codex-rs/core/tests/suite/goal_background_wait.rs
+@@ -18,7 +18,9 @@ use std::time::Duration;
+ 
+ use anyhow::Result;
+ use codex_analytics::AnalyticsEventsClient;
++use codex_core::TurnInputRequest;
+ use codex_core::config::Config;
++use codex_extension_api::AsyncNotificationSupport;
+ use codex_extension_api::ExtensionData;
+ use codex_extension_api::ExtensionEventSink;
+ use codex_extension_api::ExtensionRegistryBuilder;
+@@ -38,6 +40,7 @@ use codex_goal_extension::install_with_backend_and_clock;
+ use codex_protocol::protocol::Event;
+ use codex_protocol::protocol::EventMsg;
+ use codex_protocol::protocol::SessionSource;
++use codex_protocol::user_input::UserInput;
+ use core_test_support::responses;
+ use core_test_support::test_codex::TestCodex;
+ use core_test_support::test_codex::test_codex;
+@@ -121,6 +124,7 @@ async fn fixture(
+     server: &wiremock::MockServer,
+     clock: Arc<dyn CheckInClock>,
+     sink: Arc<RecordingWarningSink>,
++    support: Option<AsyncNotificationSupport>,
+ ) -> Result<(TestCodex, Arc<codex_state::StateRuntime>, Arc<GoalService>)> {
+     let home = Arc::new(TempDir::new()?);
+     let mut config = core_test_support::load_default_config_for_test(&home).await;
+@@ -154,6 +158,9 @@ async fn fixture(
+     test.codex
+         .thread_extension_data()
+         .remove::<GoalRuntimeHandle>();
++    if let Some(support) = support {
++        test.codex.thread_extension_data().insert(support);
++    }
+     let mut bound = ExtensionRegistryBuilder::<Config>::with_event_sink(sink);
+     install(
+         &mut bound,
+@@ -202,18 +209,30 @@ async fn scheduled_checkins_fire_through_production_runtime_under_paused_time()
+     .await;
+     let clock: Arc<dyn CheckInClock> = Arc::new(PausedClock::new(Duration::from_secs(600_000)));
+     let sink = Arc::new(RecordingWarningSink::default());
+-    let (test, db, service) = fixture(&server, Arc::clone(&clock), Arc::clone(&sink)).await?;
++    let (test, db, service) = fixture(
++        &server,
++        Arc::clone(&clock),
++        Arc::clone(&sink),
++        Some(AsyncNotificationSupport::Available),
++    )
++    .await?;
+     let thread_id = test.session_configured.thread_id;
+ 
+     // Enable the policy and arm the stalled receipt BEFORE creating the goal:
+     // `apply_runtime_effects` runs an initial `continue_if_idle`, which must
+     // see the Armed work and wait (arming the first timer) instead of starting
+-    // an immediate turn that would leave the thread non-idle.
++    // an immediate turn that would leave the thread non-idle. Thread start on
++    // a capable host activates the policy; the explicit enable below keeps the
++    // pre-activation setup assumption intact.
+     let runtime = test
+         .codex
+         .thread_extension_data()
+         .get::<GoalRuntimeHandle>()
+         .expect("goal runtime should exist");
++    assert!(
++        runtime.background_wait_state().is_enabled(),
++        "capable host should activate the policy at thread start"
++    );
+     runtime.background_wait_state().enable();
+     assert!(
+         test.codex.test_arm_exec_receipt_for_background_wait().await,
+@@ -299,3 +318,162 @@ async fn scheduled_checkins_fire_through_production_runtime_under_paused_time()
+     assert_eq!(mock.requests().len(), 3);
+     Ok(())
+ }
++
++/// Policy activation on a capable host: pending opted-in work gates automatic
++/// goal continuation, while explicit user input is still admitted.
++/// Production entry points: `GoalExtension::on_thread_start` (activation) ->
++/// `GoalRuntimeHandle::continue_if_idle` (Wait arm) gates
++/// `CodexThread::emit_thread_idle_lifecycle_if_idle`, and
++/// `CodexThread::start_or_steer_turn` admits the user turn.
++#[tokio::test(flavor = "current_thread")]
++async fn background_wait_activation_gates_goal_but_admits_user_input() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    // One sequence for the whole test: wiremock serves same-priority mocks in
++    // mount order, so a second sequence mounted for the user turn would never
++    // see the request while this first one still has capacity. The single
++    // unconsumed body keeps the gate-phase silence proof real (a spurious
++    // continuation would be recorded) and the user-phase count exact.
++    let mock =
++        responses::mount_sse_sequence(&server, vec![responses::sse_completed("user-turn")]).await;
++    let clock: Arc<dyn CheckInClock> = Arc::new(PausedClock::new(Duration::from_secs(600_000)));
++    let sink = Arc::new(RecordingWarningSink::default());
++    let (test, db, service) = fixture(
++        &server,
++        Arc::clone(&clock),
++        Arc::clone(&sink),
++        Some(AsyncNotificationSupport::Available),
++    )
++    .await?;
++    let thread_id = test.session_configured.thread_id;
++
++    let runtime = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalRuntimeHandle>()
++        .expect("goal runtime should exist");
++    assert!(
++        runtime.background_wait_state().is_enabled(),
++        "capable host should activate the policy without manual enable"
++    );
++    assert!(
++        test.codex.test_arm_exec_receipt_for_background_wait().await,
++        "stalled Armed receipt should arm",
++    );
++
++    let outcome = service
++        .set_thread_goal(
++            &db,
++            GoalSetRequest {
++                thread_id,
++                objective: GoalObjectiveUpdate::Set("activation gated work"),
++                status: None,
++                token_budget: GoalTokenBudgetUpdate::Keep,
++                max_goal_token_budget: None,
++            },
++        )
++        .await
++        .expect("goal creation should succeed");
++    outcome.apply_runtime_effects(&service).await;
++
++    test.codex
++        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
++        .await;
++    assert_eq!(
++        mock.requests().len(),
++        0,
++        "pending opted-in work should gate automatic continuation"
++    );
++    assert!(runtime.test_marked_goal_continuations().is_empty());
++
++    // Explicit user input is still admitted while the gate holds.
++    test.codex
++        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
++            text: "continue please".to_string(),
++            text_elements: Vec::new(),
++        }]))
++        .await?;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++    let requests = mock.requests();
++    assert_eq!(
++        requests.len(),
++        1,
++        "user input should be admitted while gated"
++    );
++    assert!(
++        requests[0]
++            .message_input_texts("user")
++            .iter()
++            .any(|text| text.contains("continue please")),
++        "the admitted request should carry the user input, not a gated continuation"
++    );
++    Ok(())
++}
++
++/// Without the host capability the policy stays inactive and automatic goal
++/// continuation proceeds ungated.
++#[tokio::test(flavor = "current_thread")]
++async fn background_wait_inactive_on_unavailable_host_auto_continues() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let mock = responses::mount_sse_sequence(
++        &server,
++        vec![responses::sse_completed("ungated-continuation")],
++    )
++    .await;
++    let clock: Arc<dyn CheckInClock> = Arc::new(PausedClock::new(Duration::from_secs(600_000)));
++    let sink = Arc::new(RecordingWarningSink::default());
++    let (test, db, service) = fixture(
++        &server,
++        Arc::clone(&clock),
++        Arc::clone(&sink),
++        Some(AsyncNotificationSupport::Unavailable),
++    )
++    .await?;
++    let thread_id = test.session_configured.thread_id;
++
++    let runtime = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalRuntimeHandle>()
++        .expect("goal runtime should exist");
++    assert!(
++        !runtime.background_wait_state().is_enabled(),
++        "headless host should leave the policy inactive"
++    );
++    assert!(
++        test.codex.test_arm_exec_receipt_for_background_wait().await,
++        "stalled Armed receipt should arm",
++    );
++
++    let outcome = service
++        .set_thread_goal(
++            &db,
++            GoalSetRequest {
++                thread_id,
++                objective: GoalObjectiveUpdate::Set("ungated work"),
++                status: None,
++                token_budget: GoalTokenBudgetUpdate::Keep,
++                max_goal_token_budget: None,
++            },
++        )
++        .await
++        .expect("goal creation should succeed");
++    outcome.apply_runtime_effects(&service).await;
++
++    test.codex
++        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
++        .await;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++    assert_eq!(
++        mock.requests().len(),
++        1,
++        "without the policy the goal should auto-continue"
++    );
++    assert_eq!(runtime.test_marked_goal_continuations().len(), 1);
++    Ok(())
++}
+diff --git a/codex-rs/core/tests/suite/mod.rs b/codex-rs/core/tests/suite/mod.rs
+index 87121ec489..4eb6e4994e 100644
+--- a/codex-rs/core/tests/suite/mod.rs
++++ b/codex-rs/core/tests/suite/mod.rs
+@@ -77,6 +77,7 @@ mod deprecation_notice;
+ mod direct_tool_metadata;
+ mod exec;
+ mod exec_completion;
++mod exec_notification;
+ mod exec_policy;
+ #[cfg(not(target_os = "windows"))]
+ mod extension_sandbox;
+diff --git a/codex-rs/ext/extension-api/src/async_notification.rs b/codex-rs/ext/extension-api/src/async_notification.rs
+new file mode 100644
+index 0000000000..133cae3593
+--- /dev/null
++++ b/codex-rs/ext/extension-api/src/async_notification.rs
+@@ -0,0 +1,73 @@
++//! Host capability for asynchronous exec-completion notifications.
++//!
++//! Core and the goal extension read this host-seeded marker from the thread's
++//! [`ExtensionData`][data] to decide whether an exec completion wake can be
++//! promised: the `notify_on_exit` schema, the `exec_notification` tool, and the
++//! goal background-wait policy are exposed only where this marker is
++//! [`AsyncNotificationSupport::Available`]. Absence means
++//! [`AsyncNotificationSupport::Unavailable`]; no wake is ever promised on a
++//! host whose persistence was not verified.
++//!
++//! Only verified persistent hosts enable this. Headless exec shuts its runtime
++//! down at `TurnCompleted`, so it and every descendant stay `Unavailable`.
++//! Children inherit their parent's stored value explicitly; a child's own
++//! session source (subagents report `SubAgent`, never `Exec`) must not be used
++//! to derive availability.
++//!
++//! [data]: crate::ExtensionData
++
++use codex_protocol::protocol::SessionSource;
++
++use crate::ExtensionData;
++
++/// Whether the host can deliver an exec completion wake after this turn.
++///
++/// Host-seeded through [`crate::ExtensionDataInit`] before thread startup;
++/// defaults to [`AsyncNotificationSupport::Unavailable`].
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum AsyncNotificationSupport {
++    /// The host cannot promise a completion wake. `notify_on_exit` is refused,
++    /// `exec_notification` is not advertised, and the goal background-wait
++    /// policy stays inactive.
++    #[default]
++    Unavailable,
++    /// The host persists past turn end and can wake for opted-in exec exits.
++    Available,
++}
++
++impl AsyncNotificationSupport {
++    /// Reports whether the host can promise a completion wake.
++    pub fn is_available(self) -> bool {
++        matches!(self, Self::Available)
++    }
++
++    /// Root-thread decision for a host running as `session_source`.
++    ///
++    /// Only verified persistent interactive hosts (`Cli`, `VSCode`) enable
++    /// notifications. Headless exec is explicitly unavailable, and every other
++    /// source (MCP, custom, unknown, internal, subagent) stays unavailable
++    /// until its persistence is verified. This decides roots only; children
++    /// inherit their parent's stored value instead of consulting any source.
++    pub fn for_host_session_source(session_source: &SessionSource) -> Self {
++        match session_source {
++            SessionSource::Cli | SessionSource::VSCode => Self::Available,
++            SessionSource::Exec
++            | SessionSource::Mcp
++            | SessionSource::Custom(_)
++            | SessionSource::Internal(_)
++            | SessionSource::SubAgent(_)
++            | SessionSource::Unknown => Self::Unavailable,
++        }
++    }
++
++    /// Reads the marker from `thread_store`, defaulting to `Unavailable`.
++    ///
++    /// Absence is not an error: threads started before this marker existed,
++    /// and hosts that seed nothing, simply cannot promise a wake.
++    pub fn read_from(thread_store: &ExtensionData) -> Self {
++        thread_store
++            .get::<Self>()
++            .map(|support| *support)
++            .unwrap_or_default()
++    }
++}
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 7d6d0feb88..02a45c9dbb 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -1,3 +1,4 @@
++mod async_notification;
+ mod capabilities;
+ mod contributors;
+ mod goal_activity;
+@@ -10,6 +11,7 @@ mod tool_policy;
+ mod turn_admission;
+ mod user_instructions;
+ 
++pub use async_notification::AsyncNotificationSupport;
+ pub use goal_activity::GoalActivity;
+ pub use goal_activity::GoalActivityState;
+ pub use goal_background_wait::GoalAdmissionDecision;
+diff --git a/codex-rs/ext/goal/src/extension.rs b/codex-rs/ext/goal/src/extension.rs
+index d29366dac2..dfb73b6661 100644
+--- a/codex-rs/ext/goal/src/extension.rs
++++ b/codex-rs/ext/goal/src/extension.rs
+@@ -4,6 +4,7 @@ use std::sync::Weak;
+ use codex_analytics::AnalyticsEventsClient;
+ use codex_core::ThreadManager;
+ use codex_core::TurnStartOptions;
++use codex_extension_api::AsyncNotificationSupport;
+ use codex_extension_api::ConfigContributor;
+ use codex_extension_api::ExtensionData;
+ use codex_extension_api::ExtensionEventSink;
+@@ -173,6 +174,12 @@ where
+                 )
+             });
+             runtime.set_enabled(enabled, input.thread_store);
++            // Activate the background-wait policy only where the host can
++            // promise a completion wake. Headless hosts (and threads started
++            // before the marker existed) keep automatic continuation ungated.
++            if AsyncNotificationSupport::read_from(input.thread_store).is_available() {
++                runtime.background_wait_state().enable();
++            }
+             self.goal_service.register_runtime(&runtime);
+         })
+     }
+diff --git a/codex-rs/ext/goal/tests/goal_extension_backend.rs b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+index 298298121b..8aecc38bd3 100644
+--- a/codex-rs/ext/goal/tests/goal_extension_backend.rs
++++ b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+@@ -2140,5 +2140,7 @@ fn protocol_status(status: codex_state::ThreadGoalStatus) -> ThreadGoalStatus {
+     }
+ }
+ 
++#[path = "goal_extension_backend/background_wait_activation_tests.rs"]
++mod background_wait_activation;
+ #[path = "goal_extension_backend/goal_activity_tests.rs"]
+ mod goal_activity;
+diff --git a/codex-rs/ext/goal/tests/goal_extension_backend/background_wait_activation_tests.rs b/codex-rs/ext/goal/tests/goal_extension_backend/background_wait_activation_tests.rs
+new file mode 100644
+index 0000000000..a383f75e36
+--- /dev/null
++++ b/codex-rs/ext/goal/tests/goal_extension_backend/background_wait_activation_tests.rs
+@@ -0,0 +1,81 @@
++use std::sync::Arc;
++use std::sync::Weak;
++
++use codex_analytics::AnalyticsEventsClient;
++use codex_extension_api::AsyncNotificationSupport;
++use codex_extension_api::ExtensionData;
++use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::ThreadStartInput;
++use codex_goal_extension::GoalExtensionConfig;
++use codex_goal_extension::GoalRuntimeHandle;
++use codex_goal_extension::GoalService;
++use codex_goal_extension::install_with_backend;
++use codex_protocol::protocol::SessionSource;
++use pretty_assertions::assert_eq;
++
++use super::test_runtime;
++use super::test_thread_id;
++
++async fn background_wait_enabled_with_support(
++    support: Option<AsyncNotificationSupport>,
++) -> anyhow::Result<bool> {
++    let runtime = test_runtime().await?;
++    let thread_id = test_thread_id()?;
++    let mut builder = ExtensionRegistryBuilder::<()>::new();
++    install_with_backend(
++        &mut builder,
++        runtime,
++        AnalyticsEventsClient::disabled(),
++        /*metrics_client*/ None,
++        Weak::new(),
++        Arc::new(GoalService::new()),
++        |_| GoalExtensionConfig {
++            enabled: true,
++            max_goal_token_budget: None,
++        },
++    );
++    let registry = builder.build();
++    let session_store = ExtensionData::new("session-1");
++    let thread_store = ExtensionData::new(thread_id.to_string());
++    if let Some(support) = support {
++        thread_store.insert(support);
++    }
++    for contributor in registry.thread_lifecycle_contributors() {
++        contributor
++            .on_thread_start(ThreadStartInput {
++                config: &(),
++                session_source: &SessionSource::Cli,
++                persistent_thread_state_available: true,
++                environments: &[],
++                mcp_resource_client: None,
++                extension_metrics: None,
++                session_store: &session_store,
++                thread_store: &thread_store,
++            })
++            .await;
++    }
++    let runtime = thread_store
++        .get::<GoalRuntimeHandle>()
++        .expect("goal runtime should exist");
++    Ok(runtime.background_wait_state().is_enabled())
++}
++
++#[tokio::test]
++async fn background_wait_activates_only_on_available_hosts() -> anyhow::Result<()> {
++    assert_eq!(
++        background_wait_enabled_with_support(Some(AsyncNotificationSupport::Available)).await?,
++        true,
++        "capable hosts should activate the background-wait policy"
++    );
++    assert_eq!(
++        background_wait_enabled_with_support(Some(AsyncNotificationSupport::Unavailable)).await?,
++        false,
++        "headless hosts should leave the policy inactive"
++    );
++    assert_eq!(
++        background_wait_enabled_with_support(None).await?,
++        false,
++        "threads without the marker should leave the policy inactive"
++    );
++    Ok(())
++}

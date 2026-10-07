@@ -1,0 +1,57 @@
+[
+  {
+    "name": "m1_arm_by_default",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/unified_exec.rs\n+++ b/codex-rs/core/src/tools/handlers/unified_exec.rs\n@@ -16,6 +16,10 @@\n \n #[cfg(test)]\n use crate::tools::handlers::parse_arguments;\n+\n+fn notify_on_exit_default_true() -> bool {\n+    true\n+}\n \n mod exec_command;\n mod exec_notification;\n@@ -55,7 +59,7 @@\n     /// Defaults to false: default launches never reserve a receipt, a slot,\n     /// or a wake. Passing true where notifications are unavailable (or for\n     /// one-shot execution) is refused before execution.\n-    #[serde(default)]\n+    #[serde(default = \"notify_on_exit_default_true\")]\n     pub(crate) notify_on_exit: bool,\n     #[serde(default)]\n     sandbox_permissions: Option<SandboxPermissions>,\n",
+    "expected_killer": "exec_command_args_default_notify_on_exit_to_false (lib); exec_notification_default_launch_arms_and_wakes_nothing (suite)",
+    "narrowing": "absent notify_on_exit arms; explicit false still does not"
+  },
+  {
+    "name": "m2_derive_child_from_not_exec",
+    "patch": "--- a/codex-rs/core/src/thread_manager.rs\n+++ b/codex-rs/core/src/thread_manager.rs\n@@ -2199,12 +2199,11 @@\n             .get::<codex_extension_api::AsyncNotificationSupport>()\n             .is_none()\n         {\n-            thread_extension_init.insert(\n-                self.inherited_async_notification_support(\n-                    parent_thread_id.or(forked_from_thread_id),\n-                )\n-                .await,\n-            );\n+            thread_extension_init.insert(if matches!(session_source, SessionSource::Exec) {\n+                codex_extension_api::AsyncNotificationSupport::Unavailable\n+            } else {\n+                codex_extension_api::AsyncNotificationSupport::Available\n+            });\n         }\n         // Host controllers can already be shared with live threads. Publish root settings\n         // only after registration succeeds, so a failed start cannot update their tree.\n",
+    "expected_killer": "async_notification_child_of_headless_parent_stays_unavailable; async_notification_roots_follow_host_session_source (Mcp arm)",
+    "narrowing": "child/host capability from own session source instead of explicit inheritance"
+  },
+  {
+    "name": "m3_accept_opt_in_on_unavailable_host",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs\n+++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs\n@@ -265,14 +265,6 @@\n                         .to_string(),\n                 ));\n             }\n-            if !AsyncNotificationSupport::read_from(&session.services.thread_extension_data)\n-                .is_available()\n-            {\n-                return Err(FunctionCallError::RespondToModel(\n-                    \"notify_on_exit is not supported on this host; no completion wake can be promised. Retry without notify_on_exit.\"\n-                        .to_string(),\n-                ));\n-            }\n         }\n         let notify_on_exit = args.notify_on_exit;\n         let sandbox_permissions =\n",
+    "expected_killer": "notify_on_exit_refused_before_execution_on_unavailable_host (lib); exec_notification_opt_in_refused_on_headless_exec (suite)",
+    "narrowing": "one-shot refusal kept; host-capability refusal removed"
+  },
+  {
+    "name": "m4_release_skips_mailbox_cancel",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/unified_exec/exec_notification.rs\n+++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_notification.rs\n@@ -129,13 +129,6 @@\n                     .release_completion_receipt(receipt_id, &owner)\n                     .await\n                     .map_err(|err| FunctionCallError::RespondToModel(receipt_error_message(err)))?;\n-                // Drop a pending wake for the disarmed subscription, if any.\n-                // A later exit publishes nothing for a released receipt, so\n-                // together these guarantee no wake after release.\n-                session\n-                    .input_queue\n-                    .cancel_runtime_notification(receipt_id)\n-                    .await;\n                 Ok(boxed_tool_output(FunctionToolOutput::from_text(\n                     format!(\n                         \"Released receipt {}; the completion wake is disarmed and the process was not terminated.\",\n",
+    "expected_killer": "release_disarms_frees_slot_and_cancels_pending_wake (lib)",
+    "narrowing": "store release kept; pending-wake cancellation removed"
+  },
+  {
+    "name": "m5_read_skips_owner_verify",
+    "patch": "--- a/codex-rs/core/src/unified_exec/receipt_hooks.rs\n+++ b/codex-rs/core/src/unified_exec/receipt_hooks.rs\n@@ -321,11 +321,7 @@\n             .await\n             .owner_for_receipt(receipt_id)\n             .ok_or(ReceiptError::UnknownReceipt)?;\n-        if owner.thread_id() != context.session.thread_id\n-            || owner.runtime_generation() != self.receipt_generation\n-        {\n-            return Err(ReceiptError::ForeignOwner);\n-        }\n+        let _ = (&context, &owner);\n         Ok(owner)\n     }\n \n",
+    "expected_killer": "read_rejects_foreign_receipt (lib handler); notification_owner_resolves_launch_owner_across_tool_calls (lib hooks)",
+    "narrowing": "binding resolution kept; thread/generation verification removed"
+  },
+  {
+    "name": "m6_handler_drops_opt_in",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs\n+++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs\n@@ -463,11 +463,8 @@\n             justification,\n             prefix_rule,\n         };\n-        let completion_mode = if notify_on_exit {\n-            ExecCompletionMode::NotifyOnExit\n-        } else {\n-            ExecCompletionMode::Default\n-        };\n+        let _ = notify_on_exit;\n+        let completion_mode = ExecCompletionMode::Default;\n         let result = match completion_timeout {\n             Some(timeout) => {\n                 UnifiedExecProcessManager::exec_command_to_completion(request, &context, timeout)\n",
+    "expected_killer": "exec_notification_opt_in_arms_and_read_returns_terminal_output (suite, no armed line); exec_notification_capacity_refuses_65th_and_default_still_runs (suite, 65th succeeds)",
+    "narrowing": "refusals kept; accepted opt-in silently launches default"
+  },
+  {
+    "name": "m7_goal_never_enables",
+    "patch": "--- a/codex-rs/ext/goal/src/extension.rs\n+++ b/codex-rs/ext/goal/src/extension.rs\n@@ -177,9 +177,6 @@\n             // Activate the background-wait policy only where the host can\n             // promise a completion wake. Headless hosts (and threads started\n             // before the marker existed) keep automatic continuation ungated.\n-            if AsyncNotificationSupport::read_from(input.thread_store).is_available() {\n-                runtime.background_wait_state().enable();\n-            }\n             self.goal_service.register_runtime(&runtime);\n         })\n     }\n",
+    "expected_killer": "background_wait_activates_only_on_available_hosts (goal); background_wait_activation_gates_goal_but_admits_user_input (suite)",
+    "narrowing": "activation removed; policy can only be enabled manually"
+  },
+  {
+    "name": "m8_goal_always_enables",
+    "patch": "--- a/codex-rs/ext/goal/src/extension.rs\n+++ b/codex-rs/ext/goal/src/extension.rs\n@@ -177,9 +177,8 @@\n             // Activate the background-wait policy only where the host can\n             // promise a completion wake. Headless hosts (and threads started\n             // before the marker existed) keep automatic continuation ungated.\n-            if AsyncNotificationSupport::read_from(input.thread_store).is_available() {\n-                runtime.background_wait_state().enable();\n-            }\n+            let _ = AsyncNotificationSupport::read_from(input.thread_store);\n+            runtime.background_wait_state().enable();\n             self.goal_service.register_runtime(&runtime);\n         })\n     }\n",
+    "expected_killer": "background_wait_activates_only_on_available_hosts (goal, Unavailable arm); background_wait_inactive_on_unavailable_host_auto_continues (suite)",
+    "narrowing": "capability read kept; enable no longer conditional"
+  },
+  {
+    "name": "m9_recheck_skips_retention_drop",
+    "patch": "--- a/codex-rs/core/src/unified_exec/receipt_hooks.rs\n+++ b/codex-rs/core/src/unified_exec/receipt_hooks.rs\n@@ -377,7 +377,6 @@\n             )\n             .await;\n         if !self.is_live_queued_receipt(receipt_id, owner) {\n-            self.receipt_hooks.lock().await.retention.drop(receipt_id);\n             session\n                 .input_queue\n                 .cancel_runtime_notification(receipt_id)\n",
+    "expected_killer": "enqueue_published_completion_drops_ghost_retention (lib, ghost retention survives)",
+    "narrowing": "single recheck kept except its retention drop; mailbox cancel + early return kept, so no entry or wake survives \u2014 only ghost output leaks",
+    "note": "Replaces m9_enqueue_skips_live_check (precheck-2 survivor): the first live-gate was redundant \u2014 its removal was final-state-identical because the recheck also dropped retention and cancelled the entry. The first gate is now removed (option a); this mutant weakens the single remaining check. enqueue_published_completion_skips_disarmed_receipt still passes under this mutant (nothing retained there), proving narrowness."
+  }
+]
