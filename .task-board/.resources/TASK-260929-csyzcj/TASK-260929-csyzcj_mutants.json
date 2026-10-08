@@ -1,0 +1,26 @@
+[
+  {
+    "name": "skip_failed_lookups",
+    "patch": "--- a/codex-rs/core/src/agent/control/runtime_context.rs\n+++ b/codex-rs/core/src/agent/control/runtime_context.rs\n@@ -189,20 +189,15 @@\n                     });\n                 }\n                 Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {\n-                    self.ensure_agent_known(child_thread_id).map_err(|_| {\n-                        OwnedChildrenReadError::UnknownChild {\n-                            thread_id: child_thread_id,\n-                        }\n-                    })?;\n+                    if self.ensure_agent_known(child_thread_id).is_err() {\n+                        continue;\n+                    }\n                     inspections.push(OwnedChildInspection::Unloaded {\n                         thread_id: child_thread_id,\n                     });\n                 }\n-                Err(err) => {\n-                    return Err(OwnedChildrenReadError::InspectionFailed {\n-                        thread_id: child_thread_id,\n-                        reason: err.to_string(),\n-                    });\n+                Err(_) => {\n+                    continue;\n                 }\n             }\n         }\n"
+  },
+  {
+    "name": "insert_after_mail_check",
+    "patch": "--- a/codex-rs/ext/goal/src/runtime.rs\n+++ b/codex-rs/ext/goal/src/runtime.rs\n@@ -719,13 +719,11 @@\n                     gate.signal_arrived();\n                     gate.wait_release().await;\n                 }\n-                // Insert BEFORE checking pending mail, then recheck via the\n-                // existing scheduler; this closes completion-before-registration.\n+                thread.recheck_pending_work_for_goal_wait().await;\n                 crate::native_wait::try_register_goal_wait_sleep(\n                     thread.thread_extension_data(),\n                     self.inner.background_wait.generation(),\n                 );\n-                thread.recheck_pending_work_for_goal_wait().await;\n             } else {\n                 crate::native_wait::remove_goal_wait_sleep(thread.thread_extension_data());\n             }\n"
+  },
+  {
+    "name": "unconditional_remove",
+    "patch": "--- a/codex-rs/ext/goal/src/native_wait.rs\n+++ b/codex-rs/ext/goal/src/native_wait.rs\n@@ -54,9 +54,7 @@\n /// Returns `true` when a goal-owned marker was removed, `false` when absent\n /// or foreign (foreign markers are preserved).\n pub fn remove_goal_wait_sleep(store: &ExtensionData) -> bool {\n-    store.remove_if(|existing: Option<&SleepItem>| {\n-        existing.is_some_and(|item| is_goal_wait_sleep_id(item.id.as_str()))\n-    })\n+    store.remove::<SleepItem>().is_some()\n }\n \n /// Reports whether a goal-owned wait marker is currently stored.\n"
+  },
+  {
+    "name": "insert_clobbers_one_foreign",
+    "patch": "--- a/codex-rs/ext/goal/src/native_wait.rs\n+++ b/codex-rs/ext/goal/src/native_wait.rs\n@@ -45,7 +45,11 @@\n             id: goal_wait_sleep_id(generation),\n             duration_ms: GOAL_WAIT_SLEEP_DURATION_MS,\n         },\n-        |existing| existing.is_none_or(|item| is_goal_wait_sleep_id(item.id.as_str())),\n+        |existing| {\n+            existing.is_none_or(|item| {\n+                is_goal_wait_sleep_id(item.id.as_str()) || item.id.as_str() == \"clock-wait-1\"\n+            })\n+        },\n     )\n }\n \n"
+  },
+  {
+    "name": "interrupted_claims_success",
+    "patch": "--- a/codex-rs/core/src/session_prefix.rs\n+++ b/codex-rs/core/src/session_prefix.rs\n@@ -46,7 +46,7 @@\n     sender: &AgentPath,\n ) -> String {\n     format!(\n-        \"Message Type: INTERRUPTED\\nTask name: {task_name}\\nSender: {sender}\\nPayload:\\nAgent interrupted. Its turn ended without a final answer; resend work if still needed.\"\n+        \"Message Type: FINAL_ANSWER\\nTask name: {task_name}\\nSender: {sender}\\nPayload:\\nAgent completed successfully.\"\n     )\n }\n \n"
+  },
+  {
+    "name": "ignore_native_pending",
+    "patch": "--- a/codex-rs/ext/goal/src/background_wait.rs\n+++ b/codex-rs/ext/goal/src/background_wait.rs\n@@ -333,7 +333,8 @@\n                 return BackgroundWaitEvaluation::WaitOnReadFailure { error };\n             }\n         };\n-        if snapshot.is_empty() && !native_pending {\n+        let _ = native_pending;\n+        if snapshot.is_empty() {\n             state.wait_started_at = None;\n             state.pending_deadline = None;\n             state.admission_attempt = Some(AdmissionAttempt {\n"
+  }
+]
