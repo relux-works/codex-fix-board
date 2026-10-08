@@ -129,6 +129,9 @@ spawn run completed: codex (run=RUN-261004-60be12, pid=47788, exit=0)
 spawn agent resolution: Agent selection: codex via explicit_override
 spawn queued: [implementer] developer (codex) (run=RUN-261004-20c486, max_parallel=4)
 spawn run started: [implementer] developer (codex) (run=RUN-261004-20c486)
+agent completed: [implementer] developer (codex) (exit=0)
+spawn run completed: codex (run=RUN-261004-20c486, pid=23465, exit=0)
+spawn run RUN-261004-20c486 failed; operator action required; failure: integration_binding_state_invalid: Change Request CR-TASK-260929-4ut0up-1 revision 1 is integrated, want accepted or checkpointed
 
 ## Precondition Resources
 - [surface-table.md](file://TASK-260929-4ut0up/surface-table.md) — B2 surface-table.md
@@ -158,12 +161,13 @@ spawn run started: [implementer] developer (codex) (run=RUN-261004-20c486)
 - [TASK-260929-4ut0up_spawn-log_-reviewer--reviewer--codex-_RUN-261004-60be12.log](file://TASK-260929-4ut0up/TASK-260929-4ut0up_spawn-log_-reviewer--reviewer--codex-_RUN-261004-60be12.log) — System spawn log captured by task-board
 - [TASK-260929-4ut0up_recording-review-rev1.md](file://TASK-260929-4ut0up/TASK-260929-4ut0up_recording-review-rev1.md)
 - [TASK-260929-4ut0up_spawn-log_-implementer--developer--codex-_RUN-261004-20c486.log](file://TASK-260929-4ut0up/TASK-260929-4ut0up_spawn-log_-implementer--developer--codex-_RUN-261004-20c486.log) — System spawn log captured by task-board
+- [TASK-260929-4ut0up_complete-log.md](file://TASK-260929-4ut0up/TASK-260929-4ut0up_complete-log.md) — Landing preconditions and both worktree complete outputs with real exit codes; integrated, cleanup_pending.
 
 ## Created
 2026-09-29T00:50:38Z
 
 ## Last Update
-2026-10-04T21:21:26Z
+2026-10-04T21:23:25Z
 
 ## Assigned To
 [implementer] developer (codex)
