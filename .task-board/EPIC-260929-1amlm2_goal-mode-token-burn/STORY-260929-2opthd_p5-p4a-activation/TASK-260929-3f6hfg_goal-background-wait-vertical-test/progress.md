@@ -83,6 +83,9 @@ spawn run completed: codex (run=RUN-261007-554bf3, pid=5963, exit=0)
 spawn agent resolution: Agent selection: codex via explicit_override
 spawn queued: [implementer] developer (codex) (run=RUN-261007-a970a6, max_parallel=4)
 spawn run started: [implementer] developer (codex) (run=RUN-261007-a970a6)
+agent completed: [implementer] developer (codex) (exit=0)
+spawn run completed: codex (run=RUN-261007-a970a6, pid=935, exit=0)
+spawn run RUN-261007-a970a6 failed; operator action required; failure: integration_binding_state_invalid: Change Request CR-TASK-260929-3f6hfg-1 revision 1 is integrated, want accepted or checkpointed
 
 ## Precondition Resources
 - [final-plan.md](file://TASK-260929-3f6hfg/final-plan.md) — codex-fix preconditions
@@ -108,12 +111,13 @@ spawn run started: [implementer] developer (codex) (run=RUN-261007-a970a6)
 - [TASK-260929-3f6hfg_recording-review-rev1.md](file://TASK-260929-3f6hfg/TASK-260929-3f6hfg_recording-review-rev1.md) — Recording reviewer merge audit: both panels accept, 0 findings, 8/8 notes preserved, 3/3 held surface rows
 - [TASK-260929-3f6hfg_review-verdict-recorded-rev1.md](file://TASK-260929-3f6hfg/TASK-260929-3f6hfg_review-verdict-recorded-rev1.md) — Recording-owned merged verdict: 3 held rows, no blocking/free-hunt findings; full panel notes and hunt narrative preserved
 - [TASK-260929-3f6hfg_spawn-log_-implementer--developer--codex-_RUN-261007-a970a6.log](file://TASK-260929-3f6hfg/TASK-260929-3f6hfg_spawn-log_-implementer--developer--codex-_RUN-261007-a970a6.log) — System spawn log captured by task-board
+- [TASK-260929-3f6hfg_complete-log.md](file://TASK-260929-3f6hfg/TASK-260929-3f6hfg_complete-log.md) — Landing checks and both completion transaction outputs with exit codes
 
 ## Created
 2026-09-29T00:50:51Z
 
 ## Last Update
-2026-10-07T15:50:03Z
+2026-10-07T15:52:16Z
 
 ## Assigned To
 [implementer] developer (codex)
