@@ -335,6 +335,9 @@ spawn run completed: codex (run=RUN-261005-c8dd42, pid=8024, exit=0)
 spawn agent resolution: Agent selection: codex via explicit_override
 spawn queued: [implementer] developer (codex) (run=RUN-261005-1a4f63, max_parallel=4)
 spawn run started: [implementer] developer (codex) (run=RUN-261005-1a4f63)
+agent completed: [implementer] developer (codex) (exit=0)
+spawn run completed: codex (run=RUN-261005-1a4f63, pid=69657, exit=0)
+spawn run RUN-261005-1a4f63 failed; operator action required; failure: integration_binding_state_invalid: Change Request CR-TASK-260929-2gp04j-4 revision 4 is integrated, want accepted or checkpointed
 
 ## Precondition Resources
 - [surface-table.md](file://TASK-260929-2gp04j/surface-table.md) — Review surface table
@@ -417,12 +420,13 @@ spawn run started: [implementer] developer (codex) (run=RUN-261005-1a4f63)
 - [TASK-260929-2gp04j_recording-verification-rev4.md](file://TASK-260929-2gp04j/TASK-260929-2gp04j_recording-verification-rev4.md) — Recording reviewer: all three rev4 panels accept; merged findings, surface rows and notes preserved
 - [TASK-260929-2gp04j_review-verdict-rev4-recorded.md](file://TASK-260929-2gp04j/TASK-260929-2gp04j_review-verdict-rev4-recorded.md) — Recording acceptance: complete merged verdict, nonblocking hunt narratives preserved as notes, empty free-hunt findings
 - [TASK-260929-2gp04j_spawn-log_-implementer--developer--codex-_RUN-261005-1a4f63.log](file://TASK-260929-2gp04j/TASK-260929-2gp04j_spawn-log_-implementer--developer--codex-_RUN-261005-1a4f63.log) — System spawn log captured by task-board
+- [TASK-260929-2gp04j_complete-log.md](file://TASK-260929-2gp04j/TASK-260929-2gp04j_complete-log.md) — Integration preconditions, full worktree complete outputs and exit codes; cleanup_pending after instructed retry
 
 ## Created
 2026-09-29T00:50:54Z
 
 ## Last Update
-2026-10-05T06:49:06Z
+2026-10-05T06:51:30Z
 
 ## Assigned To
 [implementer] developer (codex)
