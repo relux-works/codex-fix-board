@@ -15,7 +15,7 @@ notEstimated
 - TASK-260929-2gp04j
 
 ## Blocks
-- TASK-260929-1w5ivu
+- (none)
 
 ## Checklist
 - [ ] AC table detailed before spawn
@@ -32,4 +32,4 @@ notEstimated
 2026-09-29T00:50:56Z
 
 ## Last Update
-2026-09-29T00:51:14Z
+2026-09-29T23:12:27Z
