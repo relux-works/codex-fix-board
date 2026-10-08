@@ -316,6 +316,9 @@ spawn run completed: codex (run=RUN-261007-5b4b27, pid=10617, exit=0)
 spawn agent resolution: Agent selection: codex via explicit_override
 spawn queued: [implementer] developer (codex) (run=RUN-261007-e080a9, max_parallel=4)
 spawn run started: [implementer] developer (codex) (run=RUN-261007-e080a9)
+agent completed: [implementer] developer (codex) (exit=0)
+spawn run completed: codex (run=RUN-261007-e080a9, pid=88285, exit=0)
+spawn run RUN-261007-e080a9 failed; operator action required; failure: integration_binding_state_invalid: Change Request CR-TASK-260929-2snjbb-5 revision 5 is integrated, want accepted or checkpointed
 
 ## Precondition Resources
 - [final-plan.md](file://TASK-260929-2snjbb/final-plan.md) — codex-fix preconditions
@@ -398,12 +401,13 @@ spawn run started: [implementer] developer (codex) (run=RUN-261007-e080a9)
 - [TASK-260929-2snjbb_recording-merge-validation-rev5.json](file://TASK-260929-2snjbb/TASK-260929-2snjbb_recording-merge-validation-rev5.json) — Recording reviewer: exact panel-to-merged evidence comparison, revision 5
 - [TASK-260929-2snjbb_recording-review-rev5.md](file://TASK-260929-2snjbb/TASK-260929-2snjbb_recording-review-rev5.md) — Recording reviewer: unanimous acceptance and lossless merged verdict confirmed
 - [TASK-260929-2snjbb_spawn-log_-implementer--developer--codex-_RUN-261007-e080a9.log](file://TASK-260929-2snjbb/TASK-260929-2snjbb_spawn-log_-implementer--developer--codex-_RUN-261007-e080a9.log) — System spawn log captured by task-board
+- [TASK-260929-2snjbb_complete-log.md](file://TASK-260929-2snjbb/TASK-260929-2snjbb_complete-log.md) — Integration landing verification and both worktree complete outputs with exit codes; cleanup_pending after permitted retry
 
 ## Created
 2026-09-29T00:50:48Z
 
 ## Last Update
-2026-10-07T08:03:37Z
+2026-10-07T08:06:14Z
 
 ## Assigned To
 [implementer] developer (codex)
