@@ -138,6 +138,9 @@ spawn run RUN-261002-40f31e failed because its runner heartbeat expired; operato
 spawn agent resolution: Agent selection: codex via explicit_override
 spawn queued: [implementer] developer (codex) (run=RUN-261002-c5b773, max_parallel=4)
 spawn run started: [implementer] developer (codex) (run=RUN-261002-c5b773)
+agent completed: [implementer] developer (codex) (exit=0)
+spawn run completed: codex (run=RUN-261002-c5b773, pid=2104, exit=0)
+spawn run RUN-261002-c5b773 failed; operator action required; failure: integration_binding_state_invalid: Change Request CR-TASK-260929-17t419-6 revision 6 is integrated, want accepted or checkpointed
 
 ## Precondition Resources
 - [final-plan.md](file://TASK-260929-17t419/final-plan.md) — Accepted final plan (P1 = section 3)
@@ -191,14 +194,14 @@ spawn run started: [implementer] developer (codex) (run=RUN-261002-c5b773)
 - [TASK-260929-17t419_spawn-log_-implementer--developer--codex-_RUN-260930-e0c3b9.log](file://TASK-260929-17t419/TASK-260929-17t419_spawn-log_-implementer--developer--codex-_RUN-260930-e0c3b9.log) — System spawn log captured by task-board
 - [TASK-260929-17t419_integration-evidence.md](file://TASK-260929-17t419/TASK-260929-17t419_integration-evidence.md) — Accepted CR rev 6 landing and worktree identity evidence
 - [TASK-260929-17t419_spawn-log_-implementer--developer--codex-_RUN-261002-e91c74.log](file://TASK-260929-17t419/TASK-260929-17t419_spawn-log_-implementer--developer--codex-_RUN-261002-e91c74.log) — System spawn log captured by task-board
-- [TASK-260929-17t419_complete-log.md](file://TASK-260929-17t419/TASK-260929-17t419_complete-log.md) — R140 landing preconditions passed; worktree complete refused with validation_suite_changed (exit 1)
+- [TASK-260929-17t419_complete-log.md](file://TASK-260929-17t419/TASK-260929-17t419_complete-log.md) — Fresh R140 integration record: verified landing/tree/signature; complete and permitted resume exited 0; full outputs, cleanup_pending and attachment collision recorded.
 - [TASK-260929-17t419_spawn-log_-implementer--developer--codex-_RUN-261002-c5b773.log](file://TASK-260929-17t419/TASK-260929-17t419_spawn-log_-implementer--developer--codex-_RUN-261002-c5b773.log) — System spawn log captured by task-board
 
 ## Created
 2026-09-29T00:50:34Z
 
 ## Last Update
-2026-10-02T03:37:52Z
+2026-10-02T03:40:01Z
 
 ## Assigned To
 [implementer] developer (codex)
