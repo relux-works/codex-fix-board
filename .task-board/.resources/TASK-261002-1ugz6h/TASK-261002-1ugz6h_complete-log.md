@@ -1,132 +1,129 @@
-# Integration run log — STORY-261002-hep79y (relux-hosted-ci-lanes) / TASK-261002-1ugz6h rev 2
+# TASK-261002-1ugz6h — relux-ci-workflow-and-fork-settings: integration evidence
 
-- Run: RUN-261002-29b37c (role developer, archetype implementer; integration run for accepted CR-TASK-261002-1ugz6h-2 revision 2)
-- Date: 2026-10-02 (~07:40–07:45Z)
-- Landed commit under check: `ea8899e6f97aea64136159286840c28c955243e8`
-- Expected tree: `429a14a27a106f73b5907a0d830c4548cb3f1ea4`
-- Board state at start: TASK-261002-1ugz6h=integrating, STORY-261002-hep79y=integrating (left untouched)
-- No file edits, no builds, no handoff/status/checkpoint/integrate commands run in this run.
+Integration assignment for CR-TASK-261002-1ugz6h-2, revision 2. Executed the explicit complete-note.md / tb-R144 instructions. No project-file edits or builds were performed. No handoff, integrate, checkpoint, or additional status command was run.
 
-## 1. Landing re-check (complete-note step 1)
+Evidence attachment: resource add exited 1 with `resource "TASK-261002-1ugz6h_complete-log.md" on TASK-261002-1ugz6h: resource already exists`. The existing resource is refreshed through resource update, as the assignment requires for revised artifacts.
 
-### 1a. Fetch relux/main
+All three landing preconditions passed (exit 0): current fetched origin/relux/main contains ea8899e6f97aea64136159286840c28c955243e8, its tree is exactly 429a14a27a106f73b5907a0d830c4548cb3f1ea4, and git verify-commit reports a good configured human signature.
 
-`git fetch origin relux/main` failed: this headless session has no SSH
-authentication to GitHub (see section 3). Verbatim:
+The first worktree complete invocation exited 0 and published board commit 7ce3f28278c8612ba307e368df7cc1528f5c5749. It reported cleanup_pending. As instructed, the same command was rerun exactly once; it exited 0 and resumed the recorded delivery, again reporting cleanup_pending. The work is integrated. Workspace cleanup remains pending; no cleanup command was invoked.
 
-```
-git@github.com: Permission denied (publickey).
-fatal: Could not read from remote repository.
+The pre-existing untracked workflow file was preserved. Previous hosted test evidence was not rerun in this no-build integration assignment.
 
-Please make sure you have the correct access rights
-and the repository exists.
-FETCH_EXIT=128
+## Commands and full outputs
+
+### 1. Command
+
+```sh
+task-board m 'set_status(TASK-261002-1ugz6h, status=integrating)'
 ```
 
-Equivalent evidence was read from the same remote over public HTTPS
-(relux-works/codex is a public fork; read needs no credentials):
+Exit code: 0
 
+```text
+{"ok":true,"result":{"primary":{"action":"status_changed","element_id":"TASK-261002-1ugz6h","field":"status","new_value":"integrating","old_value":"integrating"}}}```
+
+### 2. Command
+
+```sh
+git --version
 ```
-$ git fetch https://github.com/relux-works/codex.git relux/main
-From https://github.com/relux-works/codex
+
+Exit code: 0
+
+```text
+git version 2.54.0 (Apple Git-157)
+```
+
+### 3. Command
+
+```sh
+git status --short
+```
+
+Exit code: 0
+
+```text
+?? .github/workflows/relux-ci.yml
+```
+
+### 4. Command
+
+```sh
+git fetch origin relux/main
+```
+
+Exit code: 0
+
+```text
+From github.com:relux-works/codex
  * branch                  relux/main -> FETCH_HEAD
-FETCH_HTTPS_EXIT=0
-
-$ git fetch https://github.com/relux-works/codex.git relux/main:refs/remotes/origin/relux/main
-FETCH_TRACKING_EXIT=0
-
-$ git rev-parse origin/relux/main
-ea8899e6f97aea64136159286840c28c955243e8
-REVPARSE_EXIT=0
 ```
 
-So `origin/relux/main` resolves to exactly the landed commit ea8899e
-(exact-head fast-forward, as recorded for fork PR #2).
+### 5. Command
 
-### 1b. Ancestor check
-
-```
-$ git merge-base --is-ancestor ea8899e6f97aea64136159286840c28c955243e8 origin/relux/main
-MERGEBASE_EXIT=0
+```sh
+git merge-base --is-ancestor ea8899e6f97aea64136159286840c28c955243e8 origin/relux/main
 ```
 
-PASS (exit 0).
+Exit code: 0
 
-### 1c. Tree check
-
+```text
+(no output)
 ```
-$ git rev-parse ea8899e6f97aea64136159286840c28c955243e8^{tree}
+
+### 6. Command
+
+```sh
+git rev-parse 'ea8899e6f97aea64136159286840c28c955243e8^{tree}'
+```
+
+Exit code: 0
+
+```text
 429a14a27a106f73b5907a0d830c4548cb3f1ea4
-TREE_EXIT=0
 ```
 
-PASS: tree equals the accepted story_final candidate tree
-`429a14a27a106f73b5907a0d830c4548cb3f1ea4`.
+### 7. Command
 
-### 1d. Signature check
-
+```sh
+git verify-commit ea8899e6f97aea64136159286840c28c955243e8
 ```
-$ git verify-commit ea8899e6f97aea64136159286840c28c955243e8
+
+Exit code: 0
+
+```text
 Good "git" signature for oparin@me.com with ECDSA key SHA256:V6JiKG7J29mjsvikcLoSVp0bLa77VTsFy12gnLO81cM
-VERIFY_EXIT=0
 ```
 
-PASS: good signature, exit 0.
+### 8. Command
 
-Landing verdict: all three checks green. The accepted rev-2 candidate is
-landed as the tip of relux/main with the expected tree and a good signature.
-
-## 2. `worktree complete` (complete-note step 2)
-
-Command (run exactly once):
-
-```
+```sh
 task-board worktree complete STORY-261002-hep79y --cr TASK-261002-1ugz6h --revision 2 --landed-commit ea8899e6f97aea64136159286840c28c955243e8
 ```
 
-Full output, verbatim:
+Exit code: 0
 
+```text
+STORY-261002-hep79y  cleanup_pending
+  code landed:  ea8899e6f97aea64136159286840c28c955243e8 (proven on the code repository's protected default)
+  board commit: 7ce3f28278c8612ba307e368df7cc1528f5c5749
+  board published to refs/heads/main in /Users/iv/Developer/IV/codex-fix-board
+  note: the board checkout's own branch was left where it was; fetch and fast-forward it to see the published board state in Git
+  note: safe cleanup is now eligible; `worktree cleanup` removes the workspace and branch only after exact commit ancestry, Story done, a committed board record, a clean workspace, and no active lease or RUN
 ```
-worktree_protected_authority_unavailable: the authorized remote HEAD could not be read (canonical_remote_url=ssh://git@github.com/relux-works/codex, git_error=git@github.com: Permission denied (publickey).
-fatal: Could not read from remote repository.
 
-Please make sure you have the correct access rights
-and the repository exists., remedy=restore the unique authorized remote and retry; do not substitute local or cached authority, remote=origin)
-COMPLETE_EXIT=1
+### 9. Command
+
+```sh
+task-board worktree complete STORY-261002-hep79y --cr TASK-261002-1ugz6h --revision 2 --landed-commit ea8899e6f97aea64136159286840c28c955243e8
 ```
 
-Result: REFUSED with `worktree_protected_authority_unavailable`, exit code 1.
-Not a resumable phase (no `code_landed_board_pending` / `cleanup_pending`),
-so per the brief it was not re-run: a retry in this same session would fail
-identically (SSH still unavailable). The board transaction did NOT execute;
-task and story remain at `integrating`.
+Exit code: 0
 
-## 3. SSH failure diagnosis (why complete cannot run here)
-
-- No ssh-agent in this session: `ssh-add -l` →
-  `Could not open a connection to your authentication agent.`
-- `ssh -T -o BatchMode=yes git@github.com` → `Permission denied (publickey).`,
-  exit 255. Verbose log shows the configured key `~/.ssh/ivanopcode` is
-  offered and the server accepts the pubkey, then denies — the client cannot
-  produce the signature.
-- `ssh-keygen -y -P "" -f ~/.ssh/ivanopcode` → exit 255: the private key is
-  passphrase-protected (passphrase normally supplied from the macOS Keychain
-  via `UseKeyChain yes`). A headless run cannot unlock the Keychain and no
-  agent socket is present.
-- Board authority resolution uses the canonical SSH remote
-  (`ssh://git@github.com/relux-works/codex`) and refuses substituted/cached
-  authority, so the HTTPS read in section 1a cannot satisfy `complete` —
-  it only evidences the landing itself.
-
-This is an environment/authentication blocker external to the change:
-nothing about the landed commit, tree, or signature is in doubt.
-
-## 4. Handoff state
-
-- Outcome: landing VERIFIED (sections 1b–1d green); completion transaction
-  NOT executed (section 2 refused on SSH auth).
-- Board left at: TASK-261002-1ugz6h=integrating, STORY-261002-hep79y=integrating.
-- Next step: re-run the exact step-2 command from a session where SSH to
-  GitHub works (interactive login with Keychain/agent, or a host holding a
-  registered key), then attach its output. No code, tree, or evidence change
-  is needed — the landing preconditions already hold.
+```text
+STORY-261002-hep79y  cleanup_pending
+  resumed a recorded delivery rather than starting a second one
+  code landed:  ea8899e6f97aea64136159286840c28c955243e8 (proven on the code repository's protected default)
+  note: the work is integrated; safe cleanup is retried by `worktree repair` and `worktree gc`
+```

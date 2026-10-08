@@ -92,6 +92,9 @@ spawn run RUN-261002-29b37c failed; operator action required; failure: board_own
 spawn agent resolution: Agent selection: codex via explicit_override
 spawn queued: [implementer] developer (codex) (run=RUN-261002-ce38f5, max_parallel=4)
 spawn run started: [implementer] developer (codex) (run=RUN-261002-ce38f5)
+agent completed: [implementer] developer (codex) (exit=0)
+spawn run completed: codex (run=RUN-261002-ce38f5, pid=56605, exit=0)
+spawn run RUN-261002-ce38f5 failed; operator action required; failure: integration_binding_state_invalid: Change Request CR-TASK-261002-1ugz6h-2 revision 2 is integrated, want accepted or checkpointed
 
 ## Precondition Resources
 - [surface-table.md](file://TASK-261002-1ugz6h/surface-table.md) — Review surface table
@@ -122,14 +125,14 @@ spawn run started: [implementer] developer (codex) (run=RUN-261002-ce38f5)
 - [TASK-261002-1ugz6h_spawn-log_-reviewer--reviewer--claude-_RUN-261002-690aaa.log](file://TASK-261002-1ugz6h/TASK-261002-1ugz6h_spawn-log_-reviewer--reviewer--claude-_RUN-261002-690aaa.log) — System spawn log captured by task-board
 - [TASK-261002-1ugz6h_review-verdict-rev2-recording.md](file://TASK-261002-1ugz6h/TASK-261002-1ugz6h_review-verdict-rev2-recording.md) — Recording reviewer merge confirmation and accept for CR rev 2
 - [TASK-261002-1ugz6h_spawn-log_-implementer--developer--muse-_RUN-261002-29b37c.log](file://TASK-261002-1ugz6h/TASK-261002-1ugz6h_spawn-log_-implementer--developer--muse-_RUN-261002-29b37c.log) — System spawn log captured by task-board
-- [TASK-261002-1ugz6h_complete-log.md](file://TASK-261002-1ugz6h/TASK-261002-1ugz6h_complete-log.md) — Integration run log: landing verified (ancestor/tree/signature green), worktree complete refused on SSH auth (exit 1, verbatim)
+- [TASK-261002-1ugz6h_complete-log.md](file://TASK-261002-1ugz6h/TASK-261002-1ugz6h_complete-log.md) — Fresh integration evidence: landing preconditions green, both complete invocations exit 0, board published, cleanup_pending.
 - [TASK-261002-1ugz6h_spawn-log_-implementer--developer--codex-_RUN-261002-ce38f5.log](file://TASK-261002-1ugz6h/TASK-261002-1ugz6h_spawn-log_-implementer--developer--codex-_RUN-261002-ce38f5.log) — System spawn log captured by task-board
 
 ## Created
 2026-10-02T03:17:22Z
 
 ## Last Update
-2026-10-02T07:47:15Z
+2026-10-02T07:49:47Z
 
 ## Assigned To
 [implementer] developer (codex)
