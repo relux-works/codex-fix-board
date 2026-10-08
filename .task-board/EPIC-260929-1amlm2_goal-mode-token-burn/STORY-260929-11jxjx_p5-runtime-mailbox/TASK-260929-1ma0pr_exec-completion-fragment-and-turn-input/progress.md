@@ -150,6 +150,9 @@ spawn run completed: codex (run=RUN-261005-c0ec9e, pid=8407, exit=0)
 spawn agent resolution: Agent selection: codex via explicit_override
 spawn queued: [implementer] developer (codex) (run=RUN-261005-7ffb7c, max_parallel=4)
 spawn run started: [implementer] developer (codex) (run=RUN-261005-7ffb7c)
+agent completed: [implementer] developer (codex) (exit=0)
+spawn run completed: codex (run=RUN-261005-7ffb7c, pid=35300, exit=0)
+spawn run RUN-261005-7ffb7c failed; operator action required; failure: integration_binding_state_invalid: Change Request CR-TASK-260929-1ma0pr-2 revision 2 is integrated, want accepted or checkpointed
 
 ## Precondition Resources
 - [final-plan.md](file://TASK-260929-1ma0pr/final-plan.md) — Accepted 10-PR plan
@@ -187,12 +190,13 @@ spawn run started: [implementer] developer (codex) (run=RUN-261005-7ffb7c)
 - [TASK-260929-1ma0pr_spawn-log_-reviewer--reviewer--codex-_RUN-261005-c0ec9e.log](file://TASK-260929-1ma0pr/TASK-260929-1ma0pr_spawn-log_-reviewer--reviewer--codex-_RUN-261005-c0ec9e.log) — System spawn log captured by task-board
 - [TASK-260929-1ma0pr_review-verdict-rev2-recorded.md](file://TASK-260929-1ma0pr/TASK-260929-1ma0pr_review-verdict-rev2-recorded.md) — Recording reviewer audit: three accept panels, complete merged surfaces and notes
 - [TASK-260929-1ma0pr_spawn-log_-implementer--developer--codex-_RUN-261005-7ffb7c.log](file://TASK-260929-1ma0pr/TASK-260929-1ma0pr_spawn-log_-implementer--developer--codex-_RUN-261005-7ffb7c.log) — System spawn log captured by task-board
+- [TASK-260929-1ma0pr_complete-log.md](file://TASK-260929-1ma0pr/TASK-260929-1ma0pr_complete-log.md) — Landing preconditions and full worktree complete outputs with exit codes; cleanup_pending after one retry
 
 ## Created
 2026-09-29T00:50:41Z
 
 ## Last Update
-2026-10-05T19:22:29Z
+2026-10-05T19:24:36Z
 
 ## Assigned To
 [implementer] developer (codex)
