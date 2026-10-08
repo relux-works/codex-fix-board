@@ -157,6 +157,9 @@ spawn run completed: codex (run=RUN-261006-fb09ba, pid=89232, exit=0)
 spawn agent resolution: Agent selection: codex via explicit_override
 spawn queued: [implementer] developer (codex) (run=RUN-261006-052d9c, max_parallel=4)
 spawn run started: [implementer] developer (codex) (run=RUN-261006-052d9c)
+agent completed: [implementer] developer (codex) (exit=0)
+spawn run completed: codex (run=RUN-261006-052d9c, pid=62611, exit=0)
+spawn run RUN-261006-052d9c failed; operator action required; failure: integration_binding_state_invalid: Change Request CR-TASK-260929-csnn3a-2 revision 2 is integrated, want accepted or checkpointed
 
 ## Precondition Resources
 - [final-plan.md](file://TASK-260929-csnn3a/final-plan.md) — codex-fix preconditions
@@ -196,12 +199,13 @@ spawn run started: [implementer] developer (codex) (run=RUN-261006-052d9c)
 - [TASK-260929-csnn3a_recording-review-rev2.json](file://TASK-260929-csnn3a/TASK-260929-csnn3a_recording-review-rev2.json) — Recording review rev2: all three panel accepts and lossless merged findings, rows, notes and bounds verified
 - [TASK-260929-csnn3a_recorded-review-verdict-rev2.md](file://TASK-260929-csnn3a/TASK-260929-csnn3a_recorded-review-verdict-rev2.md) — Recording verdict: lossless panel merge; nonblocking static free-hunt report preserved in notes for acceptance schema
 - [TASK-260929-csnn3a_spawn-log_-implementer--developer--codex-_RUN-261006-052d9c.log](file://TASK-260929-csnn3a/TASK-260929-csnn3a_spawn-log_-implementer--developer--codex-_RUN-261006-052d9c.log) — System spawn log captured by task-board
+- [TASK-260929-csnn3a_complete-log.md](file://TASK-260929-csnn3a/TASK-260929-csnn3a_complete-log.md) — Landing checks and full worktree complete outputs: two exit-0 calls, integration recorded, cleanup_pending
 
 ## Created
 2026-09-29T00:50:44Z
 
 ## Last Update
-2026-10-06T11:02:17Z
+2026-10-06T11:04:39Z
 
 ## Assigned To
 [implementer] developer (codex)
