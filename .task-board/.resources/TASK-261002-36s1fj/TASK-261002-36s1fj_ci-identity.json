@@ -1,0 +1,16 @@
+{
+  "source_commit": "016a4248cf1984b97e786ce8573ad40c9438dfbf",
+  "source_tree": "4d289590739432aa55c2a3868c2b4a5472b07c92",
+  "run": 37002709023,
+  "jobs": {
+    "app-server": "success",
+    "core": "success",
+    "small": "success",
+    "lint": "success"
+  },
+  "checkout_log_excerpt": [
+    "lint\tUNKNOWN STEP\t2026-10-02T11:45:03.4137418Z   ref: 016a4248cf1984b97e786ce8573ad40c9438dfbf",
+    "lint\tUNKNOWN STEP\t2026-10-02T11:45:07.7156994Z HEAD is now at 016a424 ci: TASK-260929-2gp04j pre-handoff snapshot wip-2 (never landed)"
+  ],
+  "scope": "Four baseline lane statuses and lint checkout log independently inspected. Individual mutant logs not reaudited."
+}
