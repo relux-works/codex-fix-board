@@ -1,0 +1,1805 @@
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs b/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs
+index 3d2942f1196d6840bfc16a6e4a3e519bee4c8c5a..660d17e8aa75027b535cc60db4852c851cc6d24a 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs
+@@ -107,13 +107,22 @@ impl Handler {
+             .await
+             .map_err(|err| collab_agent_error(receiver_thread_id, err));
+         let status = local_agent_control.get_status(receiver_thread_id).await;
++        // Report the delivery result, not child liveness: a refused send is
++        // Failed even while the child stays Running, and an accepted send is
++        // Completed even if the child errors afterwards. Liveness stays in
++        // agents_states for display.
++        let delivery_status = if result.is_ok() {
++            CollabAgentToolCallStatus::Completed
++        } else {
++            CollabAgentToolCallStatus::Failed
++        };
+         session
+             .emit_turn_item_completed(
+                 &turn,
+                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                     id: call_id,
+                     tool: CollabAgentTool::SendInput,
+-                    status: collab_tool_call_status(&status, Some(receiver_thread_id)),
++                    status: delivery_status,
+                     sender_thread_id: session.thread_id,
+                     receiver_thread_ids: vec![receiver_thread_id],
+                     receiver_agents: vec![CollabAgentRef {
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+index fc611f530aba005e73583bfd7559b7e62f3029d5..fbbd6a1647c088ade8139a98678914f497a7db09 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+@@ -12,12 +12,17 @@ use crate::environment_selection::TurnEnvironmentState;
+ use crate::function_tool::FunctionCallError;
+ use crate::init_state_db;
+ use crate::local_agent_graph_store_from_state_db;
++use crate::session::TurnInput;
+ use crate::session::step_context::StepContext;
+ use crate::session::tests::make_session_and_context;
++use crate::session::tests::make_session_and_context_with_rx;
+ use crate::session::tests::update_selected_settings_for_test;
+ use crate::session::tests::update_turn_settings_for_test;
+ use crate::session::turn_context::TurnContext;
+ use crate::session_prefix::format_inter_agent_completion_message;
++use crate::state::TaskKind;
++use crate::tasks::SessionTask;
++use crate::tasks::SessionTaskResult;
+ use crate::thread_manager::thread_store_from_config;
+ use crate::tools::context::ToolOutput;
+ use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
+@@ -2748,6 +2753,162 @@ async fn send_input_accepts_structured_items() {
+         .expect("shutdown should submit");
+ }
+ 
++/// Occupies a child turn with a non-steerable `Compact` task so `send_input`
++/// delivery is refused while the child status stays `Running`.
++#[derive(Clone, Copy)]
++struct CompactBlockingTask;
++
++impl SessionTask for CompactBlockingTask {
++    fn kind(&self) -> TaskKind {
++        TaskKind::Compact
++    }
++
++    fn span_name(&self) -> &'static str {
++        "session_task.compact_blocking_for_test"
++    }
++
++    async fn run(
++        self: Arc<Self>,
++        session: Arc<crate::session::session::Session>,
++        ctx: Arc<TurnContext>,
++        _input: Vec<TurnInput>,
++        cancellation_token: CancellationToken,
++    ) -> SessionTaskResult {
++        // Real compact tasks announce the turn, driving the child to Running.
++        session.emit_turn_started(&ctx).await;
++        cancellation_token.cancelled().await;
++        Ok(None)
++    }
++}
++
++async fn wait_for_send_input_completion_status(
++    rx: &async_channel::Receiver<codex_protocol::protocol::Event>,
++) -> CollabAgentToolCallStatus {
++    timeout(Duration::from_secs(5), async {
++        loop {
++            let event = rx.recv().await.expect("event stream should stay open");
++            if let EventMsg::ItemCompleted(ItemCompletedEvent {
++                item: TurnItem::CollabAgentToolCall(call),
++                ..
++            }) = event.msg
++                && matches!(call.tool, CollabAgentTool::SendInput)
++            {
++                break call.status;
++            }
++        }
++    })
++    .await
++    .expect("timed out waiting for send_input completion")
++}
++
++#[tokio::test]
++async fn send_input_rejected_compaction_emits_failed_item() {
++    let (mut session, turn, rx) = make_session_and_context_with_rx().await;
++    let manager = thread_manager();
++    set_agent_control(
++        Arc::get_mut(&mut session).expect("parent session should be uniquely owned"),
++        manager.agent_control(),
++    );
++    let config = turn.config.as_ref().clone();
++    let thread = manager
++        .start_thread(StartThreadOptions::new(config.clone()))
++        .await
++        .expect("start thread");
++    let agent_id = thread.thread_id;
++
++    let child_session = Arc::clone(&thread.thread.session);
++    let child_turn = child_session
++        .new_turn_with_default_settings("compact-turn".to_string(), Default::default())
++        .await;
++    child_session
++        .spawn_task(
++            child_turn,
++            vec![TurnInput::UserInput {
++                content: vec![UserInput::Text {
++                    text: "compacting".to_string(),
++                    text_elements: Vec::new(),
++                }],
++                client_id: None,
++                metadata: Default::default(),
++            }],
++            CompactBlockingTask,
++        )
++        .await;
++    timeout(Duration::from_secs(5), async {
++        loop {
++            if matches!(thread.thread.agent_status().await, AgentStatus::Running) {
++                break;
++            }
++            tokio::time::sleep(Duration::from_millis(10)).await;
++        }
++    })
++    .await
++    .expect("child should reach Running while compacting");
++
++    let invocation = invocation(
++        session,
++        turn,
++        "send_input",
++        function_payload(json!({"target": agent_id.to_string(), "message": "hi"})),
++    );
++    let Err(err) = SendInputHandler.handle(invocation).await else {
++        panic!("send to a compacting child should be refused");
++    };
++    let FunctionCallError::RespondToModel(_) = err else {
++        panic!("refusal should be a model-visible error, got {err:?}");
++    };
++
++    // The completed item must report the refused delivery as Failed, not the
++    // child's still-Running liveness. Goal observations key on this status.
++    assert_eq!(
++        wait_for_send_input_completion_status(&rx).await,
++        CollabAgentToolCallStatus::Failed
++    );
++
++    let _ = thread
++        .thread
++        .submit(Op::Shutdown {})
++        .await
++        .expect("shutdown should submit");
++}
++
++#[tokio::test]
++async fn send_input_accepted_emits_completed_item() {
++    let (mut session, turn, rx) = make_session_and_context_with_rx().await;
++    let manager = thread_manager();
++    set_agent_control(
++        Arc::get_mut(&mut session).expect("parent session should be uniquely owned"),
++        manager.agent_control(),
++    );
++    let config = turn.config.as_ref().clone();
++    let thread = manager
++        .start_thread(StartThreadOptions::new(config.clone()))
++        .await
++        .expect("start thread");
++    let agent_id = thread.thread_id;
++    let invocation = invocation(
++        session,
++        turn,
++        "send_input",
++        function_payload(json!({"target": agent_id.to_string(), "message": "hi"})),
++    );
++    SendInputHandler
++        .handle(invocation)
++        .await
++        .expect("send_input should succeed");
++
++    assert_eq!(
++        wait_for_send_input_completion_status(&rx).await,
++        CollabAgentToolCallStatus::Completed
++    );
++
++    let _ = thread
++        .thread
++        .submit(Op::Shutdown {})
++        .await
++        .expect("shutdown should submit");
++}
++
+ #[tokio::test]
+ async fn resume_agent_rejects_invalid_id() {
+     let (session, turn) = make_session_and_context().await;
+diff --git a/codex-rs/core/src/tools/handlers/plan.rs b/codex-rs/core/src/tools/handlers/plan.rs
+index 34956562230fb906b153362d48bc9622d9f2af5c..e016ae9adc78e9e83a61ef9b5f612a30bd93e445 100644
+--- a/codex-rs/core/src/tools/handlers/plan.rs
++++ b/codex-rs/core/src/tools/handlers/plan.rs
+@@ -70,7 +70,7 @@ impl PlanHandler {
+         let ToolInvocation {
+             session,
+             turn,
+-            call_id: _,
++            call_id,
+             payload,
+             ..
+         } = invocation;
+@@ -92,8 +92,15 @@ impl PlanHandler {
+ 
+         let args = parse_update_plan_arguments(&arguments)?;
+         session
+-            .send_event(turn.as_ref(), EventMsg::PlanUpdate(args))
++            .send_event(turn.as_ref(), EventMsg::PlanUpdate(args.clone()))
+             .await;
++        crate::tools::lifecycle::notify_plan_committed(
++            session.as_ref(),
++            turn.as_ref(),
++            call_id.as_str(),
++            &args,
++        )
++        .await;
+ 
+         Ok(boxed_tool_output(PlanToolOutput))
+     }
+diff --git a/codex-rs/core/src/tools/lifecycle.rs b/codex-rs/core/src/tools/lifecycle.rs
+index e26d83da6b7e23a88e2c0252703f6c5e5342ad00..8be2d228fef2ce32f0e1b87e9aa4556b81a0a5ed 100644
+--- a/codex-rs/core/src/tools/lifecycle.rs
++++ b/codex-rs/core/src/tools/lifecycle.rs
+@@ -3,6 +3,7 @@ use std::sync::Arc;
+ use codex_extension_api::CommandStartInput;
+ use codex_extension_api::McpToolContext;
+ use codex_extension_api::McpToolResultInput;
++use codex_extension_api::PlanCommitInput;
+ use codex_extension_api::ToolCallOutcome;
+ use codex_extension_api::ToolCallSource as ExtensionToolCallSource;
+ use codex_extension_api::ToolFinishInput;
+@@ -161,6 +162,25 @@ async fn notify_tool_finish_parts(
+     }
+ }
+ 
++pub(crate) async fn notify_plan_committed(
++    session: &Session,
++    turn: &TurnContext,
++    call_id: &str,
++    plan: &codex_protocol::plan_tool::UpdatePlanArgs,
++) {
++    for contributor in session.services.extensions.tool_lifecycle_contributors() {
++        contributor
++            .on_plan_committed(PlanCommitInput {
++                thread_store: &session.services.thread_extension_data,
++                turn_store: turn.extension_data.as_ref(),
++                turn_id: turn.sub_id.as_str(),
++                call_id,
++                plan,
++            })
++            .await;
++    }
++}
++
+ pub(crate) fn extension_tool_call_source(source: ToolCallSource) -> ExtensionToolCallSource {
+     match source {
+         ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => {
+diff --git a/codex-rs/core/tests/suite/code_mode.rs b/codex-rs/core/tests/suite/code_mode.rs
+index 5925e2fbf235c7d411696314968c75e8ca8ca888..baeaac88f89a3084624ae0c78b3c4fe723b9c68f 100644
+--- a/codex-rs/core/tests/suite/code_mode.rs
++++ b/codex-rs/core/tests/suite/code_mode.rs
+@@ -25,6 +25,7 @@ use codex_extension_api::ToolFinishInput;
+ use codex_extension_api::ToolLifecycleContributor;
+ use codex_extension_api::ToolLifecycleFuture;
+ use codex_extension_api::ToolStartInput;
++use codex_extension_api::TurnLifecycleContributor;
+ use codex_features::CurrentTimeSource;
+ use codex_features::Feature;
+ use codex_http_client::DestinationPolicy;
+@@ -44,6 +45,8 @@ use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
+ use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
+ use codex_protocol::dynamic_tools::DynamicToolResponse;
+ use codex_protocol::dynamic_tools::DynamicToolSpec;
++use codex_protocol::items::CommandExecutionStatus;
++use codex_protocol::items::TurnItem;
+ use codex_protocol::models::ContentItem;
+ use codex_protocol::models::ImageDetail;
+ use codex_protocol::models::ImageReference;
+@@ -54,6 +57,7 @@ use codex_protocol::openai_models::ToolMode;
+ use codex_protocol::protocol::AskForApproval;
+ use codex_protocol::protocol::EventMsg;
+ use codex_protocol::protocol::Op;
++use codex_protocol::protocol::PatchApplyStatus;
+ use codex_protocol::protocol::ThreadHistoryMode;
+ use codex_protocol::protocol::ThreadSettingsOverrides;
+ use codex_protocol::user_input::UserInput;
+@@ -6843,6 +6847,153 @@ async fn code_mode_can_apply_patch_via_nested_tool() -> Result<()> {
+     Ok(())
+ }
+ 
++/// Records every item delivered to turn observers, in delivery order.
++#[derive(Default)]
++struct CompletedItemRecorder {
++    items: Mutex<Vec<TurnItem>>,
++}
++
++impl TurnLifecycleContributor for CompletedItemRecorder {
++    fn on_item_completed<'a>(
++        &'a self,
++        _thread_store: &'a ExtensionData,
++        _turn_store: &'a ExtensionData,
++        item: &'a TurnItem,
++    ) -> ExtensionFuture<'a, ()> {
++        let item = item.clone();
++        Box::pin(async move {
++            self.items
++                .lock()
++                .expect("recorder should not be poisoned")
++                .push(item);
++        })
++    }
++}
++
++async fn run_code_mode_turn_with_item_recorder(
++    server: &MockServer,
++    prompt: &str,
++    code: &str,
++) -> Result<(TestCodex, ResponseMock, Arc<CompletedItemRecorder>)> {
++    let recorder = Arc::new(CompletedItemRecorder::default());
++    let mut extensions = ExtensionRegistryBuilder::new();
++    extensions.turn_lifecycle_contributor(recorder.clone());
++    let builder = test_codex()
++        .with_model("test-gpt-5.1-codex")
++        .with_config(|config| {
++            let _ = config.features.enable(Feature::CodeMode);
++            let _ = config.features.enable(Feature::ExecutedToolCallMetadata);
++        })
++        .with_extensions(Arc::new(extensions.build()));
++    let (test, second_mock) =
++        run_code_mode_turn_with_builder(server, prompt, code, builder).await?;
++    Ok((test, second_mock, recorder))
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn code_mode_leaf_applied_patch_delivered_exactly_once() -> Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    let server = responses::start_mock_server().await;
++    let file_name = "code_mode_leaf_observation.txt";
++    let patch = format!(
++        "*** Begin Patch\n*** Add File: {file_name}\n+hello from code_mode\n*** End Patch\n"
++    );
++    let code = format!("text(await tools.apply_patch({patch:?}));\n");
++
++    let (test, second_mock, recorder) =
++        run_code_mode_turn_with_item_recorder(&server, "use exec to run apply_patch", &code)
++            .await?;
++
++    // The turn finished: the follow-up request carries the exec result.
++    let req = second_mock.single_request();
++    let (_, success) = req
++        .custom_tool_call_output_content_and_success("call-1")
++        .expect("custom tool output should be present");
++    assert_ne!(
++        success,
++        Some(false),
++        "exec apply_patch call failed unexpectedly"
++    );
++    let file_path = test.cwd_path().join(file_name);
++    assert_eq!(fs::read_to_string(&file_path)?, "hello from code_mode\n");
++
++    // Exactly one applied FileChange reaches turn observers. The code-mode
++    // `exec` wrapper itself emits no turn item at all: only nested leaf
++    // tools surface here (apply_patch as FileChange, exec_command as
++    // CommandExecution). The wrapper's output goes to history only, so
++    // there is nothing for goal observations to classify from it.
++    let items = recorder
++        .items
++        .lock()
++        .expect("recorder should not be poisoned");
++    let file_changes: Vec<_> = items
++        .iter()
++        .filter_map(|item| match item {
++            TurnItem::FileChange(item) => Some(item),
++            _ => None,
++        })
++        .collect();
++    assert_eq!(file_changes.len(), 1);
++    assert_eq!(file_changes[0].status, Some(PatchApplyStatus::Completed));
++    let command_executions = items
++        .iter()
++        .filter(|item| {
++            matches!(
++                item,
++                TurnItem::CommandExecution(item)
++                    if item.status == CommandExecutionStatus::Completed
++            )
++        })
++        .count();
++    assert_eq!(command_executions, 0);
++    assert!(
++        items.iter().all(|item| item.id() != "call-1"),
++        "code-mode exec wrapper must not deliver its own turn item: {items:?}"
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn code_mode_leaf_wrapper_only_delivers_no_file_change() -> Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    let server = responses::start_mock_server().await;
++    let code = r#"const out = await tools.exec_command({ cmd: "printf wrapper_only_marker" }); text(out.output);"#;
++
++    let (_test, second_mock, recorder) =
++        run_code_mode_turn_with_item_recorder(&server, "use exec without patching", code).await?;
++
++    let req = second_mock.single_request();
++    let (_, success) = req
++        .custom_tool_call_output_content_and_success("call-1")
++        .expect("custom tool output should be present");
++    assert_ne!(success, Some(false), "exec call failed unexpectedly");
++
++    let items = recorder
++        .items
++        .lock()
++        .expect("recorder should not be poisoned");
++    assert!(
++        items
++            .iter()
++            .all(|item| !matches!(item, TurnItem::FileChange(_))),
++        "wrapper-only exec must not deliver a FileChange: {items:?}"
++    );
++    // The nested exec_command leaf (not the wrapper) delivers exactly one
++    // CommandExecution; the wrapper itself emits no turn item.
++    let command_executions = items
++        .iter()
++        .filter(|item| matches!(item, TurnItem::CommandExecution(_)))
++        .count();
++    assert_eq!(command_executions, 1);
++    assert!(
++        items.iter().all(|item| item.id() != "call-1"),
++        "code-mode exec wrapper must not deliver its own turn item: {items:?}"
++    );
++    Ok(())
++}
++
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn code_mode_can_print_structured_mcp_tool_result_fields() -> Result<()> {
+     skip_if_no_network!(Ok(()));
+diff --git a/codex-rs/core/tests/suite/tool_lifecycle.rs b/codex-rs/core/tests/suite/tool_lifecycle.rs
+index 060490396b7efb1bd97300f848ae2cf3efba4f3e..6f0201b210029143555dee150491984bbce412e4 100644
+--- a/codex-rs/core/tests/suite/tool_lifecycle.rs
++++ b/codex-rs/core/tests/suite/tool_lifecycle.rs
+@@ -720,6 +720,80 @@ async fn tool_start_is_not_called_when_pre_tool_hook_prevents_execution() -> Res
+     Ok(())
+ }
+ 
++#[derive(Default)]
++struct PlanCommitRecorder {
++    commits: Mutex<Vec<(String, String)>>,
++}
++
++impl ToolLifecycleContributor for PlanCommitRecorder {
++    fn on_plan_committed<'a>(
++        &'a self,
++        input: codex_extension_api::PlanCommitInput<'a>,
++    ) -> ToolLifecycleFuture<'a> {
++        Box::pin(async move {
++            let plan_json =
++                serde_json::to_string(&input.plan.plan).expect("committed plan should serialize");
++            self.commits
++                .lock()
++                .expect("plan commit recorder should unlock")
++                .push((input.call_id.to_string(), plan_json));
++        })
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn plan_committed_hook_fires_for_successful_update_plan() -> Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    let server = responses::start_mock_server().await;
++    let call_id = "plan-commit-call";
++    responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse(vec![
++                responses::ev_function_call(
++                    call_id,
++                    "update_plan",
++                    &json!({
++                        "plan": [{ "step": "Inspect workspace", "status": "in_progress" }]
++                    })
++                    .to_string(),
++                ),
++                responses::ev_completed("plan-response"),
++            ]),
++            responses::sse(vec![
++                responses::ev_assistant_message("assistant-1", "done"),
++                responses::ev_completed("done-response"),
++            ]),
++        ],
++    )
++    .await;
++
++    let recorder = Arc::new(PlanCommitRecorder::default());
++    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
++    extensions.tool_lifecycle_contributor(recorder.clone());
++    let test = test_codex()
++        .with_extensions(Arc::new(extensions.build()))
++        .with_config(|config| config.update_plan_enabled = true)
++        .build_with_auto_env(&server)
++        .await?;
++
++    test.submit_text_turn("Inspect the workspace and update the plan.")
++        .await?;
++
++    let commits = recorder
++        .commits
++        .lock()
++        .expect("plan commit recorder should unlock");
++    assert_eq!(1, commits.len());
++    assert_eq!(call_id, commits[0].0);
++    assert_eq!(
++        serde_json::from_str::<serde_json::Value>(&commits[0].1)?,
++        json!([{ "step": "Inspect workspace", "status": "in_progress" }])
++    );
++    Ok(())
++}
++
+ fn write_pre_tool_hook(home: &Path, matcher: &str, output: &serde_json::Value) -> Result<()> {
+     let script_path = home.join("tool_lifecycle_hook.py");
+     let output_json = serde_json::to_string(output).context("serialize pre-tool hook output")?;
+diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
+index bb2b162ce0aee7bfee48f253708828508c5df858..ff2cb25413d1017886894d2f33eec76665ed0b0f 100644
+--- a/codex-rs/ext/extension-api/src/contributors.rs
++++ b/codex-rs/ext/extension-api/src/contributors.rs
+@@ -48,6 +48,7 @@ pub use tool_lifecycle::CommandStartInput;
+ pub use tool_lifecycle::McpToolContext;
+ pub use tool_lifecycle::McpToolResultInput;
+ pub use tool_lifecycle::McpToolSource;
++pub use tool_lifecycle::PlanCommitInput;
+ pub use tool_lifecycle::ToolCallOutcome;
+ pub use tool_lifecycle::ToolFinishInput;
+ pub use tool_lifecycle::ToolLifecycleFuture;
+@@ -410,6 +411,16 @@ pub trait ToolLifecycleContributor: Send + Sync {
+         Box::pin(std::future::ready(()))
+     }
+ 
++    /// Called after the host commits an `update_plan` change.
++    ///
++    /// This runs at the committing handler after argument parsing and event
++    /// publication, before the tool returns. It fires for identical
++    /// resubmissions as well; observers must compare against the previous
++    /// committed plan to detect an actual transition.
++    fn on_plan_committed<'a>(&'a self, _input: PlanCommitInput<'a>) -> ToolLifecycleFuture<'a> {
++        Box::pin(std::future::ready(()))
++    }
++
+     /// Observe handler or remote host duration as defined by `ToolTimingBoundary`.
+     /// Handler timing includes cancellation. Observers must return promptly.
+     fn on_tool_timing(&self, _input: ToolTimingInput<'_>) {}
+diff --git a/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs
+index 3b31eaaf56dc3cde30f79ac56b5793be90f7e7af..55b0cc6d50131a46b1f50d69a70a1dd635d39d2e 100644
+--- a/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs
+@@ -194,6 +194,26 @@ pub struct McpToolResultInput<'a> {
+     pub result: &'a mut CallToolResult,
+ }
+ 
++/// Input supplied when the host commits an `update_plan` change.
++///
++/// The host calls this only after the plan handler has parsed the arguments
++/// and published the `PlanUpdate` event, so observers see the committed plan
++/// rather than a ToolFinish success marker. Identical resubmissions still
++/// reach observers; comparing against the previous committed plan is the
++/// observer's responsibility.
++pub struct PlanCommitInput<'a> {
++    /// Store scoped to this thread runtime.
++    pub thread_store: &'a ExtensionData,
++    /// Store scoped to this turn runtime.
++    pub turn_store: &'a ExtensionData,
++    /// Current turn submission id.
++    pub turn_id: &'a str,
++    /// Model-visible tool call id.
++    pub call_id: &'a str,
++    /// Committed plan arguments as parsed by the host handler.
++    pub plan: &'a codex_protocol::plan_tool::UpdatePlanArgs,
++}
++
+ /// Input supplied when the host finishes executing one tool call.
+ pub struct ToolFinishInput<'a> {
+     /// Store scoped to the host session runtime.
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 02a45c9dbbf6b7e7c9b918168b61c7648829f8a3..a200dd84b037b3239a7e8c721c2250b6cbdbe34b 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -72,6 +72,7 @@ pub use contributors::McpServerContributor;
+ pub use contributors::McpToolContext;
+ pub use contributors::McpToolResultInput;
+ pub use contributors::McpToolSource;
++pub use contributors::PlanCommitInput;
+ pub use contributors::PreviousWorldStateSection;
+ pub use contributors::PromptFragment;
+ pub use contributors::PromptSlot;
+diff --git a/codex-rs/ext/goal/src/accounting.rs b/codex-rs/ext/goal/src/accounting.rs
+index b2a89ce2ed3029c807cfdbed90e11be709a307c9..747e0e24f34512007db66cb09cad4fc4e836499b 100644
+--- a/codex-rs/ext/goal/src/accounting.rs
++++ b/codex-rs/ext/goal/src/accounting.rs
+@@ -2,8 +2,14 @@ use codex_extension_api::ToolCallOutcome;
+ use codex_extension_api::ToolName;
+ use codex_protocol::config_types::ModeKind;
+ use codex_protocol::items::AgentMessageContent;
++use codex_protocol::items::CollabAgentTool;
++use codex_protocol::items::CollabAgentToolCallStatus;
+ use codex_protocol::items::TurnItem;
+ use codex_protocol::models::MessagePhase;
++use codex_protocol::plan_tool::PlanItemArg;
++use codex_protocol::plan_tool::StepStatus;
++use codex_protocol::protocol::PatchApplyStatus;
++use codex_protocol::protocol::SubAgentActivityKind;
+ use codex_protocol::protocol::TokenUsage;
+ use codex_state::ThreadGoalStatus;
+ use std::collections::HashMap;
+@@ -34,6 +40,7 @@ struct GoalAccountingInner {
+     automatic_goal_turn_id: Option<String>,
+     consecutive_empty_turns: u8,
+     last_accounted_descendant_token_usage: i64,
++    last_committed_plan: Option<Vec<PlanItemArg>>,
+ }
+ 
+ #[derive(Debug)]
+@@ -46,6 +53,7 @@ struct GoalTurnAccounting {
+     successful_tool: bool,
+     empty_final: bool,
+     has_activity: bool,
++    state_change_count: u32,
+ }
+ 
+ #[derive(Debug)]
+@@ -203,6 +211,146 @@ impl GoalAccountingState {
+         }
+     }
+ 
++    /// Records one applied file change for `turn_id`.
++    ///
++    /// Call only after the patch/edit handler has committed the change, as
++    /// evidenced by a `FileChange` item with `Completed` status. Failed,
++    /// declined, or unapplied patches must not call this. Unknown turns are
++    /// ignored. The code-mode `exec` wrapper emits no turn item at all
++    /// (only nested leaves surface), so wrapper success never reaches
++    /// this path.
++    pub(crate) fn record_applied_file_change(&self, turn_id: &str) {
++        let mut inner = self.inner();
++        let Some(turn) = inner.turns.get_mut(turn_id) else {
++            return;
++        };
++        turn.state_change_count = turn.state_change_count.saturating_add(1);
++    }
++
++    /// Records one committed goal mutation for `turn_id`.
++    ///
++    /// Call only after the goal store mutation has committed (create, update,
++    /// or external set/clear). Failed mutations and usage-accounting writes
++    /// must not call this. Unknown turns are ignored.
++    pub(crate) fn record_goal_mutation(&self, turn_id: &str) {
++        let mut inner = self.inner();
++        let Some(turn) = inner.turns.get_mut(turn_id) else {
++            return;
++        };
++        turn.state_change_count = turn.state_change_count.saturating_add(1);
++    }
++
++    /// Records one accepted spawn or follow-up for `turn_id`.
++    ///
++    /// Call only after the agent control plane has accepted the request, as
++    /// evidenced by a completed spawn/send `CollabAgentToolCall` or a
++    /// `Started`/`Interacted` sub-agent activity item. Rejected, failed, or
++    /// wait/close/list/interrupt outcomes must not call this. Unknown turns
++    /// are ignored.
++    pub(crate) fn record_spawn_followup(&self, turn_id: &str) {
++        let mut inner = self.inner();
++        let Some(turn) = inner.turns.get_mut(turn_id) else {
++            return;
++        };
++        turn.state_change_count = turn.state_change_count.saturating_add(1);
++    }
++
++    /// Records an actual plan transition for `turn_id`.
++    ///
++    /// Compares `new_plan` steps against the last committed plan and updates
++    /// the stored plan. Returns true when the steps differ (including the
++    /// first committed plan), false for an identical resubmission. The free
++    /// text `explanation` is never compared, so it cannot trigger an
++    /// observation. The count increments only on a transition with a known
++    /// turn; identical submissions and unknown turns leave counts unchanged.
++    pub(crate) fn record_plan_transition(&self, turn_id: &str, new_plan: &[PlanItemArg]) -> bool {
++        let mut inner = self.inner();
++        let transition = match inner.last_committed_plan.as_deref() {
++            None => true,
++            Some(previous) => !plans_equal(previous, new_plan),
++        };
++        inner.last_committed_plan = Some(new_plan.to_vec());
++        if !transition {
++            return false;
++        }
++        let Some(turn) = inner.turns.get_mut(turn_id) else {
++            return true;
++        };
++        turn.state_change_count = turn.state_change_count.saturating_add(1);
++        true
++    }
++
++    /// Classifies one completed turn item as a state-changing outcome.
++    ///
++    /// Records file-change and spawn/follow-up observations from their
++    /// committing item events. Every other item kind, including command
++    /// execution success, failed or declined outcomes, and agent text, is
++    /// ignored. This never consults `ToolCallOutcome` success.
++    pub(crate) fn record_state_change_for_item(&self, turn_id: &str, item: &TurnItem) {
++        match item {
++            TurnItem::FileChange(item)
++                if matches!(item.status, Some(PatchApplyStatus::Completed)) =>
++            {
++                self.record_applied_file_change(turn_id);
++            }
++            TurnItem::CollabAgentToolCall(item)
++                if item.status == CollabAgentToolCallStatus::Completed
++                    && matches!(
++                        item.tool,
++                        CollabAgentTool::SpawnAgent
++                            | CollabAgentTool::SendInput
++                            | CollabAgentTool::SendMessage
++                            | CollabAgentTool::FollowupTask
++                    ) =>
++            {
++                self.record_spawn_followup(turn_id);
++            }
++            TurnItem::SubAgentActivity(item)
++                if matches!(
++                    item.kind,
++                    SubAgentActivityKind::Started | SubAgentActivityKind::Interacted
++                ) =>
++            {
++                self.record_spawn_followup(turn_id);
++            }
++            TurnItem::UserMessage(_)
++            | TurnItem::FunctionCallOutput(_)
++            | TurnItem::HookPrompt(_)
++            | TurnItem::AgentMessage(_)
++            | TurnItem::Plan(_)
++            | TurnItem::Reasoning(_)
++            | TurnItem::CommandExecution(_)
++            | TurnItem::DynamicToolCall(_)
++            | TurnItem::CollabAgentToolCall(_)
++            | TurnItem::SubAgentActivity(_)
++            | TurnItem::WebSearch(_)
++            | TurnItem::ImageView(_)
++            | TurnItem::Extension(_)
++            | TurnItem::ImageGeneration(_)
++            | TurnItem::EnteredReviewMode(_)
++            | TurnItem::ExitedReviewMode(_)
++            | TurnItem::FileChange(_)
++            | TurnItem::McpToolCall(_)
++            | TurnItem::ContextCompaction(_) => {}
++        }
++    }
++
++    /// Returns how many state-changing outcomes were observed for `turn_id`.
++    ///
++    /// Unknown or finished turns report zero. Observations are transient
++    /// per-turn counts; see [`Self::has_observed_state_change`].
++    pub(crate) fn state_change_count(&self, turn_id: &str) -> u32 {
++        self.inner()
++            .turns
++            .get(turn_id)
++            .map_or(0, |turn| turn.state_change_count)
++    }
++
++    /// Returns whether at least one state-changing outcome was observed.
++    pub(crate) fn has_observed_state_change(&self, turn_id: &str) -> bool {
++        self.state_change_count(turn_id) > 0
++    }
++
+     pub(crate) fn mark_goal_continuation(&self, turn_id: String) {
+         self.inner().automatic_goal_turn_id = Some(turn_id);
+     }
+@@ -531,6 +679,21 @@ pub(crate) fn goal_token_delta_for_usage(usage: &TokenUsage) -> i64 {
+         .saturating_add(usage.output_tokens.max(0))
+ }
+ 
++fn plans_equal(previous: &[PlanItemArg], new: &[PlanItemArg]) -> bool {
++    if previous.len() != new.len() {
++        return false;
++    }
++    previous.iter().zip(new.iter()).all(|(a, b)| {
++        a.step == b.step
++            && matches!(
++                (&a.status, &b.status),
++                (StepStatus::Pending, StepStatus::Pending)
++                    | (StepStatus::InProgress, StepStatus::InProgress)
++                    | (StepStatus::Completed, StepStatus::Completed)
++            )
++    })
++}
++
+ impl Default for GoalAccountingInner {
+     fn default() -> Self {
+         Self {
+@@ -543,6 +706,7 @@ impl Default for GoalAccountingInner {
+             automatic_goal_turn_id: None,
+             consecutive_empty_turns: 0,
+             last_accounted_descendant_token_usage: 0,
++            last_committed_plan: None,
+         }
+     }
+ }
+@@ -569,6 +733,7 @@ impl GoalTurnAccounting {
+             successful_tool: false,
+             empty_final: false,
+             has_activity: false,
++            state_change_count: 0,
+         }
+     }
+ 
+diff --git a/codex-rs/ext/goal/src/extension.rs b/codex-rs/ext/goal/src/extension.rs
+index dfb73b6661cde2813b1aaad581fd2b529c4ee6ac..31f5e7a0ca3167ca63d365511bf4a32da70ae2b4 100644
+--- a/codex-rs/ext/goal/src/extension.rs
++++ b/codex-rs/ext/goal/src/extension.rs
+@@ -10,6 +10,7 @@ use codex_extension_api::ExtensionData;
+ use codex_extension_api::ExtensionEventSink;
+ use codex_extension_api::ExtensionFuture;
+ use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::PlanCommitInput;
+ use codex_extension_api::ThreadIdleInput;
+ use codex_extension_api::ThreadLifecycleContributor;
+ use codex_extension_api::ThreadResumeInput;
+@@ -338,9 +339,9 @@ where
+             if let Some(runtime) = goal_runtime_handle(thread_store)
+                 && runtime.is_enabled()
+             {
+-                runtime
+-                    .accounting_state()
+-                    .record_item(turn_store.level_id(), item);
++                let accounting = runtime.accounting_state();
++                accounting.record_item(turn_store.level_id(), item);
++                accounting.record_state_change_for_item(turn_store.level_id(), item);
+             }
+         })
+     }
+@@ -512,6 +513,20 @@ impl<C> ToolLifecycleContributor for GoalExtension<C>
+ where
+     C: Send + Sync + 'static,
+ {
++    fn on_plan_committed<'a>(&'a self, input: PlanCommitInput<'a>) -> ToolLifecycleFuture<'a> {
++        Box::pin(async move {
++            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
++                return;
++            };
++            if !runtime.is_enabled() {
++                return;
++            }
++            runtime
++                .accounting_state()
++                .record_plan_transition(input.turn_id, &input.plan.plan);
++        })
++    }
++
+     fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
+         Box::pin(async move {
+             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+diff --git a/codex-rs/ext/goal/src/runtime.rs b/codex-rs/ext/goal/src/runtime.rs
+index ba8e5bff095a15da01bbb502c1d6325f40f943db..63f2a34d26ed6c9974cd2767ec57f785f35734c4 100644
+--- a/codex-rs/ext/goal/src/runtime.rs
++++ b/codex-rs/ext/goal/src/runtime.rs
+@@ -175,6 +175,24 @@ impl GoalRuntimeHandle {
+             .unwrap_or_default()
+     }
+ 
++    /// Returns how many state-changing outcomes were observed for `turn_id`.
++    ///
++    /// Counts applied file changes, actual plan transitions, committed goal
++    /// mutations, and accepted spawns/follow-ups recorded at their committing
++    /// handlers or events. Unknown or finished turns report zero. The count is
++    /// transient per-turn memory: it is never persisted to rollout or history,
++    /// and resume starts with no carried observation.
++    pub fn state_change_count(&self, turn_id: &str) -> u32 {
++        self.inner.accounting_state.state_change_count(turn_id)
++    }
++
++    /// Returns whether at least one state-changing outcome was observed.
++    pub fn has_observed_state_change(&self, turn_id: &str) -> bool {
++        self.inner
++            .accounting_state
++            .has_observed_state_change(turn_id)
++    }
++
+     // Callers hold the goal-state permit across the committed mutation/read and
+     // publication. Always re-read: delayed tool/API callbacks are not authority.
+     pub(crate) async fn reconcile_activity(
+@@ -370,6 +388,11 @@ impl GoalRuntimeHandle {
+             .analytics
+             .status_changed(&goal, previous_status, GoalEventAttribution::NoTurn);
+         self.inner.background_wait.note_goal_mutation();
++        if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {
++            self.inner
++                .accounting_state
++                .record_goal_mutation(turn_id.as_str());
++        }
+         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
+             !replaced_existing_goal && previous_goal.objective != goal.objective
+         });
+@@ -416,6 +439,11 @@ impl GoalRuntimeHandle {
+         self.inner.analytics.cleared(&goal);
+         self.inner.background_wait.note_clear();
+         if committed.is_none() {
++            if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {
++                self.inner
++                    .accounting_state
++                    .record_goal_mutation(turn_id.as_str());
++            }
+             self.inner.accounting_state.clear_active_goal();
+         }
+         Ok(())
+diff --git a/codex-rs/ext/goal/src/tool.rs b/codex-rs/ext/goal/src/tool.rs
+index 4e9d6cd074b32ff26c3254cc29d67c19078ef61b..70ca4c24acb6d3d2b816dc8c7ba5b33700383365 100644
+--- a/codex-rs/ext/goal/src/tool.rs
++++ b/codex-rs/ext/goal/src/tool.rs
+@@ -246,6 +246,8 @@ impl GoalToolExecutor {
+             })?;
+         fill_empty_thread_preview_if_possible(self.state_db.as_ref(), self.thread_id, &goal).await;
+         self.runtime.background_wait_state().note_goal_mutation();
++        self.accounting_state
++            .record_goal_mutation(invocation.turn_id.as_str());
+         let turn_id = self
+             .accounting_state
+             .mark_current_turn_goal_active(goal.goal_id.clone());
+@@ -315,6 +317,8 @@ impl GoalToolExecutor {
+                 )
+             })?;
+         self.runtime.background_wait_state().note_goal_mutation();
++        self.accounting_state
++            .record_goal_mutation(invocation.turn_id.as_str());
+         self.metrics
+             .record_terminal_if_status_changed(previous_status, &goal);
+         self.analytics.status_changed(
+diff --git a/codex-rs/ext/goal/tests/goal_extension_backend.rs b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+index 8aecc38bd319fbe8f7ac93c7b21266bccac5dd39..b66b8479b8280d0a9debb9a8bc4e9fd753fd1f3f 100644
+--- a/codex-rs/ext/goal/tests/goal_extension_backend.rs
++++ b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+@@ -2144,3 +2144,5 @@ fn protocol_status(status: codex_state::ThreadGoalStatus) -> ThreadGoalStatus {
+ mod background_wait_activation;
+ #[path = "goal_extension_backend/goal_activity_tests.rs"]
+ mod goal_activity;
++#[path = "goal_extension_backend/state_change_observation_tests.rs"]
++mod state_change_observation;
+diff --git a/codex-rs/ext/goal/tests/goal_extension_backend/state_change_observation_tests.rs b/codex-rs/ext/goal/tests/goal_extension_backend/state_change_observation_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..6cd2d547306549d94855bf37b0986ff99461018b
+--- /dev/null
++++ b/codex-rs/ext/goal/tests/goal_extension_backend/state_change_observation_tests.rs
+@@ -0,0 +1,304 @@
++use codex_extension_api::ExtensionData;
++use codex_extension_api::PlanCommitInput;
++use codex_goal_extension::GoalObjectiveUpdate;
++use codex_goal_extension::GoalSetRequest;
++use codex_goal_extension::GoalTokenBudgetUpdate;
++use codex_protocol::AgentPath;
++use codex_protocol::ThreadId;
++use codex_protocol::items::CollabAgentTool;
++use codex_protocol::items::CollabAgentToolCallItem;
++use codex_protocol::items::CollabAgentToolCallStatus;
++use codex_protocol::items::FileChangeItem;
++use codex_protocol::items::SubAgentActivityItem;
++use codex_protocol::items::TurnItem;
++use codex_protocol::plan_tool::PlanItemArg;
++use codex_protocol::plan_tool::StepStatus;
++use codex_protocol::plan_tool::UpdatePlanArgs;
++use codex_protocol::protocol::FileChange;
++use codex_protocol::protocol::PatchApplyStatus;
++use codex_protocol::protocol::SubAgentActivityKind;
++use codex_protocol::protocol::ThreadGoalStatus;
++use codex_protocol::protocol::TokenUsage;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++use std::collections::HashMap;
++use std::path::PathBuf;
++
++use super::GoalExtensionHarness;
++use super::seed_thread_metadata;
++use super::test_runtime;
++use super::test_thread_id;
++use super::tool_by_name;
++use super::tool_call;
++
++const TURN: &str = "turn-1";
++
++async fn item_completed(harness: &GoalExtensionHarness, turn_id: &str, item: &TurnItem) {
++    let turn_store = ExtensionData::new(turn_id);
++    for contributor in harness.registry.turn_lifecycle_contributors() {
++        contributor
++            .on_item_completed(&harness.thread_store, &turn_store, item)
++            .await;
++    }
++}
++
++async fn plan_committed(harness: &GoalExtensionHarness, turn_id: &str, plan: &UpdatePlanArgs) {
++    let turn_store = ExtensionData::new(turn_id);
++    for contributor in harness.registry.tool_lifecycle_contributors() {
++        contributor
++            .on_plan_committed(PlanCommitInput {
++                thread_store: &harness.thread_store,
++                turn_store: &turn_store,
++                turn_id,
++                call_id: "plan-call",
++                plan,
++            })
++            .await;
++    }
++}
++
++fn file_change(status: Option<PatchApplyStatus>) -> TurnItem {
++    let mut changes = HashMap::new();
++    changes.insert(
++        PathBuf::from("src/main.rs"),
++        FileChange::Update {
++            unified_diff: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
++            move_path: None,
++        },
++    );
++    TurnItem::FileChange(FileChangeItem {
++        id: "patch-1".to_string(),
++        changes,
++        status,
++        auto_approved: None,
++        stdout: None,
++        stderr: None,
++    })
++}
++
++fn update_plan_arg(steps: Vec<(&str, StepStatus)>) -> UpdatePlanArgs {
++    UpdatePlanArgs {
++        explanation: Some("test plan".to_string()),
++        plan: steps
++            .into_iter()
++            .map(|(step, status)| PlanItemArg {
++                step: step.to_string(),
++                status,
++            })
++            .collect(),
++    }
++}
++
++#[tokio::test]
++async fn backend_file_change_completed_sets_observation() -> anyhow::Result<()> {
++    let runtime = test_runtime().await?;
++    let thread_id = test_thread_id()?;
++    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
++    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
++    harness.start_turn(TURN, &TokenUsage::default()).await;
++
++    item_completed(
++        &harness,
++        TURN,
++        &file_change(Some(PatchApplyStatus::Completed)),
++    )
++    .await;
++    assert_eq!(1, harness.runtime_handle().state_change_count(TURN));
++    assert!(harness.runtime_handle().has_observed_state_change(TURN));
++
++    item_completed(&harness, TURN, &file_change(Some(PatchApplyStatus::Failed))).await;
++    assert_eq!(1, harness.runtime_handle().state_change_count(TURN));
++    Ok(())
++}
++
++#[tokio::test]
++async fn backend_plan_transition_sets_and_identical_does_not() -> anyhow::Result<()> {
++    let runtime = test_runtime().await?;
++    let thread_id = test_thread_id()?;
++    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
++    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
++    harness.start_turn(TURN, &TokenUsage::default()).await;
++
++    let first = update_plan_arg(vec![("Build", StepStatus::InProgress)]);
++    plan_committed(&harness, TURN, &first).await;
++    assert_eq!(1, harness.runtime_handle().state_change_count(TURN));
++
++    plan_committed(&harness, TURN, &first).await;
++    assert_eq!(1, harness.runtime_handle().state_change_count(TURN));
++
++    let second = update_plan_arg(vec![("Build", StepStatus::Completed)]);
++    plan_committed(&harness, TURN, &second).await;
++    assert_eq!(2, harness.runtime_handle().state_change_count(TURN));
++    Ok(())
++}
++
++#[tokio::test]
++async fn backend_goal_create_and_update_set_but_failed_create_does_not() -> anyhow::Result<()> {
++    let runtime = test_runtime().await?;
++    let thread_id = test_thread_id()?;
++    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
++    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
++    harness.start_turn(TURN, &TokenUsage::default()).await;
++    let tools = harness.tools();
++    let create_tool = tool_by_name(&tools, "create_goal");
++
++    create_tool
++        .handle(tool_call(
++            "create_goal",
++            "call-create-1",
++            json!({ "objective": "ship observations" }),
++        ))
++        .await?;
++    assert_eq!(1, harness.runtime_handle().state_change_count(TURN));
++
++    let duplicate = create_tool
++        .handle(tool_call(
++            "create_goal",
++            "call-create-2",
++            json!({ "objective": "second goal" }),
++        ))
++        .await;
++    assert!(duplicate.is_err());
++    assert_eq!(1, harness.runtime_handle().state_change_count(TURN));
++
++    let update_tool = tool_by_name(&tools, "update_goal");
++    update_tool
++        .handle(tool_call(
++            "update_goal",
++            "call-update-1",
++            json!({ "status": "complete" }),
++        ))
++        .await?;
++    assert_eq!(2, harness.runtime_handle().state_change_count(TURN));
++    Ok(())
++}
++
++#[tokio::test]
++async fn backend_goal_update_paused_and_blocked_set_observation() -> anyhow::Result<()> {
++    for status in ["paused", "blocked"] {
++        let runtime = test_runtime().await?;
++        let thread_id = test_thread_id()?;
++        seed_thread_metadata(runtime.as_ref(), thread_id).await?;
++        let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
++        harness.start_turn(TURN, &TokenUsage::default()).await;
++        let tools = harness.tools();
++        let create_tool = tool_by_name(&tools, "create_goal");
++        create_tool
++            .handle(tool_call(
++                "create_goal",
++                "call-create",
++                json!({ "objective": "pause or block me" }),
++            ))
++            .await?;
++        assert_eq!(1, harness.runtime_handle().state_change_count(TURN));
++
++        let update_tool = tool_by_name(&tools, "update_goal");
++        update_tool
++            .handle(tool_call(
++                "update_goal",
++                "call-update",
++                json!({ "status": status }),
++            ))
++            .await?;
++        assert_eq!(
++            2,
++            harness.runtime_handle().state_change_count(TURN),
++            "status: {status}"
++        );
++    }
++    Ok(())
++}
++
++#[tokio::test]
++async fn backend_external_goal_set_and_clear_record_observation() -> anyhow::Result<()> {
++    let runtime = test_runtime().await?;
++    let thread_id = test_thread_id()?;
++    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
++    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
++    harness.start_turn(TURN, &TokenUsage::default()).await;
++
++    let outcome = harness
++        .goal_service
++        .set_thread_goal(
++            runtime.as_ref(),
++            GoalSetRequest {
++                thread_id,
++                objective: GoalObjectiveUpdate::Set("externally set goal"),
++                status: Some(ThreadGoalStatus::Active),
++                token_budget: GoalTokenBudgetUpdate::Keep,
++                max_goal_token_budget: None,
++            },
++        )
++        .await?;
++    outcome.apply_runtime_effects(&harness.goal_service).await;
++    assert_eq!(1, harness.runtime_handle().state_change_count(TURN));
++
++    let cleared = harness
++        .goal_service
++        .clear_thread_goal(runtime.as_ref(), thread_id)
++        .await?;
++    assert!(cleared);
++    assert_eq!(2, harness.runtime_handle().state_change_count(TURN));
++    Ok(())
++}
++
++#[tokio::test]
++async fn backend_spawn_followup_sets_but_tool_finish_success_does_not() -> anyhow::Result<()> {
++    let runtime = test_runtime().await?;
++    let thread_id = test_thread_id()?;
++    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
++    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
++    harness.start_turn(TURN, &TokenUsage::default()).await;
++
++    harness
++        .notify_tool_finish(TURN, "call-shell", "shell")
++        .await;
++    assert_eq!(0, harness.runtime_handle().state_change_count(TURN));
++
++    let spawn = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
++        id: "spawn-1".to_string(),
++        tool: CollabAgentTool::SpawnAgent,
++        status: CollabAgentToolCallStatus::Completed,
++        sender_thread_id: ThreadId::from_u128(1),
++        receiver_thread_ids: vec![ThreadId::from_u128(2)],
++        receiver_agents: Vec::new(),
++        prompt: None,
++        model: None,
++        reasoning_effort: None,
++        agents_states: HashMap::new(),
++    });
++    item_completed(&harness, TURN, &spawn).await;
++    assert_eq!(1, harness.runtime_handle().state_change_count(TURN));
++
++    let interacted = TurnItem::SubAgentActivity(SubAgentActivityItem {
++        id: "sub-1".to_string(),
++        kind: SubAgentActivityKind::Interacted,
++        agent_thread_id: ThreadId::from_u128(2),
++        agent_path: AgentPath::root(),
++    });
++    item_completed(&harness, TURN, &interacted).await;
++    assert_eq!(2, harness.runtime_handle().state_change_count(TURN));
++    Ok(())
++}
++
++#[tokio::test]
++async fn backend_fresh_runtime_carries_no_observation() -> anyhow::Result<()> {
++    let runtime = test_runtime().await?;
++    let thread_id = test_thread_id()?;
++    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
++    let first = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
++    first.start_turn(TURN, &TokenUsage::default()).await;
++    item_completed(
++        &first,
++        TURN,
++        &file_change(Some(PatchApplyStatus::Completed)),
++    )
++    .await;
++    assert_eq!(1, first.runtime_handle().state_change_count(TURN));
++
++    let second = GoalExtensionHarness::new(runtime, thread_id).await?;
++    second.start_turn(TURN, &TokenUsage::default()).await;
++    assert_eq!(0, second.runtime_handle().state_change_count(TURN));
++    assert!(!second.runtime_handle().has_observed_state_change(TURN));
++    Ok(())
++}
+diff --git a/codex-rs/ext/goal/tests/state_change_observations.rs b/codex-rs/ext/goal/tests/state_change_observations.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e73878609d93835264ffb07fa97a01802ac1b96
+--- /dev/null
++++ b/codex-rs/ext/goal/tests/state_change_observations.rs
+@@ -0,0 +1,517 @@
++//! State-change observations: per-goal-turn counts of committed effects.
++//!
++//! Each reset source (applied file change, actual plan transition, committed
++//! goal mutation, accepted spawn/follow-up) increments the count at its
++//! committing handler or event. ToolFinish success, failed tools, identical
++//! plans, shell success, wrapper success, and model text never increment.
++//! Arbitrary shell side effects are unknown and never inferred.
++
++#![allow(clippy::expect_used)]
++#![allow(dead_code)]
++
++#[path = "../src/accounting.rs"]
++mod accounting;
++
++use accounting::GoalAccountingState;
++use codex_extension_api::ToolCallOutcome;
++use codex_extension_api::ToolName;
++use codex_protocol::AgentPath;
++use codex_protocol::ThreadId;
++use codex_protocol::config_types::ModeKind;
++use codex_protocol::items::AgentMessageContent;
++use codex_protocol::items::AgentMessageItem;
++use codex_protocol::items::CollabAgentTool;
++use codex_protocol::items::CollabAgentToolCallItem;
++use codex_protocol::items::CollabAgentToolCallStatus;
++use codex_protocol::items::CommandExecutionItem;
++use codex_protocol::items::CommandExecutionStatus;
++use codex_protocol::items::FileChangeItem;
++use codex_protocol::items::SubAgentActivityItem;
++use codex_protocol::items::TurnItem;
++use codex_protocol::models::MessagePhase;
++use codex_protocol::plan_tool::PlanItemArg;
++use codex_protocol::plan_tool::StepStatus;
++use codex_protocol::protocol::ExecCommandSource;
++use codex_protocol::protocol::FileChange;
++use codex_protocol::protocol::PatchApplyStatus;
++use codex_protocol::protocol::SubAgentActivityKind;
++use codex_protocol::protocol::TokenUsage;
++use pretty_assertions::assert_eq;
++use std::collections::HashMap;
++use std::path::PathBuf;
++
++const TURN: &str = "turn-1";
++const GOAL: &str = "goal-1";
++
++fn start_goal_turn(state: &GoalAccountingState, turn_id: &str) {
++    state.start_turn(turn_id, ModeKind::Default, &TokenUsage::default());
++    state.mark_turn_goal_active(turn_id, GOAL);
++}
++
++fn plan_step(step: &str, status: StepStatus) -> PlanItemArg {
++    PlanItemArg {
++        step: step.to_string(),
++        status,
++    }
++}
++
++fn file_change_item(status: Option<PatchApplyStatus>) -> TurnItem {
++    let mut changes = HashMap::new();
++    changes.insert(
++        PathBuf::from("src/main.rs"),
++        FileChange::Update {
++            unified_diff: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
++            move_path: None,
++        },
++    );
++    TurnItem::FileChange(FileChangeItem {
++        id: "patch-1".to_string(),
++        changes,
++        status,
++        auto_approved: None,
++        stdout: None,
++        stderr: None,
++    })
++}
++
++fn collab_item(tool: CollabAgentTool, status: CollabAgentToolCallStatus) -> TurnItem {
++    TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
++        id: "collab-1".to_string(),
++        tool,
++        status,
++        sender_thread_id: ThreadId::from_u128(1),
++        receiver_thread_ids: vec![ThreadId::from_u128(2)],
++        receiver_agents: Vec::new(),
++        prompt: None,
++        model: None,
++        reasoning_effort: None,
++        agents_states: HashMap::new(),
++    })
++}
++
++fn subagent_item(kind: SubAgentActivityKind) -> TurnItem {
++    TurnItem::SubAgentActivity(SubAgentActivityItem {
++        id: "sub-1".to_string(),
++        kind,
++        agent_thread_id: ThreadId::from_u128(2),
++        agent_path: AgentPath::root(),
++    })
++}
++
++fn shell_success_item() -> TurnItem {
++    TurnItem::CommandExecution(CommandExecutionItem {
++        sandbox_type: None,
++        model_context: None,
++        id: "exec-1".to_string(),
++        plugin_id: None,
++        script_path: None,
++        process_id: None,
++        command: vec!["ps".to_string()],
++        cwd: "file:///tmp".parse().expect("cwd uri"),
++        parsed_cmd: Vec::new(),
++        source: ExecCommandSource::Agent,
++        interaction_input: None,
++        status: CommandExecutionStatus::Completed,
++        stdout: Some("PID TTY".to_string()),
++        stderr: None,
++        aggregated_output: None,
++        exit_code: Some(0),
++        duration: None,
++        formatted_output: None,
++    })
++}
++
++fn progress_claim_item(text: &str) -> TurnItem {
++    TurnItem::AgentMessage(AgentMessageItem {
++        id: "msg-1".to_string(),
++        content: vec![AgentMessageContent::Text {
++            text: text.to_string(),
++        }],
++        phase: Some(MessagePhase::FinalAnswer),
++        memory_citation: None,
++        delivery: None,
++        questions: None,
++    })
++}
++
++#[test]
++fn applied_file_change_sets_observation() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    state.record_state_change_for_item(TURN, &file_change_item(Some(PatchApplyStatus::Completed)));
++    assert_eq!(1, state.state_change_count(TURN));
++    assert!(state.has_observed_state_change(TURN));
++}
++
++#[test]
++fn failed_or_declined_file_change_does_not_set() {
++    for status in [
++        None,
++        Some(PatchApplyStatus::Failed),
++        Some(PatchApplyStatus::Declined),
++    ] {
++        let state = GoalAccountingState::default();
++        start_goal_turn(&state, TURN);
++        let label = format!("{status:?}");
++        state.record_state_change_for_item(TURN, &file_change_item(status));
++        assert_eq!(0, state.state_change_count(TURN), "status: {label}");
++        assert!(!state.has_observed_state_change(TURN));
++    }
++}
++
++#[test]
++fn first_plan_counts_as_transition() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    let plan = vec![plan_step("Build", StepStatus::InProgress)];
++    assert!(state.record_plan_transition(TURN, &plan));
++    assert_eq!(1, state.state_change_count(TURN));
++}
++
++#[test]
++fn identical_plan_resubmission_does_not_set() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    let plan = vec![
++        plan_step("Build", StepStatus::InProgress),
++        plan_step("Test", StepStatus::Pending),
++    ];
++    assert!(state.record_plan_transition(TURN, &plan));
++    assert!(!state.record_plan_transition(TURN, &plan));
++    assert_eq!(1, state.state_change_count(TURN));
++}
++
++#[test]
++fn plan_status_change_counts_as_transition() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    let before = vec![plan_step("Build", StepStatus::InProgress)];
++    let after = vec![plan_step("Build", StepStatus::Completed)];
++    assert!(state.record_plan_transition(TURN, &before));
++    assert!(state.record_plan_transition(TURN, &after));
++    assert_eq!(2, state.state_change_count(TURN));
++}
++
++#[test]
++fn plan_step_text_change_counts_as_transition() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    assert!(state.record_plan_transition(TURN, &[plan_step("Build", StepStatus::Pending)]));
++    assert!(state.record_plan_transition(TURN, &[plan_step("Build release", StepStatus::Pending)]));
++    assert_eq!(2, state.state_change_count(TURN));
++}
++
++#[test]
++fn goal_mutation_sets_observation() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    state.record_goal_mutation(TURN);
++    assert_eq!(1, state.state_change_count(TURN));
++    assert!(state.has_observed_state_change(TURN));
++}
++
++#[test]
++fn goal_mutation_for_unknown_turn_is_ignored() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    state.record_goal_mutation("no-such-turn");
++    assert_eq!(0, state.state_change_count("no-such-turn"));
++    assert_eq!(0, state.state_change_count(TURN));
++}
++
++#[test]
++fn spawn_agent_completed_sets_observation() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    state.record_state_change_for_item(
++        TURN,
++        &collab_item(
++            CollabAgentTool::SpawnAgent,
++            CollabAgentToolCallStatus::Completed,
++        ),
++    );
++    assert_eq!(1, state.state_change_count(TURN));
++}
++
++#[test]
++fn send_input_completed_sets_observation() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    state.record_state_change_for_item(
++        TURN,
++        &collab_item(
++            CollabAgentTool::SendInput,
++            CollabAgentToolCallStatus::Completed,
++        ),
++    );
++    assert_eq!(1, state.state_change_count(TURN));
++}
++
++#[test]
++fn send_message_and_followup_task_completed_set_observation() {
++    for tool in [CollabAgentTool::SendMessage, CollabAgentTool::FollowupTask] {
++        let state = GoalAccountingState::default();
++        start_goal_turn(&state, TURN);
++        state.record_state_change_for_item(
++            TURN,
++            &collab_item(tool, CollabAgentToolCallStatus::Completed),
++        );
++        assert_eq!(
++            1,
++            state.state_change_count(TURN),
++            "tool: {tool:?} must set observation"
++        );
++    }
++}
++
++#[test]
++fn send_input_failed_or_in_progress_does_not_set() {
++    // A refused V1 send_input is delivered as a Failed item (delivery-bound
++    // status); only Completed SendInput counts. See
++    // send_input_rejected_compaction_emits_failed_item in core.
++    for status in [
++        CollabAgentToolCallStatus::Failed,
++        CollabAgentToolCallStatus::InProgress,
++    ] {
++        let state = GoalAccountingState::default();
++        start_goal_turn(&state, TURN);
++        state.record_state_change_for_item(TURN, &collab_item(CollabAgentTool::SendInput, status));
++        assert_eq!(
++            0,
++            state.state_change_count(TURN),
++            "status: {status:?} must not set observation"
++        );
++        assert!(!state.has_observed_state_change(TURN));
++    }
++}
++
++#[test]
++fn subagent_started_and_interacted_set_observation() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    state.record_state_change_for_item(TURN, &subagent_item(SubAgentActivityKind::Started));
++    assert_eq!(1, state.state_change_count(TURN));
++    state.record_state_change_for_item(TURN, &subagent_item(SubAgentActivityKind::Interacted));
++    assert_eq!(2, state.state_change_count(TURN));
++}
++
++#[test]
++fn spawn_rejections_and_non_spawn_tools_do_not_set() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    for item in [
++        collab_item(
++            CollabAgentTool::SpawnAgent,
++            CollabAgentToolCallStatus::Failed,
++        ),
++        collab_item(
++            CollabAgentTool::SpawnAgent,
++            CollabAgentToolCallStatus::InProgress,
++        ),
++        collab_item(CollabAgentTool::Wait, CollabAgentToolCallStatus::Completed),
++        collab_item(
++            CollabAgentTool::CloseAgent,
++            CollabAgentToolCallStatus::Completed,
++        ),
++        collab_item(
++            CollabAgentTool::ResumeAgent,
++            CollabAgentToolCallStatus::Completed,
++        ),
++        collab_item(
++            CollabAgentTool::ListAgents,
++            CollabAgentToolCallStatus::Completed,
++        ),
++        collab_item(
++            CollabAgentTool::InterruptAgent,
++            CollabAgentToolCallStatus::Completed,
++        ),
++        subagent_item(SubAgentActivityKind::Interrupted),
++        subagent_item(SubAgentActivityKind::Completed),
++    ] {
++        state.record_state_change_for_item(TURN, &item);
++    }
++    assert_eq!(0, state.state_change_count(TURN));
++}
++
++#[test]
++fn failed_tool_does_not_set_observation() {
++    for outcome in [
++        ToolCallOutcome::Completed { success: false },
++        ToolCallOutcome::Completed { success: true },
++        ToolCallOutcome::Failed {
++            handler_executed: true,
++        },
++        ToolCallOutcome::Failed {
++            handler_executed: false,
++        },
++        ToolCallOutcome::Blocked,
++        ToolCallOutcome::Aborted,
++    ] {
++        let state = GoalAccountingState::default();
++        start_goal_turn(&state, TURN);
++        state.record_tool_outcome(TURN, &ToolName::plain("exec"), outcome);
++        assert_eq!(
++            0,
++            state.state_change_count(TURN),
++            "outcome: {outcome:?} must not set observation"
++        );
++    }
++}
++
++#[test]
++fn shell_success_does_not_set_observation() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    state.record_tool_outcome(
++        TURN,
++        &ToolName::plain("shell"),
++        ToolCallOutcome::Completed { success: true },
++    );
++    state.record_state_change_for_item(TURN, &shell_success_item());
++    assert_eq!(0, state.state_change_count(TURN));
++    assert!(!state.has_observed_state_change(TURN));
++}
++
++#[test]
++fn code_mode_leaf_counts_once_and_wrapper_adds_none() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    state.record_state_change_for_item(TURN, &file_change_item(Some(PatchApplyStatus::Completed)));
++    assert_eq!(1, state.state_change_count(TURN));
++    state.record_tool_outcome(
++        TURN,
++        &ToolName::plain("exec"),
++        ToolCallOutcome::Completed { success: true },
++    );
++    state.record_state_change_for_item(TURN, &shell_success_item());
++    assert_eq!(1, state.state_change_count(TURN));
++
++    let wrapper_only = GoalAccountingState::default();
++    start_goal_turn(&wrapper_only, TURN);
++    wrapper_only.record_tool_outcome(
++        TURN,
++        &ToolName::plain("exec"),
++        ToolCallOutcome::Completed { success: true },
++    );
++    wrapper_only.record_state_change_for_item(TURN, &shell_success_item());
++    assert_eq!(0, wrapper_only.state_change_count(TURN));
++}
++
++#[test]
++fn model_text_claiming_progress_does_not_set() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    for text in [
++        "Made great progress on the goal.",
++        "STATE_CHANGE: applied the fix.",
++        "Plan updated and goal complete.",
++    ] {
++        let item = progress_claim_item(text);
++        state.record_item(TURN, &item);
++        state.record_state_change_for_item(TURN, &item);
++    }
++    assert_eq!(0, state.state_change_count(TURN));
++}
++
++#[test]
++fn no_model_writable_bypass_sets_observation() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, TURN);
++    let plan = vec![plan_step(
++        "STATE_CHANGE bypass attempt",
++        StepStatus::Pending,
++    )];
++    assert!(state.record_plan_transition(TURN, &plan));
++    assert!(!state.record_plan_transition(TURN, &plan));
++    state.record_tool_outcome(
++        TURN,
++        &ToolName::plain("state_change"),
++        ToolCallOutcome::Completed { success: true },
++    );
++    let claim = progress_claim_item("STATE-CHANGING outcome observed");
++    state.record_item(TURN, &claim);
++    state.record_state_change_for_item(TURN, &claim);
++    assert_eq!(1, state.state_change_count(TURN));
++}
++
++#[test]
++fn empty_blocker_still_fires_first_with_no_observation() {
++    let empty_final = TurnItem::AgentMessage(AgentMessageItem {
++        id: "empty".to_string(),
++        content: vec![AgentMessageContent::Text {
++            text: " \n".to_string(),
++        }],
++        phase: Some(MessagePhase::FinalAnswer),
++        memory_citation: None,
++        delivery: None,
++        questions: None,
++    });
++    let state = GoalAccountingState::default();
++    for turn in 1..=3 {
++        let id = turn.to_string();
++        state.start_turn(&id, ModeKind::Default, &TokenUsage::default());
++        state.mark_turn_goal_active(&id, GOAL);
++        state.record_item(&id, &empty_final);
++        state.mark_goal_continuation(id.clone());
++        assert_eq!(0, state.state_change_count(&id));
++        assert_eq!(
++            (turn == 3).then(|| GOAL.to_string()),
++            state.empty_response_goal(&id),
++            "turn: {turn}"
++        );
++        state.finish_turn(&id);
++    }
++}
++
++#[test]
++fn observation_does_not_disturb_empty_blocker() {
++    let empty_final = TurnItem::AgentMessage(AgentMessageItem {
++        id: "empty".to_string(),
++        content: vec![AgentMessageContent::Text {
++            text: " \n".to_string(),
++        }],
++        phase: Some(MessagePhase::FinalAnswer),
++        memory_citation: None,
++        delivery: None,
++        questions: None,
++    });
++    let state = GoalAccountingState::default();
++    for turn in 1..=3 {
++        let id = turn.to_string();
++        state.start_turn(&id, ModeKind::Default, &TokenUsage::default());
++        state.mark_turn_goal_active(&id, GOAL);
++        state.record_item(&id, &empty_final);
++        state.mark_goal_continuation(id.clone());
++        state.record_applied_file_change(&id);
++        assert_eq!(1, state.state_change_count(&id));
++        assert_eq!(
++            (turn == 3).then(|| GOAL.to_string()),
++            state.empty_response_goal(&id),
++            "turn: {turn}"
++        );
++        state.finish_turn(&id);
++    }
++}
++
++#[test]
++fn observation_is_transient_per_turn() {
++    let state = GoalAccountingState::default();
++    start_goal_turn(&state, "turn-1");
++    state.record_applied_file_change("turn-1");
++    assert_eq!(1, state.state_change_count("turn-1"));
++    state.finish_turn("turn-1");
++    assert_eq!(0, state.state_change_count("turn-1"));
++    start_goal_turn(&state, "turn-2");
++    assert_eq!(0, state.state_change_count("turn-2"));
++    assert!(!state.has_observed_state_change("turn-2"));
++}
++
++#[test]
++fn fresh_state_carries_no_observation_or_plan_memory() {
++    let state = GoalAccountingState::default();
++    assert_eq!(0, state.state_change_count(TURN));
++    assert!(!state.has_observed_state_change(TURN));
++    start_goal_turn(&state, TURN);
++    assert!(state.record_plan_transition(TURN, &[plan_step("First", StepStatus::Pending)]));
++    assert_eq!(1, state.state_change_count(TURN));
++}

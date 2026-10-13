@@ -1,0 +1,5 @@
+# TASK-260929-csyzcj — goal-owned-durable-sleep-lease
+
+CR revision 4 handoff verification: candidate tree 5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8 equals hosted precheck 12 exactly. Run 38077935582: lint, small, core and app-server success; 9/9 mutants killed. mini-hosted-gate and git diff --check exited 0 this pass. No repository edits or commits; HEAD remains checkpoint 39c264c34. Temporary index deleted.
+
+Source bounds (128-byte segment, 1024-byte absolute path) address both review-rev3 envelope findings; typed interruption fragment cap retained. Includes orchestrator source-valid 914-byte fixture repair. Refreshed results resource carries coverage map and stated gaps. All 16 checklist items already checked and revalidated against hosted evidence. No local builds/tests per R194/R223. Ready for review; handoff receipt is recorded separately by the board.

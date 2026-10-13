@@ -1,0 +1,221 @@
+diff --git a/.research/261011_goal-pacing-panel/TASK-261011-3cyko9_panel-verdict.md b/.research/261011_goal-pacing-panel/TASK-261011-3cyko9_panel-verdict.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..e8e0509582b4a94b3e2ce05cd03c06030ad75149
+--- /dev/null
++++ b/.research/261011_goal-pacing-panel/TASK-261011-3cyko9_panel-verdict.md
+@@ -0,0 +1,215 @@
++# R141 panel A — continuation pacing, CR revision 1
++
++changes_requested
++
++Replay: temporary-index application of `TASK-260929-309h9n_change-request_rev1.patch`
++on base `e0eff057620104a416080da616256ee7f32bda1b` produced exactly
++`181cc48fbd0b927f134ba39d268882a52551e776` (write-tree check, exit 0).
++No nested worktree, source edit, local build/test, commit or source-task write.
++Surface sweep: 9/9 unique rows; 7 held, 2 broken, 0 not-attacked.
++One blocking robustness finding (A-F1: missing blocker-order adversarial proof)
++and one nonblocking advisory (A-N1: broad test disablement).
++
++Commands actually executed by this panel; validation/replay processes were
++standalone, with no tee or shell pipeline around a gate:
++
++| Command | Actual exit / evidence |
++|---|---|
++| `task-board m 'set_status(TASK-261011-3cyko9, status=analysis)'` | 0; panel task only |
++| `mkdir -p .temp && GIT_INDEX_FILE="$PWD/.temp/TASK-261011-3cyko9-replay.idx" git read-tree e0eff057620104a416080da616256ee7f32bda1b` | 0; one fresh task-specific index; no normal-index mutation |
++| `task-board resource get TASK-260929-309h9n TASK-260929-309h9n_change-request_rev1.patch --output .temp/TASK-260929-309h9n_change-request_rev1.patch` | 0; read-only |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-3cyko9-replay.idx" git apply --cached .temp/TASK-260929-309h9n_change-request_rev1.patch` | 0 |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-3cyko9-replay.idx" git write-tree` | 0; exact tree above |
++| `git diff --check e0eff057620104a416080da616256ee7f32bda1b 181cc48fbd0b927f134ba39d268882a52551e776` | 0 |
++| Source-task projections `{ description scope ac notes }` and `{ outcomeResources preconditionResources }`, panel `{ ac checklist }` | Each 0; reads only |
++| `cat` supplied surface/results/hosted-precheck-4/mutants/producer/rework/final-plan/CR-validation resources; `git show`, `git diff`, `sed`, `rg` source inspection | Successful reads 0; exploratory failures listed below |
++| Python candidate materialization using `git show <candidate>:<path>` | 0; 40 files read, every nested git show 0 |
++| `task-board spawn directives RUN-261011-302c74` | 0; no directives |
++| `gh run view 38160194813 --repo ivanopcode/codex --json status,conclusion,headSha,jobs,url` | 0; run conclusion failure (expected mutant reds), not a passing whole run |
++| `gh run view ... --job <id> --log` | Each 0: plan, lint, snapshot small/core/app-server and all six mutant-small jobs listed below |
++| `gh api repos/ivanopcode/codex/git/commits/<sha>` | Each 0: workflow head, actual snapshot and six mutant commits; workflow head tree differs as expected, actual snapshot tree matches |
++| Per-mutant standalone `git read-tree <candidate>`, `git apply --cached -` with patch on stdin, `git write-tree`, using a separate temporary index | Each 0; exact hosted mutant tree matches 6/6 |
++| Python hosted identity/killer audit and source test/line inventory | Each 0; actual hosted red exits are 100, not presented as green |
++| `python3 .temp/TASK-261011-3cyko9-validate-verdict.py` | 0; one JSON block, required keys/severities, 9/9 unique expected rows and verdict validated |
++
++Exploratory failures (not gates): initial board projection containing `resources`
++exited 1 (unknown field), repaired with the resource projections above.
++Skill-relative reviewer-role cat exited 1 (missing); recovered via
++`/Users/administrator/.roles/reviewer/role.md`, exit 0. Discovery rg calls with
++no matching paths exited 1. `command -v logbook` exited 1: no standalone logbook
++CLI; the task-scoped logbook below records the findings in the only attached
++text artifact. A combined ls probe exited 1 for absent role directories while
++locating the available reviewer role. `task-board resource list` exited 0 but
++only printed help; no resource inventory was inferred from it.
++No review claim depends on an unreadable or truncated source. Large gh output
++was re-read into local scratch files for bounded independent inspection.
++
++Accepted execution evidence, not locally rerun: source task's
++`TASK-260929-309h9n_change-request_rev1-validation.log` reports its one exact
++command shard (`mini-hosted-gate.sh`) exit 0, test-case coverage unknown.
++[Hosted run 38160194813](https://github.com/ivanopcode/codex/actions/runs/38160194813)
++has four green snapshot/lint lanes. Actual checked-out
++[snapshot commit](https://github.com/ivanopcode/codex/commit/2f00490d5f4f227486e92a0c523aa8d545fb24a5)
++has the exact candidate tree; this was independently checked using the API
++and checkout logs, not inferred from the workflow head SHA.
++Small: 1486 passed / 1 skipped; Core: 5082 passed / 11 skipped (3 flaky);
++app-server: 1834 passed / 2 skipped (1 flaky). Core pacing test passed in
++0.770 s; public app-server pacing test passed in 69.259 s. Counts describe
++executed tests, not coverage of every acceptance invariant.
++
++Independent hosted mutant verification:
++
++| Mutant / commit | Exact hosted tree | Named failing test | Small job | Actual runner exit |
++|---|---|---|---|---|
++| `pacing_blocker_order_swapped` / `8c2f821a8e6c0a17fa1e561df435a3190064fa53` | `9792e13002b92a22e48bc22d3d64811d254aebaa` | `pacing_inactive_goal_never_paced` | [mutant-1 small](https://github.com/ivanopcode/codex/actions/runs/38160194813/job/114533299061) | 100; expected red |
++| `pacing_first_continuation_paced_after_human_turn` / `d78e7260b93e30bb6a17bab120c447bca487b457` | `c5a57b12ff3b804a5148b4c8fb16ae5f95e3485b` | `pacing_first_continuation_after_human_turn_proceeds_immediately` | [mutant-2 small](https://github.com/ivanopcode/codex/actions/runs/38160194813/job/114533299031) | 100; expected red |
++| `pacing_missing_cap` / `b75fbf3b05afbe0e25316063f48fd53e8e42cc6c` | `54f44a6ee7cda114218631cf953b94ab51ddf141` | `pacing_delay_n1_n2_n3_and_cap` | [mutant-3 small](https://github.com/ivanopcode/codex/actions/runs/38160194813/job/114533299230) | 100; expected red |
++| `pacing_stale_ticket_admission_skip_revision` / `5fc7d9cc45e49000fed496bc2afba75bf5868a78` | `8e4cab61206af9486982085dd435ccd54b9336b2` | `pacing_stale_ticket_rejected_on_revision_change` | [mutant-4 small](https://github.com/ivanopcode/codex/actions/runs/38160194813/job/114533299105) | 100; expected red |
++| `pacing_streak_reset_on_non_state_change` / `6cf235412676b310513a74a65e884781eb7253a4` | `56cd14c67086b7ca2e8ac8f9a713d1db308de757` | `pacing_two_polls_grow_streak` | [mutant-5 small](https://github.com/ivanopcode/codex/actions/runs/38160194813/job/114533299088) | 100; expected red |
++| `pacing_timer_not_cancelled_on_invalidation` / `633513b8e9cdafb3f800099d7d9ff13b7d9b84fb` | `65ce58925856b4dc084ee2d12f90901725e06712` | `pacing_invalidation_cancels_armed_timer` | [mutant-6 small](https://github.com/ivanopcode/codex/actions/runs/38160194813/job/114533299099) | 100; expected red |
++
++Evidence references: read-only board resources `surface-table.md`, task AC
++projection, `final-plan.md` §§6/8, `b2-rework-brief-precheck3.md` §3,
++`producer-brief.md`, results, hosted-precheck-4, mutants and rev1-validation
++log. Candidate citations in the JSON are paths/lines within the pinned tree.
++Primary source files: [pacing integration](https://github.com/ivanopcode/codex/blob/2f00490d5f4f227486e92a0c523aa8d545fb24a5/codex-rs/ext/goal/src/background_wait.rs),
++[turn-stop ordering](https://github.com/ivanopcode/codex/blob/2f00490d5f4f227486e92a0c523aa8d545fb24a5/codex-rs/ext/goal/src/extension.rs),
++[goal admission](https://github.com/ivanopcode/codex/blob/2f00490d5f4f227486e92a0c523aa8d545fb24a5/codex-rs/core/src/session/goal_admission.rs),
++[notification suite](https://github.com/ivanopcode/codex/blob/2f00490d5f4f227486e92a0c523aa8d545fb24a5/codex-rs/app-server/tests/suite/v2/goal_background_wait.rs).
++
++Logbook — 2026-10-11, panel-task scoped:
++Replay exact; 9/9 rows swept. Hosted snapshot and 6/6 mutant trees independently
++matched. Supplied mutant runners truly fail (100); requested blocker-order
++family remains unproven because the mutant changes another gate. Recommend
++focused hosted rework for A-F1 and narrower switch use for A-N1. Preserve the
++explicit immediate-entry decision while reconciling completed-streak wording.
++Size and test-inventory advisories recorded. No source-task mutation, build or
++additional requested test execution. Panel verdict is ready for review.
++
++```verdict-findings
++{
++  "findings": [
++    {
++      "id": "A-F1",
++      "row": "blocker order and waiting turns",
++      "invariant": "AC5/AC8: preserve the three-fully-empty-continuations blocker FIRST and provide a narrowing mutant with a named direct killer for that ordering.",
++      "mechanism": "The supplied pacing_blocker_order_swapped patch deletes the InactiveOrBudgetLimited branch from BackgroundWaitState::evaluate_locked (background_wait.rs:330-336). It never moves or narrows the empty-response blocker in GoalExtension::on_turn_stop (extension.rs:387-402) or its ordering relative to note_turn_completed (extension.rs:419-429). Hosted mutant-1 small fails only pacing_inactive_goal_never_paced, whose input is an inactive status and which never calls the blocker. The public empty-response suite disables pacing at thread_goal_empty_responses.rs:71. Thus the supplied mutant is killed, but does not establish the requested blocker-order property. Source ordering is currently correct; this is a missing adversarial proof, not an observed production failure. Request a focused narrowing mutant that defers EmptyResponse handling specifically for pacing-enabled automatic turns, and a production-path test asserting the third fully empty turn blocks before another pacing registration/turn is permitted.",
++      "reproductions": [
++        {
++          "test_file": "codex-rs/ext/goal/tests/continuation_schedule.rs:650",
++          "command": "gh run view 38160194813 --repo ivanopcode/codex --job 114533299061 --log",
++          "expected_failure": "Observed hosted test-runner exit 100: only pacing_inactive_goal_never_paced fails. gh log retrieval itself exits 0. This reproduces the coverage mismatch, not an ordering regression."
++        },
++        {
++          "test_file": "codex-rs/core/tests/suite/goal_continuation_pacing.rs (requested addition: goal_pacing_empty_blocker_runs_before_rescheduling)",
++          "command": "just test -p codex-core -E test(goal_pacing_empty_blocker_runs_before_rescheduling)",
++          "expected_failure": "NOT RUN / proposed hosted attack: with pacing enabled and a narrow defer-empty-blocker mutant, require failure when the third fully empty automatic turn leaves the goal Active or arms a further continuation. Baseline must block at turn 3, with exactly three model requests and no later request."
++        }
++      ],
++      "severity": "robustness",
++      "repeat-of": null
++    },
++    {
++      "id": "A-N1",
++      "row": "one live timer",
++      "invariant": "The pacing-disabled switch should be narrowly applied to suites that actually require consecutive automatic continuations; production event-wake interactions should remain observable.",
++      "mechanism": "goal_background_wait.rs:189 applies CODEX_GOAL_PACING_DISABLED=1 in the common harness for all four tests. unopted_server_process_does_not_gate_goal_continuation and headless_host_refuses_notify_on_exit_and_promises_no_wake do require two consecutive goal continuations. notified_exec_exit_wakes_gated_goal_with_receipt_fragment instead starts once after goal set and then wakes with exec_completion; user_burst_during_background_wait_admitted_without_loss_or_duplication inserts two human turns and then an exec_completion wake. Those two tests need no back-to-back automatic goal continuation and could retain pacing. The switch is documented as never set in production and its production read accepts only exact value 1; the scope of this harness use is the advisory defect. Narrow the override to the two tests that need it, and retain a separate pacing-enabled wake-while-timer-armed attack for full interaction coverage.",
++      "reproductions": [
++        {
++          "test_file": "codex-rs/app-server/tests/suite/v2/goal_background_wait.rs:172",
++          "command": "git show 181cc48fbd0b927f134ba39d268882a52551e776:codex-rs/app-server/tests/suite/v2/goal_background_wait.rs",
++          "expected_failure": "Static inventory: the shared builder disables pacing for 4/4 tests, while only 2/4 require consecutive automatic goal turns. No production failure or newly executed test is claimed."
++        }
++      ],
++      "severity": "note",
++      "repeat-of": null
++    }
++  ],
++  "notes": [
++    "Sources are pinned to candidate 181cc48fbd0b927f134ba39d268882a52551e776 / hosted snapshot 2f00490d5f4f227486e92a0c523aa8d545fb24a5, not ambient worktree HEAD. No accept/reject/status/handoff/resource/note mutation was made on the source task.",
++    "Entry-rule decision in b2-rework-brief-precheck3.md is honored: first after human turn / goal set / resume is immediate with revision-bearing ProceedNormal; later consecutive automatic continuations wait. This still invalidates old tickets through lifecycle hooks. It is an intentional exception to any reading that requires a delay before the first automatic continuation.",
++    "Terminology discrepancy: AC1 and note_turn_completed docs define n as completed quiet continuations, but evaluate_pacing_locked feeds pacing_streak + 1 into pacing_delay. Thus after one completed quiet turn pacing_streak=1 but the next delay is 60 s, not pacing_delay(1)=30 s. Rework and both public tests expressly require that 60 s behavior. Reconcile AC/docs to upcoming continuation ordinal (or decide a different formula) before claiming the literal completed-count equation; this panel does not request reversing the explicit entry-rule rework.",
++    "Kill-switch survey: app-server code_mode_host blocks test, thread_resume root/parent test, thread_goal_empty_responses parameterized test genuinely need consecutive automatic continuations. Of the shared goal_background_wait harness cases, only unopted and headless cases need it; two notification cases do not (A-N1). Core background_wait_inactive_on_unavailable_host_auto_continues uses runtime.disable_pacing because its two-goal-turn test explicitly expects immediate background-inactive behavior. New pacing suites do not set the switch. Exact string 1 is read in production code; documentation is a deployment convention, not compile-time exclusion or a security boundary.",
++    "Candidate defines and hosted small runs 23 pacing tests, rather than the 22 claimed in results. This is an evidence inventory correction, not lost coverage.",
++    "No independent Windows/foreign-exec suite, full workspace run, clock-discontinuity experiment, or additional proposed mutant was executed in this panel. Hosted snapshot tests are Linux evidence. Reported success steps have no printed numeric command exits; do not invent zero exit telemetry from an omitted log line.",
++    "Architecture advisory: 923-line background_wait.rs now holds most stateful pacing evaluation/admission logic while the new 148-line module holds math/ticket. Consider an internal pacing state extraction preserving the one shared lock and slot. Cumulative CR includes the previously accepted observations stage; size numbers must not be misrepresented as only this scheduler leaf."
++  ],
++  "surface_results": [
++    {
++      "row": "spacing and streak math",
++      "result": "held",
++      "attack": "Attack first-entry pacing, overflow/cap, read-only success resetting the streak, and observed-change reset.",
++      "evidence": "continuation_schedule.rs:61-69 uses saturating subtraction, bounded shift and capped checked multiplication; background_wait.rs:481 uses completed streak + 1 as the upcoming schedule index. Hosted small passes delay, reset, non-continuation and two-poll tests; missing-cap and reset mutants fail with exit 100. Hosted core confirms immediate first continuation then ~60 s. Held for the explicit precheck-3 rework timing rule; the completed-count/ordinal wording discrepancy is recorded in notes rather than silently treated as identical."
++    },
++    {
++      "row": "polls grow the streak end to end",
++      "result": "held",
++      "attack": "Try two consecutive get_goal polls with nonempty waiting text and no state-changing outcome; require actual requests and a larger second delay.",
++      "evidence": "Hosted app-server goal_pacing_two_polls_first_immediate_second_60s passes in 69.259 s. Source asserts 2 then 4 requests, first delay <28 s, second >=58 s, and no third turn/extra request for 8 s. Core asserts 1 then 2 requests. Reset-on-non-change mutant kills pacing_two_polls_grow_streak and also fails the hosted core lane. Third-delay exact 120 s is unit-covered, not fully waited by the app-server test."
++    },
++    {
++      "row": "one live timer",
++      "result": "held",
++      "attack": "Try repeated evaluations, replacement, stale generation installs, turn-start invalidation and known pending work taking priority.",
++      "evidence": "runtime.rs:606-639 calls the pre-existing CheckInTimer single slot, which aborts the old JoinHandle before replacement, detaches before callback, and rejects older-generation installs. Runtime construction installs its abort hook. Hosted core traverses actual timer/claim/start; hosted small passes replacement, event-wake, known-work and cancellation tests. Timer-not-cancelled mutant fails two named tests with exit 100. Event-wake pacing test directly calls note_turn_start; the real notification tests disable pacing, so a public combined wake-versus-armed-pacing-timer attack is not claimed; see A-N1."
++    },
++    {
++      "row": "ticket invalidation and admission",
++      "result": "held",
++      "attack": "Try changed revision, predecessor, generation, single-use reuse, fast intervening human turn, and read failure / mail between evaluation and publication.",
++      "evidence": "background_wait.rs:569-665 consumes the attempt once under its lock and rejects changed generation, revision, goal, predecessor and nonempty snapshot. extension.rs:271 and :659 wire start/human input; runtime/tool hooks wire goal changes, clear, stop and resume. Existing Core goal_admission.rs:49-89, :93-110 and :145-183 enforce revision at early admission and locked publication; runtime holds goal permit across read/start. Hosted small passes stale/fast-human/claim tests; skip-revision mutant directly fails the named stale-revision test with exit 100. Fast-human and eight cancellation causes are helper-entry attacks; public fast-human replay not separately executed. note_release has no production caller in this or the base tree; receipt/mail transitions instead revise pending work and event turn start invalidates generation, so direct note_release test is not misrepresented as production dispatch proof."
++    },
++    {
++      "row": "blocker order and waiting turns",
++      "result": "broken",
++      "attack": "Trace the real turn-stop blocker ordering and attack whether its advertised mutant actually changes it.",
++      "evidence": "extension.rs:387-402 invokes stop_active_goal_for_turn(EmptyResponse) before :419-429 records pacing. Waiting-turn test and public poll test hold nonempty waiting behavior. The supplied blocker-order patch attacks a different status gate, and its sole killer cannot exercise the empty blocker. Public empty-response suite runs with pacing disabled. A-F1 leaves AC8 ordering proof unsatisfied; no present ordering bug is claimed."
++    },
++    {
++      "row": "transient state",
++      "result": "held",
++      "attack": "Try persistence, resume with an accumulated streak/quota, and completion being mistaken for human input.",
++      "evidence": "Pacing state lives only in WaitState; no rollout/config serialization change. note_resume clears streak, predecessor, ticket, deadlines and background quota; runtime.rs:582-602 reconciles the actual goal before resetting. Hosted small passes pacing_resume_restarts_at_floor_and_resets_quotas and the existing exhausted-allowance/late-completion test. Empty snapshot reassessment does not itself reset check_ins_used; restart reset is explicitly disclosed in results. An end-to-end pacing-enabled restart with a saved nonzero streak is not supplied."
++    },
++    {
++      "row": "no model-visible change",
++      "result": "held",
++      "attack": "Try new scheduler text, context fragments, history items or warning emission leaking into inference requests.",
++      "evidence": "Candidate source diff adds no scheduling prompt/context/history construction. Runtime waits and returns before building the existing continuation steering item. Hosted app-server examines all 4 request bodies for pacing/PacingTicket/continuation_schedule/streak and exec_completion markers; hosted small confirms no warning during pacing wait/fire. Marker checks alone cannot prove arbitrary history equality; static diff supplies the complementary bounded check."
++    },
++    {
++      "row": "mutants and measurement",
++      "result": "broken",
++      "attack": "Replay every supplied mutant against the exact candidate; compare hosted commit trees, named failing tests, exit codes and asserted requests.",
++      "evidence": "6/6 supplied patches replay exactly to the 6 hosted mutant trees; 6/6 hosted small runners exit 100 and the intended named tests fail. Snapshot small/core/app-server and lint are success. Semantically required mutant families covered: 4/5 (reset, cap, stale admission, cancellation); blocker ordering is not covered by the misnamed status-gate deletion. Entry-rule mutant is additional coverage. Requests measured: core 2, app-server 4, helper tests 0; total requests across mutant jobs unknown. A-F1."
++    },
++    {
++      "row": "placement and size",
++      "result": "held",
++      "attack": "Search for Core scheduling logic/dependencies, module size, and public surface beyond cross-crate needs.",
++      "evidence": "New continuation_schedule.rs is 148 LoC with private module + explicit exports; wait-state integration stays in goal and shares its existing lock/timer rather than a second scheduler in Core. Core changes in the cumulative CR are thin observation hooks and tests inherited from the observation stage, not a Core pacing dependency. BackgroundWaitState is now 923 LoC (601 at CR base), tests file 849 LoC, and cumulative CR is +3706/-26, above repository guidance. This organization/size advisory needs review; held only for goal ownership and new-module <500 requirement, not a claim that all size guidance is satisfied."
++    }
++  ],
++  "free_hunt": {
++    "budget": "Four bounded additional attack families: switch scoping, streak index consistency, persistence/completion quota reset, and placement/public API inventory. Static only beyond reused hosted execution; no builds/tests/source mutations.",
++    "results": [
++      {
++        "family": "switch-scoping",
++        "result": "advisory A-N1; 2/4 common-harness tests need disablement, 2/4 do not."
++      },
++      {
++        "family": "schedule-index",
++        "result": "explicit rework behavior holds; completed-streak versus next-index discrepancy documented, no speculative change in product behavior requested."
++      },
++      {
++        "family": "completion-and-resume",
++        "result": "completion reassessment preserves background quota; resume resets transient quotas as disclosed; production dispatch of standalone note_release not established."
++      },
++      {
++        "family": "placement-and-API",
++        "result": "goal owns pacing, no Core dependency; module/total-size advisories documented, no additional runtime defect established."
++      }
++    ]
++  }
++}
++```

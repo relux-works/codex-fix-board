@@ -1,0 +1,183 @@
+# TASK-261011-2h80lb — r141-panel-a-task-260929-3ld28o-rev3
+
+accept
+
+Non-recording panel A recommendation for CR-TASK-260929-3ld28o-3. All seven surface rows held; no blocking finding. This recommendation does not record acceptance of TASK-260929-3ld28o — state-change-observations. Ready for review by the orchestrator/recording reviewer.
+
+## Replay and frozen identity
+
+Base: `07c018be3507b8d4a5558a85a117b94ed2a23872`.
+Expected and observed candidate tree: `486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7` — exact match.
+Temporary-index replay only; no nested worktree or source modification.
+Hosted source checkout: `eb345af5e4085cf3120a250904ef85389037a8e3`, independently resolved with `git rev-parse <commit>^{tree}` to the same candidate tree. The workflow run head `e0eff057620104a416080da616256ee7f32bda1b` is the workflow definition commit, not the source under test.
+
+## Predecessor panel commands and exit codes
+
+Each replay/validation command ran directly. No cargo, just, Rust build, test or mutant execution was run locally. Existing hosted executions are separately cited below.
+
+| Command | Exit / observation |
+|---|---|
+| `task-board m 'set_status(TASK-261011-2h80lb, status=analysis)'` | 0; only assigned panel task |
+| `git rev-parse --show-toplevel` | 0; assigned Story worktree |
+| `python3 -c 'from pathlib import Path; p=Path(".temp/TASK-261011-2h80lb-replay.idx"); p.parent.mkdir(exist_ok=True); p.unlink(missing_ok=True)'` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2h80lb-replay.idx" git read-tree 07c018be3507b8d4a5558a85a117b94ed2a23872` | 0 |
+| `task-board resource get TASK-260929-3ld28o TASK-260929-3ld28o_change-request_rev3.patch --output .temp/TASK-260929-3ld28o_change-request_rev3.patch` | 0; read only |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2h80lb-replay.idx" git apply --cached .temp/TASK-260929-3ld28o_change-request_rev3.patch` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2h80lb-replay.idx" git write-tree` | 0; `486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7` |
+| `git diff --check 07c018be3507b8d4a5558a85a117b94ed2a23872 486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7` | 0 |
+| `git rev-parse eb345af5e4085cf3120a250904ef85389037a8e3^{tree}` | 0; exact candidate tree |
+| Read-only `git show`, `git grep`, `git diff --stat/--numstat`, board AC/resource projections, and primary-resource reads | 0 for successful inspections; recovery errors listed below |
+| `gh api repos/ivanopcode/codex/actions/runs/38083359851 --jq '{id,head_sha,status,conclusion,event,html_url,created_at,updated_at}'` | 0; overall conclusion failure, as expected for killed mutants |
+| `gh api 'repos/ivanopcode/codex/actions/runs/38083359851/jobs?per_page=100' --jq '.jobs[] | {id,name,conclusion,started_at,completed_at}'` | 0; four snapshot/lint lanes success; sixteen killing lanes failure |
+| `gh api 'repos/ivanopcode/codex/actions/runs/38083359851/artifacts?per_page=100' --jq '.artifacts[] | {id,name,size_in_bytes,expired}'` | 0; no artifacts listed; evidence read from logs |
+| `gh run view 38083359851 --repo ivanopcode/codex --job <id> --log > .temp/TASK-261011-2h80lb-<lane>.log` | 0 for jobs 114304659447,114304675139,114306081168,114306081213,114306081245,114306083295,114306081252,114306083100 after recovery |
+| `gh run view 38083359851 --repo ivanopcode/codex --log > .temp/TASK-261011-2h80lb-hosted-all.log` | 0 |
+| `python3` standalone static function/temporary-index mutant identity audit | 0; seven old functions byte-identical; 16/16 hosted mutant trees exactly equal candidate plus one supplied mutant. All nested `read-tree`, `apply --cached -`, `write-tree`, `rev-parse` processes exited 0. Matching was against tree identity, not commit-title inference. |
+| `python3` standalone hosted-log audit | 0; all sixteen logged checkout SHAs, named killers and red exit codes 100 present; zero survivors |
+| `task-board spawn directives RUN-261011-8aae5e` | 0; no directives |
+| `python3 .temp/TASK-261011-2h80lb-validate-verdict.py` | 0; exactly one valid block, exact seven-row coverage, accept with no blocking findings, 16 logged kills, matching replay tree |
+
+Recovery record: the supplied `rm -f` replay setup was rejected before process creation, so there is no process exit code and it was not executed. Targeted Python cleanup replaced it. One board projection requesting unknown `resources` exited 1; repaired using `preconditionResources/outcomeResources`. The requested skill's `.roles/reviewer/role.md` read exited 1 (file absent); role lookup was recovered from the second installation, with the panel brief supplying the detailed round contract. Some discovery `rg` calls returned 1 for no matches. `task-board resource list` returned help/exit 0 and supplied no resource evidence. The first plan/lint log downloads each exited 1 with `zip: not a valid zip file`; both subsequently reran with exit 0, and the all-log download independently succeeded. None of these failures is represented as passing validation.
+
+## Hosted execution evidence reused, not rerun
+
+Primary run: [relux-ci 38083359851](https://github.com/ivanopcode/codex/actions/runs/38083359851). The plan log pins snapshot and mutant checkout SHAs; checkout logs confirm them. Supplied mutant payloads were independently applied to the candidate through a separate temporary index and matched to all 16 executed mutant trees.
+
+| Lane / job | Executed gate | Observed outcome |
+|---|---|---|
+| [lint 114304675139](https://github.com/ivanopcode/codex/actions/runs/38083359851/job/114304675139) | `just fmt-check`; `just clippy -p codex-tools -p codex-core -p codex-goal-extension -p codex-extension-api -p codex-app-server -p codex-rollout-trace -p codex-queue-extension --message-format=short --color never` | Job success. Shell `-e` and explicit `set -o pipefail` preserve clippy status through the hosted tee. Exit 0 is established by successful fail-fast step; no individual numeric exit line is printed. |
+| [small 114306081168](https://github.com/ivanopcode/codex/actions/runs/38083359851/job/114306081168) | `INSTA_WORKSPACE_ROOT="$PWD" just test -p codex-tools -p codex-goal-extension -p codex-extension-api -p codex-rollout-trace -p codex-queue-extension -p codex-exec -p codex-arg0 -p codex-cli` | Successful fail-fast gate (0); 948/948 executed tests passed, 1 skipped. |
+| [core 114306081213](https://github.com/ivanopcode/codex/actions/runs/38083359851/job/114306081213) | `INSTA_WORKSPACE_ROOT="$PWD" just test -p codex-core -E "not ($quarantine)"` | Successful fail-fast gate (0); 5081/5081 executed tests passed, 11 skipped, 3 flaky after retries. Three named unrelated skill/exec approval cases are quarantined. |
+| [app-server 114306081245](https://github.com/ivanopcode/codex/actions/runs/38083359851/job/114306081245) | `INSTA_WORKSPACE_ROOT="$PWD" just test -p codex-app-server` | Successful fail-fast gate (0); 1833/1833 executed tests passed, 2 skipped. |
+
+The candidate source/test identity was independently checked; hosted configuration/environment are the recorded Ubuntu 24.04.5 runner, nextest local profile, INSTA_UPDATE=no and NEXTEST_RETRIES=2. Reuse describes those executions; this panel did not rerun them or claim a fresh cross-platform result. Small/core mutant lanes use the plan log's named filter with `--no-tests=pass`; each killer was actually seen failing, so a zero-match pass is not used as kill evidence.
+
+Every killing mutant lane below reports `Process completed with exit code 100`. These are expected-red failures: each patch weakens or distorts the indicated production guard/observation path, and the named assertion catches it. Opposite-package green lanes do not mean the mutant survived.
+
+| # / mutant | Executed lane | Exit | Named killer(s) | Checkout commit → matched tree |
+|---|---|---|---|---|
+| 1 `agent_message_counts_as_state_change` | mutant-1 small | 100 (expected red) | `state_change_observations model_text_claiming_progress_does_not_set`, `state_change_observations no_model_writable_bypass_sets_observation` | `02206238a095454833328b631b9ccfe9afec035d` → `f2340ad27876664e9de2da33a0a4bfe31c924ebe` |
+| 2 `agent_message_state_keyword_counts` | mutant-2 small | 100 (expected red) | `state_change_observations model_text_claiming_progress_does_not_set`, `state_change_observations no_model_writable_bypass_sets_observation` | `3dccd02ca7a01837918b88971043a68cc1ce8964` → `18f4c1f5dfd70dcf46d374192e35774d3165b684` |
+| 3 `code_mode_nested_file_change_emitted_twice` | mutant-3 core | 100 (expected red) | `code_mode_leaf_applied_patch_delivered_exactly_once` | `144e577d088821fe443cb994d400e0e472bf6f75` → `2e496bbb3303674d08395e54d1a3b9ead182b4ea` |
+| 4 `command_execution_counts_as_state_change` | mutant-4 small | 100 (expected red) | `state_change_observations code_mode_leaf_counts_once_and_wrapper_adds_none`, `state_change_observations shell_success_does_not_set_observation` | `88f939d2676b0823c1bc46ef694de963fbfc41f2` → `afe487fd638a7a8517bab7aa16bd7cea1c1682ad` |
+| 5 `external_goal_clear_does_not_record` | mutant-5 small | 100 (expected red) | `backend_external_goal_set_and_clear_record_observation` | `4c8c89adf02f6cbb16987db00d2630bd6e41d7cb` → `d256d2e2925fd872a848db3dfb59deff9fc18f55` |
+| 6 `external_goal_set_does_not_record` | mutant-6 small | 100 (expected red) | `backend_external_goal_set_and_clear_record_observation` | `0d34bdf5b776859d5bea68c7bc203d6c403db325` → `047797960a7328bb513cf9a13198a9416bf3f165` |
+| 7 `file_completed_requires_auto_approved` | mutant-7 small | 100 (expected red) | `backend_file_change_completed_sets_observation`, `backend_fresh_runtime_carries_no_observation`, `state_change_observations applied_file_change_sets_observation`, `state_change_observations code_mode_leaf_counts_once_and_wrapper_adds_none` | `a9717fc656dd042058814cb6046c0ef8ac31d88c` → `3bc2020bdd27716f053972696659400e19737cf4` |
+| 8 `file_failed_counts_as_applied` | mutant-8 small | 100 (expected red) | `backend_file_change_completed_sets_observation`, `state_change_observations failed_or_declined_file_change_does_not_set` | `96eeec548ef40b91a155a3e7b3f733ceea5a8807` → `dba722312a027a6d7425aafb9c7e4cda4b1227e1` |
+| 9 `goal_update_complete_only_records` | mutant-9 small | 100 (expected red) | `backend_goal_update_paused_and_blocked_set_observation` | `dba10726635cb732700d1c3288e453478e1db1f5` → `54a129bdcb152c9cc679694d3200669d015f9000` |
+| 10 `identical_plan_always_counts` | mutant-10 small | 100 (expected red) | `backend_plan_transition_sets_and_identical_does_not`, `state_change_observations identical_plan_resubmission_does_not_set`, `state_change_observations no_model_writable_bypass_sets_observation` | `cf3e7bc446dd57646987eb74d8c7b7a5a6f2d157` → `afebd870f6cf3ea6df14503ea5267b9ed1665f31` |
+| 11 `plan_transition_ignores_content` | mutant-11 small | 100 (expected red) | `backend_plan_transition_sets_and_identical_does_not`, `state_change_observations plan_status_change_counts_as_transition`, `state_change_observations plan_step_text_change_counts_as_transition` | `bceadc587cda06b36edb71257f6c26e3c8734512` → `bad6d3bd250afceb5ea11efd6ce0a518842e0a87` |
+| 12 `send_input_status_ignores_delivery_result` | mutant-12 core | 100 (expected red) | `send_input_rejected_compaction_emits_failed_item` | `910966b8f30b1ca4a0e86c7666b8528953d5a754` → `83132cec18bea06a58a04b6607e5ca320df338bd` |
+| 13 `spawn_followup_message_tools_dropped` | mutant-13 small | 100 (expected red) | `state_change_observations send_message_and_followup_task_completed_set_observation` | `ba4fa2d79ab75f1143d160c1be6cc5ddbc5ddae9` → `ca057805aa94cc8992877bdf28c2d76797716dbe` |
+| 14 `spawn_only_spawn_agent_counts` | mutant-14 small | 100 (expected red) | `state_change_observations send_input_completed_sets_observation`, `state_change_observations send_message_and_followup_task_completed_set_observation` | `f744d81992699732142076b726c90c6f10dc3063` → `f72369189054bd22732030df4543aef2ddc30394` |
+| 15 `spawn_status_ignores_delivery_result` | mutant-15 core | 100 (expected red) | `spawn_agent_accepted_with_errored_child_emits_completed_item` | `01f0eb5cc5d87fc2e7575e38b5425a069012eaaa` → `e5924ad6cf8bf60ac15c87c9414cd5670222ee8d` |
+| 16 `tool_finish_success_records_mutation` | mutant-16 small | 100 (expected red) | `backend_spawn_followup_sets_but_tool_finish_success_does_not` | `edef3c5090146f38bba9e1636e9678a36869885e` → `2b1e53a0d7130fb533a01e63f7a97369b31cc059` |
+
+Coverage: **16/16 supplied mutants killed, 0 survivors**; **7/7 surface rows swept**. This ratio measures the supplied corpus, not every conceivable weakening. The rev3 CR validation log is a readable 383-byte hosted-gate attestation with exit 0 and `required=1 green=1 failed=0 missing=0 test_case_coverage=unknown`; it is not a local suite transcript. The GitHub job logs above supply the execution evidence used here.
+
+## Bounded free hunt
+
+After the full surface sweep, four additional static probes were performed:
+
+1. Receipt vs child-liveness siblings: inspected V1 spawn/send and V2 spawn/message paths. V1 status derives from accepted result; V2 Started/Interacted emits only after accepted receipt. Child liveness remains presentation data. The V2 analytics CollabAgentToolCall is not another turn-observer event. No duplicate reset route found.
+2. Late callbacks/read faults: external set rereads under the goal permit and requires the committed goal to match; clear records only after a successful reread shows no goal. Read failure propagates before the new count. No-current-turn external changes have no turn to observe, a documented bound. No new absent/read-failure conflation found.
+3. Persistence and forged-input reachability: inspected turn start/stop/abort, fresh runtime construction, observation readers, plan hook dispatch and goal tool parsing. No observation field is serialized or accepted from model arguments; the count is removed at turn finish. Mid-turn goal changes preserve per-turn accumulation as documented. No carried-count path found.
+4. Build/API/change-size boundaries: no dependency/config/schema change; goal BUILD.bazel already declares accounting.rs as integration compile data for the source-including unit integration target. The trait hook is defaulted and has a real production caller. The patch exceeds the guideline; this is recorded as an advisory rather than a fabricated behavioral failure.
+
+No further attack is needed to classify these rows against this candidate. Real-child race timing, direct resume-RPC count inspection, excluded hosted tests and unknown shell side effects remain explicitly unclaimed.
+
+## References and logbook
+
+- Board inputs, read only: `TASK-260929-3ld28o/surface-table.md`, `producer-brief.md`, AC projection, `TASK-260929-3ld28o_results.md` revision 8, `TASK-260929-3ld28o_mutants.json`, `TASK-260929-3ld28o_hosted-precheck-7.md`, `TASK-260929-3ld28o_review-verdict-rev2.md`, and rev3 patch/validation log. Producer context did not override the panel brief.
+- [Accounting classifier](https://github.com/ivanopcode/codex/blob/eb345af5e4085cf3120a250904ef85389037a8e3/codex-rs/ext/goal/src/accounting.rs#L289), pinned snapshot tree `486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7`.
+- [Goal event wiring](https://github.com/ivanopcode/codex/blob/eb345af5e4085cf3120a250904ef85389037a8e3/codex-rs/ext/goal/src/extension.rs#L332), pinned snapshot tree `486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7`.
+- [V1 spawn receipt mapping](https://github.com/ivanopcode/codex/blob/eb345af5e4085cf3120a250904ef85389037a8e3/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs#L179), pinned snapshot tree `486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7`.
+- [V1 accepted/refused controls](https://github.com/ivanopcode/codex/blob/eb345af5e4085cf3120a250904ef85389037a8e3/codex-rs/core/src/tools/handlers/multi_agents_tests.rs#L3119), pinned snapshot tree `486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7`.
+- [Code-mode public-entry attack](https://github.com/ivanopcode/codex/blob/eb345af5e4085cf3120a250904ef85389037a8e3/codex-rs/core/tests/suite/code_mode.rs#L6895), pinned snapshot tree `486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7`.
+- [Goal backend entry attacks](https://github.com/ivanopcode/codex/blob/eb345af5e4085cf3120a250904ef85389037a8e3/codex-rs/ext/goal/tests/goal_extension_backend/state_change_observation_tests.rs#L1), pinned snapshot tree `486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7`.
+- [Additive plan hook](https://github.com/ivanopcode/codex/blob/eb345af5e4085cf3120a250904ef85389037a8e3/codex-rs/ext/extension-api/src/contributors.rs#L414), pinned snapshot tree `486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7`.
+
+Logbook — 2026-10-11: exact CR replay and hosted source identity verified. Rev2 A-F1/D-F1 closes on the receipt mapping; every supplied mutant tree/kill independently matches. Overall hosted run failure is expected mutant evidence, not snapshot failure. Download-cache read errors were recovered and are logged truthfully. Scope remained non-recording: no accept/reject/withdraw/status/handoff/resource/note write was issued for TASK-260929-3ld28o. Only this panel task receives the new outcome and lifecycle writes. No source change, commit, branch operation, build or local test occurred. Recommendation: accept, with the evidence bounds and change-size advisory retained for the recording reviewer.
+
+## Successor recovery audit — RUN-261011-0596a3
+
+The predecessor attached this verdict and checked all seven task items, but its role handoff failed: the panel report was also untracked under `.research/`, so CR-TASK-261011-2h80lb-1 had a repository delta. Its attached validation log records `mini-hosted-gate.sh` **exit 1**, refusing untested tree `788054798348271a82e0b065eba7fa9756659a88`. This was a real failing gate, not passing review evidence. No source validation is inferred from it.
+
+This successor preserved the report under ignored `.temp/.research/TASK-261011-2h80lb_panel-verdict.md` and updates the existing task outcome. The read-only panel now has an empty repository delta. No candidate source, test, config, workflow or validation-gate file was changed. The review recommendation and structured surface results are unchanged.
+
+Commands independently rerun by this successor (standalone processes; inherited hosted tests were not rerun):
+
+| Command | Real exit / observation |
+|---|---|
+| `task-board m 'set_status(TASK-261011-2h80lb, status=analysis)'` | 0 |
+| `mkdir -p .temp` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2h80lb-replay-successor.idx" git read-tree 07c018be3507b8d4a5558a85a117b94ed2a23872` | 0 |
+| `task-board resource get TASK-260929-3ld28o TASK-260929-3ld28o_change-request_rev3.patch --output .temp/TASK-260929-3ld28o_change-request_rev3.patch` | 0; read only |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2h80lb-replay-successor.idx" git apply --cached .temp/TASK-260929-3ld28o_change-request_rev3.patch` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2h80lb-replay-successor.idx" git write-tree` | 0; expected candidate `486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7` |
+| `git diff --check 07c018be3507b8d4a5558a85a117b94ed2a23872 486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7` | 0 |
+| `git rev-parse eb345af5e4085cf3120a250904ef85389037a8e3^{tree}` | 0; same exact candidate |
+| `python3 .temp/TASK-261011-2h80lb-successor-audit.py` | First exit 1: literal killer-name comparison did not strip ANSI coloring from inherited raw logs. Corrected only the ignored audit script's log normalization; rerun exit 0. All 16 supplied patches replay to the hosted mutant trees, all 16 killing lanes contain the named FAILs and expected-red exit 100. All 64 nested git subprocesses exited 0 on the green audit. |
+| `python3 .temp/TASK-261011-2h80lb-validate-verdict.py` | 0 before report relocation; rerun after adding this recovery record and relocation also 0 |
+| `git status --short` | 0; empty output after report relocation |
+| `/Users/administrator/Developer/ReluxWorks/codex/.temp/goal-token-burn/impl/mini-hosted-gate.sh` | 0; `empty delta (tree bde782b85ddbc8536536d0747b3917d0f24e1951 = HEAD tree); nothing to validate`. This validates the panel's empty delta, not the implementation candidate. |
+| `task-board spawn directives RUN-261011-0596a3` | 0; no directives |
+
+Successful source/resource/skill reads exited 0. Discovery failures: two `get` projections asking for `resources` and two asking for `attachments` exited 1; repaired with `preconditionResources`/`outcomeResources`. Missing reviewer-role reads from the requested skill installation and the separate short Codex installation exited 1; the infra skill copy was then found and read at exit 0. Three no-match discovery `rg` calls exited 1. `task-board resource list` printed help at exit 0 and supplied no resource listing. None is treated as passing validation.
+
+Logbook — successor recovery, 2026-10-11: recovered the evidence-only handoff from the truthful exit-1 attestation without requesting a hosted rebuild or weakening a gate. Report bytes are preserved in ignored local staging and on the board. Independently reran exact CR replay and static mutant/log audit; reused the already executed hosted snapshot and mutant tests on their recorded identities. No new blocking finding, no local cargo/just/build/test, and no write on TASK-260929-3ld28o. The recommendation remains accept; researcher handoff follows the synchronous outcome update.
+
+## Structured verdict
+
+```verdict-findings
+{
+  "findings": [],
+  "notes": [
+    "No blocking finding after all seven surface rows and four bounded free-hunt probes. Rev2 A-F1/D-F1 is closed by the receipt-bound V1 spawn mapping and the hosted accepted-with-Errored fixture plus killed liveness mutant.",
+    "Coverage is seven of seven specified surface rows, sixteen of sixteen supplied mutants killed, and seven of seven pre-existing accounting/lifecycle functions byte-identical. This is not exhaustive mutation coverage of every possible event/branch.",
+    "Arbitrary shell side effects are UNKNOWN: shell success does not record a state change, pacing may remain conservative, and completion must never be inferred from shell output or status (AC7).",
+    "The CR is 17 paths, +1828/-7 (1835 changed lines), above the 800-line guideline. About 300 lines are production; the rest is tests supporting AC8. Nonblocking review-size advisory: a follow-on split can isolate the additive plan hook/API with its integration test from observation accounting and multi-agent receipt regression coverage. No architectural expansion into core was found.",
+    "Hosted snapshot core reports 5081 passed, 11 skipped, 3 flaky after configured retries; small reports 948 passed/1 skipped; app-server 1833 passed/2 skipped. Three unrelated skill/exec approval cases are explicitly quarantined by the hosted core filter. No all-platform, all-feature, quarantine, or real-child race-frequency claim.",
+    "The deterministic accepted-receipt AgentControl fixture pins the real V1 handler mapping; actual asynchronous child-error incidence is unknown. Core emission and goal observation are proved as two executed links.",
+    "The installed requested skill copy lacks its referenced reviewer round-role file. A second installed reviewer-role copy was located/read, but lacks the detailed round section; the explicit panel brief supplies the authoritative sweep and adversarial-review rules used here."
+  ],
+  "surface_results": [
+    {
+      "row": "reset sources at committing handlers",
+      "result": "held",
+      "detail": "Held: the classifier accepts only Completed FileChange; Completed SpawnAgent/SendInput/SendMessage/FollowupTask; and Started/Interacted activity. The plan handler calls the hook after parse/publication; goal create/update record after successful DB returns; external set/clear record after a successful committed-state reread. Failed, declined, rejected and unknown-turn paths do not increment. V1 spawn/send completion now uses the accepted result while agents_states retains liveness. Hosted real-handler accepted/refused controls and backend create/update/set/clear tests pass. Mutants 5–9, 11–15 fail in the named tests below. Production sources: accounting.rs:222–316, extension.rs:332–344,516–529, tool.rs:230–250,298–321, runtime.rs:352–447, V1 spawn.rs:179–204 and send_input.rs:109–137."
+    },
+    {
+      "row": "non-resets",
+      "result": "held",
+      "detail": "Held: ToolFinish updates the pre-existing activity state only; no observation is recorded there. Plan equality compares ordered steps and status, excluding explanation. CommandExecution, model messages and generic tool outcomes are ignored by the observation classifier. Hosted failed/declined file, failed/in-progress spawn/send, identical-plan, shell-success, wrapper-only and progress-claim tests pass. Mutants 1,4,8,10,16 fail in the named tests below. Sources: accounting.rs:117–211,266–334; extension.rs:531 onward."
+    },
+    {
+      "row": "code-mode leaf accounting",
+      "result": "held",
+      "detail": "Held by public-entry execution plus classifier composition: core code_mode_leaf_applied_patch_delivered_exactly_once applies and reads a real file, records exactly one Completed FileChange, zero CommandExecution and no wrapper call-id item. Wrapper-only control records one nested CommandExecution and no FileChange/wrapper item. Goal code_mode_leaf_counts_once_and_wrapper_adds_none proves one leaf gives count 1, wrapper/shell alone 0. Double-emission mutant 3 fails the core real-entry test with exit 100. This proves delivery and classification separately; it does not claim a single black-box core→goal test. Sources: core/tests/suite/code_mode.rs:6847–6996; ext/goal/tests/state_change_observations.rs:354 onward."
+    },
+    {
+      "row": "no model-writable bypass",
+      "result": "held",
+      "detail": "Held within the trusted-host event boundary: the observation is private host memory, with no request/config/rollout field. Magic tool names, plan step/message keywords and success flags cannot set it. A changed plan legitimately counts as a plan transition; arbitrary explanation cannot reach the comparator. Hosted no_model_writable_bypass_sets_observation passes, and the keyword/counting mutants 1–2 fail it with exit 100. Source: accounting.rs:266–334,679–697; ext/goal/tests/state_change_observations.rs:396 onward. Malicious trusted extensions that fabricate host items are outside this model-writable-input claim."
+    },
+    {
+      "row": "existing activity and blocker untouched",
+      "result": "held",
+      "detail": "Held: independent byte comparisons found record_tool_outcome, record_item, empty_response_goal, finish_turn, on_turn_stop, on_turn_abort and on_thread_resume identical to the CR base (7/7 functions). New counts do not feed the existing activity booleans or blocker. Hosted empty_blocker_still_fires_first_with_no_observation and observation_does_not_disturb_empty_blocker pass; unchanged on_turn_stop retains the original stop/account/finish ordering. Source: accounting.rs:117–211,362 onward,599; extension.rs:347–445. The observation is preparatory state, not the pacing policy itself."
+    },
+    {
+      "row": "transient state",
+      "result": "held",
+      "detail": "Held: state_change_count is initialized to 0 in GoalTurnAccounting, kept in the in-memory turn map, and removed by finish_turn. The last plan is thread-runtime memory; it is not a rollout/history field. Hosted observation_is_transient_per_turn, fresh_state_carries_no_observation_or_plan_memory and backend_fresh_runtime_carries_no_observation pass. The backend fresh-runtime test reconstructs a runtime over the same state DB; static resume wiring initializes accounting through thread-store get_or_init and restores only existing persistent goal state. No direct app-server resume-RPC observation test is claimed. Sources: accounting.rs:40–56,95–110,599–606,697–737; extension.rs:117–200."
+    },
+    {
+      "row": "API surface and placement",
+      "result": "held",
+      "detail": "Held: additive PlanCommitInput borrows existing plan/stores; on_plan_committed has a default no-op, preserving existing contributor implementations. The new runtime readers expose bounded u32/bool values. Core adds a thin plan fan-out and receipt-bound spawn/send mappings; classification/state live in ext/goal. No core→goal dependency, config, schema, CLI, rollout or persistence change is introduced. Hosted extension-api, core and app-server suites and lint pass. Plan hook has a real model-turn integration test. Sources: extension-api/src/contributors.rs:414 onward, contributors/tool_lifecycle.rs:197 onward; core/src/tools/lifecycle.rs:165 onward. Size advisory below is nonblocking."
+    }
+  ],
+  "free_hunt": []
+}
+```

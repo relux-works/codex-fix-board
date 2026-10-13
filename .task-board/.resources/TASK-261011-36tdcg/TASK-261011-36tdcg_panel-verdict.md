@@ -1,0 +1,347 @@
+# TASK-261011-36tdcg — R141 panel A, source CR revision 5
+
+accept
+
+Replay tree check: **MATCH**. Base `39c264c34e61b5171ae13b0f756746c24ea5f51a` plus `TASK-260929-csyzcj_change-request_rev5.patch` produces exactly `b91072a51501101110a4e13061a8c07a242aad6a` via a temporary index. Ordinary index and candidate sources were not modified. The same tree remains after all mutant applicability checks.
+
+Seven of seven surfaces are held within explicit evidence bounds; no demonstrated new failure. Rev4's persisted-path regression is repaired. This is a non-recording panel opinion for the recording reviewer, with no acceptance/status write on the source task.
+
+Predecessor RUN-261011-3ab88a command receipts, retained from its attached outcome (not all rerun by this successor; project root; IDX is `$PWD/.temp/TASK-261011-36tdcg-replay.idx`):
+
+| Command | Exit | Evidence |
+|---|---:|---|
+| `task-board m 'set_status(TASK-261011-36tdcg, status=analysis)'` | 0 | Own task only |
+| `python3 -c 'from pathlib import Path; p=Path(".temp/TASK-261011-36tdcg-replay.idx"); p.parent.mkdir(parents=True, exist_ok=True); p.unlink(missing_ok=True)'` | 0 | Temporary index initialization |
+| `GIT_INDEX_FILE="$IDX" git read-tree 39c264c34e61b5171ae13b0f756746c24ea5f51a` | 0 | Base loaded |
+| `task-board resource get TASK-260929-csyzcj TASK-260929-csyzcj_change-request_rev5.patch --output .temp/TASK-260929-csyzcj_change-request_rev5.patch` | 0 | Patch materialized read-only |
+| `GIT_INDEX_FILE="$IDX" git apply --cached .temp/TASK-260929-csyzcj_change-request_rev5.patch` | 0 | Replay applied |
+| `GIT_INDEX_FILE="$IDX" git write-tree` (initial and post-mutant checks) | 0 each | Both print `b91072a51501101110a4e13061a8c07a242aad6a` |
+| `task-board q 'get(TASK-260929-csyzcj) { description scope ac }'` | 0 | AC1–AC9 read |
+| `task-board q 'get(TASK-260929-csyzcj) { preconditionResources outcomeResources }'` | 0 | Registered inputs identified |
+| `task-board resource get TASK-260929-csyzcj TASK-260929-csyzcj_change-request_rev5-validation.log --output .temp/TASK-261011-36tdcg-validation.log` | 0 | Readable exact-tree gate receipt |
+| `git diff --check 39c264c34e61b5171ae13b0f756746c24ea5f51a b91072a51501101110a4e13061a8c07a242aad6a` | 0 | No whitespace errors |
+| `git diff --stat 39c264c34e61b5171ae13b0f756746c24ea5f51a b91072a51501101110a4e13061a8c07a242aad6a` | 0 | 34 paths, +2639/-21 |
+| `git diff --stat 5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8 b91072a51501101110a4e13061a8c07a242aad6a` | 0 | Rev4..rev5: six paths, +364/-43 |
+| `python3 .temp/TASK-261011-36tdcg-static-assay.py` | 0 | Source-only assertions; corrected second run contains eight measured git-show exits, all 0. First run also exited 0 but printed a manually miscounted read count; superseded by measured count. No Rust execution |
+| `git grep -n` for production conversion/new-path/release/scheduler callers on `b91072a51501101110a4e13061a8c07a242aad6a` | 0 | Call-site sweep (bounds below) |
+| `git status --short` before creating this outcome | 0 | Empty: no product edits |
+| `python3 .temp/TASK-261011-36tdcg-validate-verdict.py` | 0 | Exactly one JSON verdict block, 7/7 unique rows, one-word accept, required structure and text-only size validated |
+| `git diff --check` (own worktree) | 0 | No tracked product diff; only .research outcome added |
+| `task-board spawn directives "$TASK_BOARD_RUN_ID"` (three safe checkpoints) | 0 each | No directives recorded |
+
+For **each** following name I personally ran the standalone command `GIT_INDEX_FILE="$IDX" git apply --cached --check .temp/TASK-261011-36tdcg-mutants/<name>.patch`. Each real exit code was **0**; none was applied or executed:
+
+- `skip_failed_lookups`: exit 0.
+- `insert_after_mail_check`: exit 0.
+- `unconditional_remove`: exit 0.
+- `insert_clobbers_one_foreign`: exit 0.
+- `interrupted_claims_success`: exit 0.
+- `ignore_native_pending`: exit 0.
+- `interrupted_notice_delivered_twice`: exit 0.
+- `interrupted_sender_path_uncapped`: exit 0.
+- `spawn_task_name_length_unchecked`: exit 0.
+- `legacy_paths_rejected_by_shared_parser`: exit 0.
+- `envelope_author_display_uncapped`: exit 0.
+- `legacy_long_path_rejected_by_shared_parser`: exit 0.
+
+Source extraction used tree-pinned `git show` subprocesses: all 34 changed candidate files and the resolved supporting files exited 0. Two discovery guesses (`core/src/agent/control/registry.rs`, `ext/goal/src/service.rs`) exited 128 because those paths do not exist; recovered by tree enumeration and actual `runtime_context.rs`/`api.rs` reads. The extraction wrapper initially exited 0 while explicitly printing both 128s; they are not passes. Static-assay subprocess exits are measured and asserted, not hidden.
+
+Discovery failures (not validation successes): the initial combined mkdir/rm shell call was rejected before execution, so it has **no exit code**; safer Python initialization succeeded. Unsupported `resources` and `artifacts` projections, `schema(operation=resources)`, and the missing skill-linked reviewer role lookup each exited 1; the actual role was later read from `~/.roles/reviewer/role.md` (exit 0). An optional rg search of a missing board `.roles` directory and a later search including guessed `service.rs` returned 1 and 2 respectively; role/call-site paths were then resolved. Other empty discovery rg searches exited 1 (no match). `task-board resource list` printed command help with exit 0; it was not used as evidence of absence. `command -v logbook` exited 1. Successful source/resource/skill reads and Python scratch-file materialization exited 0. No expected-red behavior test was run.
+
+Accepted execution evidence, **not personally rerun**: CR validation log's mini-hosted-gate exit **0**, exact command shard **1/1**; hosted precheck 15 reports lint/small/core/app-server success and **12/12** named mutant kills on the exact candidate. Individual hosted shell exits, per-test counts and mutant run IDs remain **unknown**. No cargo, just, Rust build/test or hosted rerun was launched by this panel.
+
+The static assay establishes source equality and byte budgets only. It is reproduced in the appendix so the single attached text outcome carries the assay without another resource.
+
+Successor recovery, RUN-261011-1907d8 (2026-10-11): the predecessor's own CR publication failed because its untracked `.research/` outcome created a source delta. The attached own-task rev1 validation log records `mini-hosted-gate.sh` **exit 1** for tree `a95de8a2572972bcf1b991e41e91e86c519a5365`; this is a real failing gate, not a pass. No execution of that rejected research tree is claimed. The outcome was already safely attached. Preserved its local text under ignored `.temp/TASK-261011-36tdcg_panel-verdict.md` and removed only the now-empty `.research/` directory, retaining the findings in the task-scoped outcome without changing product sources. The review candidate remains the separate, tree-pinned source CR revision 5.
+
+Successor commands personally rerun as standalone processes, with observed exit codes:
+
+| Command | Exit | Result |
+|---|---:|---|
+| `task-board m 'set_status(TASK-261011-36tdcg, status=analysis)'` | 0 | Own-task recovery lifecycle |
+| Python temporary-index initialization | 0 | Removed only panel scratch index |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-36tdcg-replay.idx" git read-tree 39c264c34e61b5171ae13b0f756746c24ea5f51a` | 0 | Source CR base |
+| `task-board resource get TASK-260929-csyzcj TASK-260929-csyzcj_change-request_rev5.patch --output .temp/TASK-260929-csyzcj_change-request_rev5.patch` | 0 | Source-task read only |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-36tdcg-replay.idx" git apply --cached .temp/TASK-260929-csyzcj_change-request_rev5.patch` | 0 | Applied to temporary index |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-36tdcg-replay.idx" git write-tree` | 0 | Exact `b91072a51501101110a4e13061a8c07a242aad6a` |
+| `python3 .temp/TASK-261011-36tdcg-static-assay.py` | 0 | Eight nested git-show reads exited 0; shared parser and global is_final equality; source-only context byte bounds |
+| Python tree-pinned source sweep | 0 | Five nested git-show reads exited 0: runtime insertion/recheck/lifecycle, extension callbacks, owned-child errors, mailbox enqueue and scheduler |
+| `git diff --check 39c264c34e61b5171ae13b0f756746c24ea5f51a b91072a51501101110a4e13061a8c07a242aad6a` | 0 | Source CR whitespace check |
+| `python3 .temp/TASK-261011-36tdcg-validate-verdict.py` before and after recovery edit | 0 each | One JSON block, 7/7 unique surfaces, required fields |
+| `git diff --check` after recovery edit | 0 | No tracked source changes |
+| Python artifact relocation | 0 | Preserved text; empty research directory removed; format checker points to scratch artifact |
+| `git status --short` after relocation | 0 | Empty; no source delta |
+| `/Users/administrator/Developer/ReluxWorks/codex/.temp/goal-token-burn/impl/mini-hosted-gate.sh` | 0 | Empty delta: `bde782b85ddbc8536536d0747b3917d0f24e1951` equals HEAD tree; no code validation required for this evidence-only panel |
+
+Source AC/resource projections, resource downloads (surface table, producer brief/results, precheck 15 and source rev5 validation log), own failed-validation-log download, skill/role and gate source reads all exited 0. One directive checkpoint exited 0 with no directives. Freshly inspected precheck 15 and source rev5 gate receipt confirm the same exact candidate and 12/12 hosted mutant kills; these runtime results were **not rerun** by the successor. The seven-row assessment and bounded free hunt below are retained after targeted static reinspection; no new demonstrated failure was found. The successor's initial unsupported `resources` projections exited 1 twice; the combined skill/role read exited 1 for the missing skill-relative role file; discovery rg calls exited 2/1/2 for unavailable paths. Recovered using documented preconditionResources/outcomeResources and the existing `~/.roles/reviewer/role.md`. `task-board resource list` only emitted help (exit 0); it proves no resource inventory. No builds, tests or source-task mutations occurred.
+
+```verdict-findings
+{
+  "findings": [],
+  "notes": [
+    {
+      "id": "coverage",
+      "text": "7/7 prescribed rows swept, each exactly once: held 7, broken 0, not-attacked 0. Held denotes the named attack and stated bound, not exhaustive AC subcase coverage. Producer's 9/9 AC ratio counts rows with driving tests. Hosted 12/12 mutant kills are accepted evidence; independently checked 12/12 patch applicability is a separate ratio."
+    },
+    {
+      "id": "execution-identity",
+      "text": "Replay equals the expected candidate. Readable CR rev5 validation log ends [exit 0], names tree b91072a5 and run 38109158922, and reports exact_command_shard required=1 green=1 failed=0 missing=0 test_case_coverage=unknown. Precheck 15 binds four successful hosted lanes and 12 named kills to this exact tree. No Rust, cargo, just, build, suite or mutant execution was rerun here. Individual mutant run IDs and numeric hosted test-command exits are not supplied and remain unknown. Small lane explicitly adds protocol and rollout on relux/ci-next 9f8fdf9a.",
+      "sources": [
+        "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-15.md",
+        "board-resource://TASK-260929-csyzcj/outcome/TASK-260929-csyzcj_change-request_rev5-validation.log"
+      ]
+    },
+    {
+      "id": "prior-round-disposition",
+      "text": "Rev4 legacy-agent-path-resume-regression / persisted-agent-path-caps-break-resume is addressed: 3/3 shared grammar validators and from_string compare byte-identically with CR base; persisted/routing identities are preserved. New-path limits live only in join_new and are reached from the V2 tool before creation. The legacy-resume test passes agent_path=None on resume, forcing stored restoration; the rollout fixture writes raw legacy JSON. Legacy segment and total-path parser mutants are killed hosted. Display-only envelope caps prevent reopening the earlier unbounded-envelope class.",
+      "sources": [
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/protocol/src/agent_path.rs:91",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/agent/control_tests.rs:4751",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/rollout/src/recorder_tests.rs:362",
+        "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-15.md"
+      ]
+    },
+    {
+      "id": "manual-context-review",
+      "text": "Manually inspected the complete new plaintext interruption item: typed core/context fragment, 256-byte path truncation plus 14-byte marker in both body and envelope, and production history conversion through to_model_input_item. Hard payload field budget is 270+270+682=1222 bytes, rather than the previous unbounded legacy paths. No history replacement is introduced. Actual tokens were not measured; the producer's approximate under-1K-token claim is not treated as evidence. Encrypted payload length and existing completion content are carried bounds outside the new plaintext Interrupted fragment.",
+      "sources": [
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/context/inter_agent_interrupted_message.rs:26",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/session/mod.rs:4001",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/protocol/src/protocol.rs:883"
+      ]
+    },
+    {
+      "id": "requested-targeted-attacks",
+      "text": "Requested, not run: goal_wait_checkin_reinserts_with_live_child; goal_wait_exhausted_checkins_late_child_completion_wakes; goal_wait_disable_stop_during_registration; goal_wait_resume_rendered_sleep_with_unloaded_child; goal_wait_wake_preserves_nondefault_turn_settings; goal_wait_second_child_completes_mid_turn; goal_wait_second_interruption_transition; goal_wait_preserves_enabled_reminder_schedule. For total new-path admission, narrow/remove only validate_new_path_length while preserving segment grammar/cap, then require a real nested V2 spawn to accept exactly 1024 bytes and refuse 1025. None of these requests is marked green or represented as an observed failure."
+    },
+    {
+      "id": "scope",
+      "text": "All source-task operations were read-only queries/resource gets/direct resource reads. No accept_cr, reject_cr, withdraw_cr, set_status, handoff, notes, resources or checklist write on TASK-260929-csyzcj. Own lifecycle/outcome/checklist/notes/handoff target TASK-261011-36tdcg only. No product edit, nested worktree, commit, branch switch, rebase, merge, archive or binary attachment."
+    },
+    {
+      "id": "review-logbook",
+      "text": "2026-10-11: exact replay established; latest hosted identity checked; rev4 shared-parser regression repaired without reopening unbounded interruption envelopes; no new demonstrated failure in bounded sweep. Important evidence limits and follow-up attacks are recorded in this task-scoped outcome and own-task board note. command -v logbook exited 1 (no standalone tool); no separate external logbook write is claimed. Role installation lacks the linked review-round section; the panel brief's explicit attack/sweep/free-hunt contract was applied."
+    },
+    {
+      "id": "successor-recovery-logbook",
+      "text": "2026-10-11 RUN-261011-1907d8: reproduced source CR tree exactly; rechecked seven-row verdict structure and key production wiring; accepted exact-tree hosted evidence without rerunning builds. Predecessor own-task validation exit 1 was caused by an untracked research outcome becoming a code delta. Preserved text in ignored scratch and existing board outcome; empty-delta gate then exited 0. No hosted-green registry edit, validator bypass, commit or source-task write. Retained accept panel opinion with explicitly stated unexecuted bounds. Own-task outcome update and role handoff carry this recovery evidence."
+    }
+  ],
+  "surface_results": [
+    {
+      "row": "registration and wake",
+      "result": "held",
+      "invariant": "AC1: one goal-owned marker at eligible idle; queue-only child completion produces a real parent model request.",
+      "attack": "Marker-only false wake, double attachment, queue-only delivery without scheduler admission, and ignored native pending.",
+      "evidence": "Hosted goal_wait_registers_marker_and_wakes_on_child_completion asserts silence before completion and an actual completion-bearing request. ignore_native_pending is killed. A single type-keyed SleepItem slot is atomically refreshed by insert_if; core mailbox enqueue and the post-insert recheck both reach the existing scheduler.",
+      "bound": "Executed public-entry attack is hosted evidence accepted from the exact-tree precheck; no local runtime execution. Exhausted-check-in late wake has no dedicated live integration.",
+      "sources": [
+        "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-15.md",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/runtime.rs:699",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/native_wait.rs:42",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/session/handlers.rs:90",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/tasks/mod.rs:551",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/tests/suite/goal_native_wait.rs:248"
+      ]
+    },
+    {
+      "row": "eligibility and inspection errors",
+      "result": "held",
+      "invariant": "AC2: only directly owned, loaded PendingInit/Running children enable registration; failed inspection propagates rather than becoming absence.",
+      "attack": "Foreign/descendant membership, unknown and unloaded identities, terminal/reused states, and skipped lookup errors.",
+      "evidence": "Production selects direct ThreadSpawn edges, checks active goal and persistent-host wait support before inspection, and propagates Err with ?. inspect_owned_child_ids distinguishes known unloaded children from unknown ids. Hosted owned_children_inspection_propagates_failed_lookups and pending_native_work_is_only_pending_init_and_running cover the distinctions; skip_failed_lookups is killed. The ordinary-parent interruption integration remains quiet.",
+      "bound": "The failed-lookup attack enters the internal inspection method, not the full idle entry. Forced backend failure and an existing marker at that failure are not independently exercised. The outer lifecycle logs propagated errors; it does not report them as an empty set.",
+      "sources": [
+        "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-15.md",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/agent/control/runtime_context.rs:64",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/agent/control/runtime_context.rs:172",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/agent/owned_children.rs:65",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/runtime.rs:683",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/tests/suite/goal_native_wait.rs:989"
+      ]
+    },
+    {
+      "row": "completion-before-registration race",
+      "result": "held",
+      "invariant": "AC3: insertion precedes mailbox recheck and completion in the inspection/insert window is not lost.",
+      "attack": "Recheck-before-insert, completion in the latch window, self-deadlock on the goal-state semaphore, and a second idle pass masking the fault.",
+      "evidence": "Hosted goal_wait_latch_closes_completion_before_registration kills insert_after_mail_check. The fixture confirms queued mail before gate release, retains a second Running child, uses bounded waits, and proves a real mail wake without goal steering or a masking second idle pass. Candidate inserts first, then shares the held permit with on_turn_start through a scoped GoalTurnStartLease.",
+      "bound": "This establishes the final-completion latch scenario; interruption before registration is a distinct unexecuted scenario. Local checks prove patch coherence only.",
+      "sources": [
+        "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-15.md",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/runtime.rs:722",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/tests/suite/goal_native_wait.rs:367",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/tests/suite/goal_native_wait.rs:485",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/extension.rs:278"
+      ]
+    },
+    {
+      "row": "foreign sleep ownership",
+      "result": "held",
+      "invariant": "AC4: registration and removal preserve another contributor's SleepItem.",
+      "attack": "Allow exactly one foreign id through insertion, unconditional removal, and stale attachment checks outside the map lock.",
+      "evidence": "Hosted register_never_clobbers_foreign_sleep, conditional_remove_only_removes_owned_id, and goal_wait_preserves_foreign_sleep_across_register_and_turn_start attack the actual helpers and register/turn-start path. insert_clobbers_one_foreign and unconditional_remove are killed. Both predicates and mutations run under ExtensionData's same map lock.",
+      "bound": "Ownership means the goal-wait contributor prefix, including refresh of its older generations; this is not compare-and-remove of one exact generation. No reachable stale-clear/new-generation failure was established.",
+      "sources": [
+        "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-15.md",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/extension-api/src/state.rs:140",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/native_wait.rs:42",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/native_wait.rs:58",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/items/src/sleep.rs:31",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/tests/suite/goal_native_wait.rs:624"
+      ]
+    },
+    {
+      "row": "marker lifecycle",
+      "result": "held",
+      "invariant": "AC5/AC9: remove on admitted start, clear/inactive/disable/stop/release/resume; reinsert at eligible idle; retain while check-ins are exhausted.",
+      "attack": "Uncalled cleanup, marker revival from history, omitted reinsertion, exhausted-wait removal, and foreign marker destruction during lifecycle paths.",
+      "evidence": "Hosted wake tests check turn-start removal; goal_wait_removed_on_clear_release_and_resume drives clear/resume service entries and the release API. Hosted empty_exec_with_native_pending_waits_and_uses_checkins and native_pending_exhausts_checkins_then_waits_without_deadline exercise ticket exhaustion; ignore_native_pending is killed. Static tracing reaches cleanup from on_thread_stop, enable=false, inactive/clear and restore_after_resume. Registration occurs before evaluation returns Wait with no deadline, so exhausted check-ins do not remove the marker.",
+      "bound": "Not full subcase execution: live-child reinsertion, exhausted-retention plus late completion, disable/stop interleavings, and resume_thread_with_history with rendered SleepItem/unloaded child lack dedicated integrations. release_native_wait has two tree references (definition and suite call), with no production caller in this snapshot.",
+      "sources": [
+        "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-15.md",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/extension.rs:176",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/extension.rs:226",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/extension.rs:265",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/runtime.rs:143",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/runtime.rs:178",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/runtime.rs:590",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/runtime.rs:766",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/tests/suite/goal_native_wait.rs:732",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/tests/native_wait.rs:146"
+      ]
+    },
+    {
+      "row": "side-effect silence",
+      "result": "held",
+      "invariant": "AC6: storing the marker emits no sleep UI event/history item and does not change current-time reminder scheduling.",
+      "attack": "Insertion emits events, contributes history, schedules a timer, or silently rewrites reminder state.",
+      "evidence": "Hosted registration test asserts a silent idle interval and no goal-wait marker text in the wake body. Static insertion constructs only SleepItem and calls ExtensionData::insert_if; it has no event/history/reminder/timer calls. Goal check-in timing is owned by the existing BackgroundWaitState/runtime, independently of the marker store.",
+      "bound": "CurrentTimeReminder is disabled in the fixture: absence of current_time is not proof of enabled-reminder schedule preservation. That part is source-established only. No dedicated side-effect mutant is supplied.",
+      "sources": [
+        "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-15.md",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/ext/goal/src/native_wait.rs:42",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/tests/suite/goal_native_wait.rs:119",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/tests/suite/goal_native_wait.rs:320"
+      ]
+    },
+    {
+      "row": "child state transitions",
+      "result": "held",
+      "invariant": "AC7/AC8: one queue-only Interrupted notice per transition without success/global-finality change; current state and inherited wake settings retained.",
+      "attack": "Duplicate notice, success wording, ordinary-parent delivery, terminal/reused state treated as pending, settings reset, and overlong legacy identities in model context.",
+      "evidence": "Hosted registered-parent/ordinary-parent real-interrupt tests assert exactly one notice-bearing model request and no success claim. interrupted_notice_delivered_twice, interrupted_claims_success and interrupted_sender_path_uncapped are killed. Candidate global is_final is byte-identical to base. The latch preserves a second Running child through a real wake; the scheduler uses thread defaults and carries reference-context cyber settings for queue-only mail. New identity limits are applied by thread_spawn_source -> join_new before spawn; shared legacy grammar remains byte-identical. Hosted legacy resume/rollout/parser tests and bounded envelope rendering tests kill the two legacy-parser mutants and envelope_author_display_uncapped.",
+      "bound": "No non-default inherited-settings assertion, second-child-mid-turn integration, or second Interrupted-transition integration. Total new-path cap lacks a dedicated narrowing mutant/public nested-spawn boundary test. Typed interrupted body <=682 bytes and display author/recipient <=270 bytes each: <=1222 bytes excluding fixed wire framing; actual tokenizer count is unknown, not inferred from 4 bytes/token.",
+      "sources": [
+        "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-15.md",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/session/mod.rs:2445",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/agent/control/completion.rs:89",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/context/inter_agent_interrupted_message.rs:73",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/tasks/mod.rs:615",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/tests/suite/goal_native_wait.rs:775",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/protocol/src/agent_path.rs:91",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/protocol/src/protocol.rs:883",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/core/src/agent/control_tests.rs:4713",
+        "b91072a51501101110a4e13061a8c07a242aad6a:codex-rs/rollout/src/recorder_tests.rs:347"
+      ]
+    }
+  ],
+  "free_hunt": {
+    "budget": "Five bounded classes after the seven-row sweep; static review plus exact-tree hosted evidence only.",
+    "results": [
+      {
+        "class": "legacy persistence compatibility",
+        "result": "held",
+        "evidence": "Base/candidate shared-validator equality (3/3), from_string equality, resumed stored-path test and raw legacy JSON rollout test. Rev5 rework changes six paths (+364/-43) from rev4; no product edit outside those paths in that delta. Total legacy-path parsing has a hosted unit kill; full resume with >1024-byte identity is still unexecuted."
+      },
+      {
+        "class": "creation and model-context bypass",
+        "result": "held",
+        "evidence": "V2 handle_spawn_agent calls thread_spawn_source with ? before agent_control.spawn; only that minting site uses join_new. Both plaintext and encrypted envelope display paths are capped without changing stored routing identities. Production record and rollout reconstruction call to_model_input_item. Full-fidelity to_response_input_item has only test callers in the searched core tree. Actual tokenizer measurement and total-cap public-entry mutant are named unknowns."
+      },
+      {
+        "class": "cleanup concurrency and ownership",
+        "result": "held within stated bound",
+        "evidence": "Atomic contributor predicates preserve foreign sleep; scoped permit share closes latch self-deadlock. Several clear/restore paths drop the goal permit before live-thread cleanup, and prefix cleanup does not compare generations. No reachable stale-clear/new-generation bypass was established; this remains a targeted interleaving request, not a finding. Explicit release has no production caller."
+      },
+      {
+        "class": "dependency and build metadata",
+        "result": "unknown outside supplied lanes",
+        "evidence": "Only dependency addition is existing workspace codex-extension-items in goal Cargo.toml/Cargo.lock. BUILD.bazel uses codex_rust_crate; no include_str/include_bytes/resource read added. MODULE.bazel.lock unchanged; bazel-lock-update execution and Bazel drift are not attested by precheck 15. No build run and no fabricated failure."
+      },
+      {
+        "class": "change size and staging",
+        "result": "advisory",
+        "evidence": "Base..candidate: 34 files, 2639 additions/21 deletions; new integration module is 1083 lines. Exceeds 800-line guidance. Small coherent first stage: atomic ExtensionData removal and typed direct-child inspection with their tests, independently of runtime behavior. Then goal lease/scheduler/Interrupted delivery, followed by protocol admission/display changes with legacy compatibility tests. Current rev4..rev5 repair is bounded at 364 additions/43 deletions and six files."
+      }
+    ],
+    "findings_found": 0
+  }
+}
+```
+
+Review logbook, 2026-10-11: exact replay verified; prior legacy-read regression repaired; seven-row sweep and five-class hunt yielded no new demonstrated failure. Hosted results were reused with identity checks; unexecuted AC subcases and build/token unknowns stay explicit. This logbook entry travels in the own-task outcome, with a matching own-task board note. Ready for review.
+
+Static assay source (run with Python 3 from project root; no build):
+
+    import json
+    import re
+    import subprocess
+    
+    BASE = "39c264c34e61b5171ae13b0f756746c24ea5f51a"
+    TREE = "b91072a51501101110a4e13061a8c07a242aad6a"
+    
+    read_exits = []
+    
+    def read(tree, path):
+        result = subprocess.run(["git", "show", f"{tree}:{path}"], capture_output=True, text=True)
+        read_exits.append(result.returncode)
+        assert result.returncode == 0, (path, result.returncode, result.stderr)
+        return result.stdout
+    
+    def function(source, name):
+        start = re.search(r"(?:pub fn|fn) " + name + r"\(", source).start()
+        opened = source.index("{", start)
+        depth = 1
+        pos = opened + 1
+        while depth:
+            depth += (source[pos] == "{") - (source[pos] == "}")
+            pos += 1
+        return source[start:pos]
+    
+    path = "codex-rs/protocol/src/agent_path.rs"
+    base, candidate = read(BASE, path), read(TREE, path)
+    shared = ["validate_agent_name", "validate_absolute_path", "validate_relative_reference"]
+    for name in shared:
+        assert function(base, name) == function(candidate, name), name
+    assert function(base, "from_string") == function(candidate, "from_string")
+    assert 'validate_new_agent_name(agent_name)?;' in function(candidate, "join_new")
+    assert 'validate_new_path_length(joined.as_str())?;' in function(candidate, "join_new")
+    assert 'name_len > AgentPath::MAX_SEGMENT_BYTES' in function(candidate, "validate_new_agent_name")
+    assert 'path_len > AgentPath::MAX_PATH_BYTES' in function(candidate, "validate_new_path_length")
+    assert 'MODEL_DISPLAY_MAX_BYTES: usize = 256' in candidate
+    assert 'take_bytes_at_char_boundary(rendered, Self::MODEL_DISPLAY_MAX_BYTES)' in function(candidate, "truncated_for_display")
+    protocol = read(TREE, "codex-rs/protocol/src/protocol.rs")
+    model_render = function(protocol, "to_model_input_item")
+    assert 'self.author.truncated_for_display()' in model_render
+    assert 'self.recipient.truncated_for_display()' in model_render
+    assert 'self.author.to_string()' not in model_render
+    assert 'self.recipient.to_string()' not in model_render
+    fragment = read(TREE, "codex-rs/core/src/context/inter_agent_interrupted_message.rs")
+    assert 'INTERRUPTED_PATH_MAX_BYTES: usize = 256' in fragment
+    prose = []
+    for name in ["BODY_PREFIX", "BODY_MIDDLE", "BODY_SUFFIX", "TRUNCATED_PATH_MARKER"]:
+        value = re.search(r'const ' + name + r': &str = (".*");', fragment).group(1)
+        prose.append(json.loads(value))
+    fixed = sum(len(s.encode()) for s in prose[:3])
+    marker = len(prose[3].encode())
+    body = fixed + 2 * (256 + marker)
+    plaintext = body + 2 * (256 + marker)
+    assert (fixed, marker, body, plaintext) == (142, 14, 682, 1222)
+    status = "codex-rs/core/src/agent/status.rs"
+    assert function(read(BASE, status), "is_final") == function(read(TREE, status), "is_final")
+    handler = read(TREE, "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs")
+    assert handler.index('let spawn_source = thread_spawn_source(') < handler.index('.spawn(SpawnRequest {')
+    common = read(TREE, "codex-rs/core/src/tools/handlers/multi_agents_common.rs")
+    assert '.join_new(task_name)' in function(common, "thread_spawn_source")
+    print(json.dumps({"kind": "static_source_assay_only", "tree": TREE, "shared_grammar_equal": "3/3", "from_string_equal": True, "is_final_equal": True, "new_spawn_gate_before_spawn": True, "plaintext_interruption_bytes_excluding_fixed_wire_framing": plaintext, "body_bytes": body, "nested_git_show_exits": read_exits, "rust_or_public_entry_executed": False}))

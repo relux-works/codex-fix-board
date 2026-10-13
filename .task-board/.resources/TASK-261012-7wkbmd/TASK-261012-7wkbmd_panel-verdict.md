@@ -1,0 +1,154 @@
+# R141 panel A — waiting-capabilities-snapshot revision 5
+
+Panel task: TASK-261012-7wkbmd — r141-panel-a-task-260929-2is91w-rev5. Read-only review of CR-TASK-260929-2is91w-5; independent non-recording panel.
+
+Verdict: **accept**
+
+Replay check: base `e0eff057620104a416080da616256ee7f32bda1b` + exact board rev5 patch, applied through a temporary index, produced `afb8c830d764ba489a9f2f922c0babdf1dbe036e`. This equals the expected candidate tree exactly. No nested worktree was created.
+
+## Commands and exit codes observed by this panel
+
+The index path was `$PWD/.temp/TASK-261012-7wkbmd-replay.idx`. It did not exist on this fresh panel run. Each replay operation and each mutation check ran as its own process; there was no Rust execution and no pipeline hiding a gate exit.
+
+| Command | Actual exit | Result |
+|---|---:|---|
+| `task-board m 'set_status(TASK-261012-7wkbmd, status=analysis)'` | 0 | Own task only |
+| `GIT_INDEX_FILE="$IDX" git read-tree e0eff057620104a416080da616256ee7f32bda1b` | 0 | Loaded pinned base |
+| `task-board resource get TASK-260929-2is91w TASK-260929-2is91w_change-request_rev5.patch --output .temp/TASK-260929-2is91w_change-request_rev5.patch` | 0 | Read-only resource retrieval |
+| `GIT_INDEX_FILE="$IDX" git apply --cached .temp/TASK-260929-2is91w_change-request_rev5.patch` | 0 | Patch replay |
+| `GIT_INDEX_FILE="$IDX" git write-tree` | 0 | `afb8c830d764ba489a9f2f922c0babdf1dbe036e` |
+| `git diff --check e0eff057620104a416080da616256ee7f32bda1b afb8c830d764ba489a9f2f922c0babdf1dbe036e` | 0 | No patch whitespace errors |
+| `task-board q 'get(TASK-260929-2is91w) { description scope ac }'` | 0 | Independently read acceptance criteria |
+| `gh run view 38191980780 --repo ivanopcode/codex --json headSha,jobs,url,conclusion --jq ...` | 0 | Read job conclusions; workflow failure, snapshot jobs success |
+| `gh run view 38191980780 --repo ivanopcode/codex --json jobs` | 0 | 15 mutant core jobs enumerated |
+| `gh run view 38191980780 --repo ivanopcode/codex --job 114648017069 --log` | 0 | Read candidate rerun, no execution launched |
+| `gh api repos/ivanopcode/codex/actions/jobs/114628508769/logs` | 0 | Read exact original failed attempt |
+| `gh api repos/ivanopcode/codex/actions/jobs/114648014696/logs` | 0 | Read candidate lint |
+| `gh api repos/ivanopcode/codex/actions/jobs/114648014776/logs` | 0 | Read candidate small tests |
+| `gh run view 38152963091 --repo ivanopcode/codex --job 114512075377 --log` | 0 | Read earlier guardian flake |
+| `gh api repos/ivanopcode/codex/git/commits/f9228fb4c7377cd21da403621dd6b3a5960d1b7a --jq ...` | 0 | Hosted snapshot tree equals replay candidate |
+| `gh api repos/ivanopcode/codex/git/commits/a27e1de3597943f045afd513179f352158983ea8 --jq ...` | 0 | Earlier snapshot tree `523385e2bb27c606bd1cd7241b0825c77b7569e5` |
+| `gh api repos/ivanopcode/codex/compare/f9228fb4c7377cd21da403621dd6b3a5960d1b7a...caa8f970f0742aa567f66596dde6aa2bfb0128a4 --jq ...` | 0 | Remote mutant changes only same-slug assignment to `let _ = (index, model);` |
+| Panel Python orchestration of all 15 log reads | 0 | Every individual read exit 0, listed below |
+| Panel Python orchestration of all 15 mutant-tree checks | 0 | Every API/read-tree/apply/write-tree exit 0; all exact tree matches |
+| `python3 .temp/TASK-261012-7wkbmd-write-verdict.py` | 0 | Wrote this plain-text task-scoped outcome |
+| `python3 .temp/TASK-261012-7wkbmd-validate-verdict.py` | 0 | Exactly one JSON block and verdict, 7/7 normative rows, 15/15 mutant checks, exact replay and clean repository verified |
+
+The first exploratory board query used unsupported `resources` (exit 1), later `attachments` and `changeRequest` probes also failed; successful reads used documented projections or resource paths. Initial reviewer-role lookup failed (exit 1) and was repaired by reading `/Users/administrator/Developer/ReluxWorks/skill-project-management/.roles/reviewer/role.md` (exit 0). Exploratory source extraction used nonexistent `tools/spec.rs` (git exit 128, wrapper exit 1), then nonexistent spec/mod.rs and tools/tool_name.rs (wrapper exit 1); corrected exact-tree extraction used `tools/spec_plan.rs` and `protocol/tool_name.rs` (exit 0). Some exploratory rg reads returned 1 (no match) or 2 (missing path). None was interpreted as absence of required evidence. `command -v logbook` returned 1. A `gh run view --job 114628508769` read returned 0 but selected rerun log content: it was superseded by the exact original job API read, not counted as original-failure evidence.
+
+## Hosted evidence reused, not rerun locally
+
+Primary evidence: [hosted precheck 14](board-resource://TASK-260929-2is91w/outcome/TASK-260929-2is91w_hosted-precheck-14.md), [rev5 validation](board-resource://TASK-260929-2is91w/outcome/TASK-260929-2is91w_change-request_rev5-validation.log), [surface table](board-resource://TASK-260929-2is91w/precondition/surface-table.md), [producer results](board-resource://TASK-260929-2is91w/outcome/TASK-260929-2is91w_results.md), [mutant patches](board-resource://TASK-260929-2is91w/outcome/TASK-260929-2is91w_mutants.json), and [precheck 11](board-resource://TASK-260929-2is91w/outcome/TASK-260929-2is91w_hosted-precheck-11.md). Source references below are paths and line numbers within the replay candidate tree, not the Story worktree HEAD.
+
+Snapshot commit `f9228fb4c7377cd21da403621dd6b3a5960d1b7a` has the exact replay tree. The workflow head `9f8fdf9aa3f7b28ded9e62fd628b2206c2c76a8b` is CI orchestration code, with a different tree; it is not substituted for the snapshot identity.
+
+| Hosted command/evidence | Real observed result |
+|---|---|
+| `mini-hosted-gate.sh` in attached rev5 validation log | Exit 0; attests the candidate binding, not local Rust execution |
+| Lint: `just fmt-check`; scoped `just clippy ... --tests` | [Job 114648014696](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648014696) success, aggregate step exit 0; `set -o pipefail` before clippy/tee preserves real failure status |
+| Small: `just test -p codex-tools -p codex-goal-extension -p codex-extension-api -p codex-rollout-trace -p codex-queue-extension -p codex-exec -p codex-arg0 -p codex-cli -p codex-protocol -p codex-rollout ...` | [Job 114648014776](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648014776) success/exit 0, 1437 passed, 1 skipped |
+| Core: `just test -p codex-core -E "$expr" "${extra[@]}"`, original snapshot | [Job 114628508769](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114628508769) **exit 100**, 5121 passed, 1 failed, 11 skipped; guardian event timeout 3 times |
+| Same core command, same snapshot, rerun | [Job 114648017069](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648017069) success/exit 0, 5122 passed, 11 skipped; guardian passes in 1.588s |
+| App-server lane | [Job 114648015167](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648015167) success from API and attached precheck; detailed log not independently read |
+| Each narrowed mutant core command | **Exit 100 for each of 15**; expected failing assertions kill the mutation, not passing gates |
+
+### Exact mutant identities and observed kills
+
+For every row below the panel directly ran `gh api repos/ivanopcode/codex/actions/jobs/<job>/logs` (exit 0), read the checkout `ref`, and ran `gh api repos/ivanopcode/codex/git/commits/<ref> --jq .tree.sha` (exit 0). With a second temporary index the panel then ran `git read-tree afb8c830d764ba489a9f2f922c0babdf1dbe036e`, `git apply --cached -` with that named board mutant, and `git write-tree`: **exit 0 for each individual command**. Each produced exactly the hosted commit tree. This replays source mutations only; it does not execute tests locally. Labels are alphabetic by mutant name, not the order of the producer JSON.
+
+| Mutant | Hosted core job | Exact mutant tree | Named killing assertion(s), hosted exit 100 |
+|---|---|---|---|
+| `discovery_ignores_call_pairing` | [114648015382](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648015382) | `c5a29936010ea3b3b597268c4cc158d85ab46efa` | `tools::waiting_capabilities::tests::client_tool_search_output_without_call_id_counts_like_normalizer`, `tools::waiting_capabilities::tests::mismatched_call_id_tool_search_output_does_not_count`, `tools::waiting_capabilities::tests::orphan_client_tool_search_output_does_not_count`, `tools::waiting_capabilities::tests::server_tool_search_output_counts_without_call`, `suite::search_tool::server_null_id_discovery_updates_waiting_capabilities` |
+| `discovery_requires_server_call_id` | [114648015233](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648015233) | `689d0e6bacf57cde2de64108cc556a328e3617d1` | `tools::waiting_capabilities::tests::client_tool_search_output_without_call_id_counts_like_normalizer`, `tools::waiting_capabilities::tests::server_tool_search_output_counts_without_call`, `suite::search_tool::server_null_id_discovery_updates_waiting_capabilities` |
+| `exec_notify_ignores_host` | [114648015755](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648015755) | `9a204ef0602d2a5256b1fe355087f2abf1a823c9` | `tools::waiting_capabilities::tests::exec_notify_requires_available_host`, `tools::waiting_capabilities::tests::native_mail_wait_requires_available_host` |
+| `exec_notify_ignores_opt_in` | [114648015523](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648015523) | `ea2a4f90527cb19a68ef5cf3e7b236b98b7d5a3e` | `tools::waiting_capabilities::tests::exec_notify_requires_notify_opt_in`, `tools::waiting_capabilities::tests::excluded_exec_command_disables_exec_notify`, `tools::waiting_capabilities::tests::missing_exec_command_schema_disables_exec_notify` |
+| `exec_notify_ignores_receipt` | [114648015898](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648015898) | `b523c3f12cdcd70d214dc312fc6a100f68dcf7c0` | `tools::waiting_capabilities::tests::exec_notify_requires_receipt_control`, `tools::waiting_capabilities::tests::excluded_receipt_tool_disables_exec_notify` |
+| `exec_notify_ignores_stdin` | [114648016172](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648016172) | `bbe9b100892ad234835b48ccc49aa9630a2d86f6` | `tools::waiting_capabilities::tests::exec_notify_requires_write_stdin` |
+| `native_mail_wait_ignores_host` | [114648016727](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648016727) | `b03a727dc2fe5df9092c342e49538686a383ef37` | `tools::waiting_capabilities::tests::native_mail_wait_requires_available_host` |
+| `native_mail_wait_ignores_policy` | [114648016035](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648016035) | `ea46389925ac396d5a295ddc7fa27a1dacd51db8` | `tools::waiting_capabilities::tests::code_mode_only_hides_nested_waits_but_keeps_direct_sleep`, `tools::waiting_capabilities::tests::excluded_exec_command_disables_exec_notify`, `tools::waiting_capabilities::tests::exec_notify_requires_notify_opt_in`, `tools::waiting_capabilities::tests::excluded_receipt_tool_disables_exec_notify`, `tools::waiting_capabilities::tests::exec_notify_requires_receipt_control`, `tools::waiting_capabilities::tests::exec_notify_requires_write_stdin`, `tools::waiting_capabilities::tests::exec_notify_true_with_host_opt_in_and_controls`, `tools::waiting_capabilities::tests::missing_exec_command_schema_disables_exec_notify`, `tools::waiting_capabilities::tests::native_mail_wait_requires_installed_policy`, `tools::waiting_capabilities::tests::pending_and_acknowledged_work_does_not_flip_flags`, `suite::exec_notification::acknowledged_subscription_does_not_flip_waiting_capabilities` |
+| `native_wait_bare_name_match` | [114648016276](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648016276) | `a12d28067b9ca6886e62048e688936b5ebd7d5d7` | `tools::waiting_capabilities::tests::discovered_deferred_v1_wait_counts_with_native_provenance`, `tools::waiting_capabilities::tests::foreign_dynamic_wait_agent_does_not_claim_native_wait`, `tools::waiting_capabilities::tests::discovered_v1_wait_updates_next_step_snapshot`, `tools::waiting_capabilities::tests::foreign_dynamic_wait_agent_with_native_disabled_yields_none`, `tools::waiting_capabilities::tests::v2_wait_disabled_with_namespaced_decoy_yields_none`, `suite::search_tool::discovered_native_wait_updates_waiting_capabilities`, `suite::search_tool::server_null_id_discovery_updates_waiting_capabilities` |
+| `native_wait_ignores_discovered` | [114648016822](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648016822) | `ab2f72c10a631c93bcd98e959d891e41ec8ff7ce` | `tools::waiting_capabilities::tests::discovered_deferred_v1_wait_counts_with_native_provenance`, `tools::waiting_capabilities::tests::discovered_v1_wait_updates_next_step_snapshot`, `suite::search_tool::discovered_native_wait_updates_waiting_capabilities`, `suite::search_tool::server_null_id_discovery_updates_waiting_capabilities` |
+| `native_wait_v1_only` | [114648017346](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648017346) | `f1090ad5f23451091c843b6e87b1bac7be260caf` | `tools::waiting_capabilities::tests::custom_v2_namespace_reports_its_configured_name`, `tools::waiting_capabilities::tests::exec_notify_requires_available_host`, `tools::waiting_capabilities::tests::exec_notify_requires_receipt_control`, `tools::waiting_capabilities::tests::exec_notify_requires_notify_opt_in`, `tools::waiting_capabilities::tests::exec_notify_requires_write_stdin`, `tools::waiting_capabilities::tests::exec_notify_true_with_host_opt_in_and_controls`, `tools::waiting_capabilities::tests::native_mail_wait_requires_available_host`, `tools::waiting_capabilities::tests::missing_exec_command_schema_disables_exec_notify`, `tools::waiting_capabilities::tests::native_mail_wait_requires_installed_policy`, `tools::waiting_capabilities::tests::native_mail_wait_requires_host_and_installed_policy`, `tools::waiting_capabilities::tests::v2_wait_agent_carries_its_configured_name`, `tools::waiting_capabilities::tests::v2_wait_tool_reports_its_configured_name` |
+| `native_wait_v2_only` | [114648016954](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648016954) | `05e09bb69ae457b902b7d026db71acffc2a4532a` | `tools::waiting_capabilities::tests::discovered_deferred_v1_wait_counts_with_native_provenance`, `tools::waiting_capabilities::tests::discovered_v1_wait_updates_next_step_snapshot`, `tools::waiting_capabilities::tests::v1_wait_agent_carries_its_namespaced_name`, `tools::waiting_capabilities::tests::v1_wait_tool_reports_its_namespaced_name`, `suite::search_tool::discovered_native_wait_updates_waiting_capabilities`, `suite::search_tool::server_null_id_discovery_updates_waiting_capabilities` |
+| `sleep_counts_nested_or_deferred` | [114648017527](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648017527) | `329ede6116745fbb7663c0a591491cfe21f17031` | `tools::waiting_capabilities::tests::deferred_sleep_does_not_count_until_discovered`, `tools::waiting_capabilities::tests::nested_only_sleep_does_not_count` |
+| `snapshot_ignores_remote_catalog_replacement` | [114648017723](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648017723) | `c97365f8dd61f7537832d712424dd55997cb07a9` | `suite::search_tool::remote_catalog_replacement_changes_waiting_snapshot` |
+| `stdin_counts_nested` | [114648018238](https://github.com/ivanopcode/codex/actions/runs/38191980780/job/114648018238) | `07e24ebdc692707857a5a59e09b1396a40b18b2c` | `tools::waiting_capabilities::tests::code_mode_only_hides_nested_waits_but_keeps_direct_sleep`, `tools::waiting_capabilities::tests::nested_only_write_stdin_does_not_count`, `suite::search_tool::remote_catalog_replacement_changes_waiting_snapshot` |
+
+## Panel logbook and bounds
+
+The panel independently verified 7/7 surface rows (all held), 5/5 configuration families and 15/15 exact mutant trees with named red assertions. The remote-catalog mutant previously survived precheck 12 because List entries bypassed the mutated merge branch. Rev5 Hide entries force that branch; the hosted killer fails on missing clock.sleep for gpt-5.5 in all three tries and passes on the unmutated candidate.
+
+The guardian attribution is supported as an existing intermittent failure relative to rev5: exact original attempt is red, exact same-snapshot rerun is green, earlier precheck 11 has the same timeout/retry signature, and rev4-to-rev5 changes only search_tool.rs. This is not proof of the underlying timeout cause or a pristine-base reproduction. No guardian code is changed by this CR. Root cause remains unknown.
+
+The cumulative oversized diff and external Rust constructor compatibility change remain disclosed; no new wire break or functional defect was established. Replacement of the old plan-enabled continuation input remains staged to the separate guidance leaf. Local/macOS/Windows execution and skipped tests are not inferred from hosted Linux results. After the sweep a bounded six-concern free hunt found no additional defect; its coverage is recorded in JSON notes, not as fabricated findings.
+
+No repository source was edited; no commit, branch operation, build, test, new CI job, or mutation to TASK-260929-2is91w was performed. Only this panel task receives the outcome and lifecycle writes. This document is both the findings report and task-scoped logbook, ready for review.
+
+```verdict-findings
+{
+  "findings": [],
+  "notes": [
+    "Evidence attribution: replay, static attacks, GitHub log reads, 15 mutant-tree reconstructions, diff check and verdict contract verification were performed by this panel. No local cargo, just, build, Rust test, mutant execution or CI rerun was launched. Executed Rust attacks are accepted from hosted precheck 14 after independently checking candidate and mutant tree identities and raw failure assertions.",
+    "Coverage: surface rows 7/7, held 7/7, broken 0/7, not-attacked 0/7; AC5 families 5/5; remote directions/branches 4/4 on successful candidate run; exact hosted mutant-tree matches 15/15; named mutant kills 15/15. Snapshot core 5122/5122 passed, 11 skipped; small 1437/1437 passed, 1 skipped. These counts do not claim exhaustive platform or semantic coverage.",
+    "Guardian attribution: original job 114628508769 had 3 event-timeout failures and exit 100, not a passing run. Rerun 114648017069 on the identical f9228fb4c7377cd21da403621dd6b3a5960d1b7a snapshot passes the test in 1.588s. Precheck 11 job 114512075377 on tree 523385e2bb27c606bd1cd7241b0825c77b7569e5 shows the same test fail at 10.338s then pass at 1.223s. That tree differs from rev5 only in core/tests/suite/search_tool.rs (+221 lines). Thus a pre-existing intermittent failure relative to the rev5 test-only delta is supported. Neither run is a pristine-base reproduction: root cause and attribution as unrelated to every production line of the entire CR remain unproven. No new guardian regression is established; original red evidence is retained.",
+    "The GitHub workflow overall conclusion is failure because all 15 mutant core jobs deliberately fail with exit 100. Snapshot lanes are success; this does not make the overall workflow green. Local rev5 validation log contains only the mini-hosted-gate command and exit 0, not a newly executed Rust suite. Detailed hosted lint log has pipefail before tee; inspected retrieval commands themselves used no pipelines.",
+    "Known scope bounds: update_plan_enabled replacement and capability-change-only contributor re-emission remain the separate guidance leaf work; this snapshot leaf renders no prompt bytes. Goal reference forwarding is source-traced; no runtime address recorder for an installed GoalExtension was added or run. Static malformed-loadable, stale discovery, resume/compaction and collision inspection is not exhaustive execution.",
+    "API compatibility: adding a field to exported TurnContextContributionInput breaks external Rust struct-literal construction. In-tree callers and hosted compile lanes are updated; app-server/CLI/config/raw-event/rollout contracts are unchanged. No new serialization or context fragment is introduced.",
+    "Size guidance: cumulative change is 2625 lines across 21 files (+2619/-6), well over the 800-line review guidance, with 1483 lines in the named unit-test matrix. The coherent rev4-to-rev5 change is test-only (+221 in search_tool.rs). Keep future review stages limited to the snapshot contract/derivation, production-entry test additions and prompt guidance separately; this panel grants no size-policy exception.",
+    "Bounded free hunt after assigning all rows: six source checks examined null-ID/orphan normalizer parity, stale discovery/current exposure, foreign native-wait provenance, actual heap bound/persistence, goal registration/re-emission staging and external API/Bazel/dependency surfaces. No additional defect was established. Coverage belongs in notes; free_hunt is empty because it contains only real findings.",
+    "Logbook 2026-10-12: exact replay confirmed; rev5 closes the remote catalog merge coverage gap and kills the former precheck-12 survivor; first core failure and same-snapshot recovery preserved; same-base earlier guardian flake confirmed with causal limit; oversized diff, public Rust source compatibility and guidance staging disclosed. This outcome is the task-scoped logbook because no logbook executable is installed. All panel writes target TASK-261012-7wkbmd only; no accept/reject/withdraw/status/handoff/resource/notes write was issued to TASK-260929-2is91w."
+  ],
+  "surface_results": [
+    {
+      "row": "flag derivation",
+      "result": "held",
+      "attack": "Drop each exec host/opt-in/stdin/receipt or mail host/policy conjunct; narrow native wait to V1 or V2; replace runtime provenance with a bare name; count nested tools as direct.",
+      "evidence": "Candidate core/src/tools/waiting_capabilities.rs:43-83 implements the AC1 conjunctions. Native identity comes from final registry provenance (router.rs:230-235), with V1/V2 handler overrides and V2 wrapper delegation. Exact-tree snapshot core passes the positive and refusal tests. All corresponding hosted mutants fail named assertions with exit 100; each mutant source tree was independently reproduced from this candidate and matched the hosted commit tree. V1, V2 and custom namespace tests cover actual names; foreign dynamic decoys do not establish provenance. See the mutant evidence table above.",
+      "finding_ids": []
+    },
+    {
+      "row": "final-router derivation",
+      "result": "held",
+      "attack": "Use undiscovered deferred and nested-only tools, missing current registry entries, foreign wait decoys, policy exclusions, orphan/mismatched client discoveries, and server/client null-ID discoveries.",
+      "evidence": "Session::capture_step_context derives once after turn::built_tools returns its finalized router (session/mod.rs:3962-3998). is_callable requires a direct spec, or a discovered name plus current deferred exposure; native wait additionally requires native runtime provenance. Source tracing of spec_plan.rs and registry.rs confirms exclusions/collisions are resolved before derivation. The discovery orphan predicate at waiting_capabilities.rs:126-129 matches normalize.rs:201-208, including non-server Some(id) pairing, server outputs and client/server None IDs. Snapshot core passes discovered_native_wait_updates_waiting_capabilities (0.799s), server_null_id_discovery_updates_waiting_capabilities (0.674s), production capture discovery, orphan/mismatch and decoy tests. Hosted discovery_ignores_call_pairing, discovery_requires_server_call_id, native_wait_ignores_discovered, native_wait_bare_name_match, sleep_counts_nested_or_deferred and stdin_counts_nested all fail on exact reconstructed mutant trees. Collision and malformed-loadable sibling analysis is static; this is not a claim of exhaustive new collision execution.",
+      "finding_ids": []
+    },
+    {
+      "row": "subscriptions are not capabilities",
+      "result": "held",
+      "attack": "Arm notify_on_exit through real exec_command, require an acknowledged receipt and idle wake, then compare snapshots; supply pending/acknowledged/leased work to a router without controls.",
+      "evidence": "Snapshot core passes suite::exec_notification::acknowledged_subscription_does_not_flip_waiting_capabilities in 2.966s. The test requires armed_receipt_handle, waits for the completion wake and compares every captured full snapshot. pending_and_acknowledged_work_does_not_flip_flags also drives the derivation with a PendingWorkProvider, including an empty-router refusal. Production derivation reads only final router, discovery names, AsyncNotificationSupport and installed GoalBackgroundWaitAdmission; it does not consult receipt state. The native_mail_wait_ignores_policy mutant is killed by the acknowledged-subscription integration test and policy refusals.",
+      "finding_ids": []
+    },
+    {
+      "row": "one snapshot, both paths",
+      "result": "held",
+      "attack": "Compare reference addresses and full values at initial and incremental context builders, then trace the installed goal contributor to the same borrowed input.",
+      "evidence": "same_snapshot_instance_reaches_both_context_paths passes in 0.089s on exact candidate. It uses production capture_step_context and both production builders and asserts two captures with equal addresses and values. Both constructors borrow &step_context.waiting_capabilities (session/mod.rs:4315,4413), without recomputation. Goal install registers prompt_contributor(extension.clone()) at ext/goal/src/extension.rs:767; its ContextContributor implementation passes input.waiting_capabilities directly to the renderer at :625. Exact-tree small lane passes waiting_capabilities_reach_goal_renderer_without_prompt_text. The installed goal reference identity is established by this source trace, not by an independent runtime address recorder inside GoalExtension. No divergence or bypass is established.",
+      "finding_ids": []
+    },
+    {
+      "row": "configuration coverage",
+      "result": "held",
+      "attack": "Exercise all 5 AC5 families; drive remote /models add/remove through both List remote-only and Hide same-slug merge; suppress the merge assignment while retaining new-slug append.",
+      "evidence": "5/5 configuration families have executed candidate evidence: remote_catalog_replacement_changes_waiting_snapshot; snapshot_follows_sleep_switches; headless_exec_host_keeps_exec_but_disables_notification_flags and available_host_with_policy_enables_notification_flags; code_mode_only_hides_nested_waits_but_keeps_direct_sleep; excluded_receipt_tool_disables_exec_notify. The remote test at core/tests/suite/search_tool.rs:1344-1417 invokes four cases (gpt-5.5 add clock, gpt-6-astra remove clock, each List and Hide), with real ChatGPT-auth ModelsManager fetch and Session sampling via build_with_auto_env. Each case requires 1 /models GET and 1 /responses POST, request clock.sleep presence matching the remote entry, and full captured snapshot equality. Hide cases additionally prove bundled catalog size, another bundled slug survives, and the replaced entry has remote visibility/tools. ModelsManager::apply_remote_models at manager.rs:667-704 takes the remote-only branch only for a List remote entry with qualifying auth; Hide therefore reaches the same-slug merge. Snapshot test passes in 1.201s on the first attempt and 2.698s on the rerun. Exact merge-assignment mutant caa8f970f0742aa567f66596dde6aa2bfb0128a4 fails three times at search_tool.rs:1290, missing clock.sleep for gpt-5.5, exit 100. The remote-only legs cannot kill this mutant; the first Hide leg does. Rev4 remote coverage hole is closed by this executed production-entry attack.",
+      "finding_ids": []
+    },
+    {
+      "row": "bounded and transient",
+      "result": "held",
+      "attack": "Account for ToolName heap storage rather than size_of alone; trace native namespace validation and all snapshot persistence/emission references; compare persisted turn item and both builder outputs after changing the snapshot.",
+      "evidence": "The core-derived snapshot holds four bools and one Option<ToolName>, not a catalog/history collection. Native name is fixed wait_agent; V1 namespace is fixed and V2 config validates ASCII namespace length <=64 at config/mod.rs:3148-3202, called during config load at :3873. Native runtime provenance prevents dynamic/MCP names from supplying an unbounded identity. Public hand-constructed WaitingCapabilities can contain arbitrary ToolName strings; the assessed bound is core-derived production snapshots, not every possible external struct literal. size_of<=128 test passes but bounds inline storage only. waiting_snapshot_does_not_persist_to_history_or_rollout passes in 0.089s, comparing both context builder outputs and StepContext::to_turn_context_item before/after changing all flags. Snapshot lacks serde and to_turn_context_item omits it; goal emits zero fragments. Transient Vec/HashSet discovery scratch scans existing history and is neither persisted nor injected as model context. No history rewrite or new >1k-token model fragment is introduced.",
+      "finding_ids": []
+    },
+    {
+      "row": "API surface and placement",
+      "result": "held",
+      "attack": "Trace contributors and callers, inspect runtime dependency direction, Rust source compatibility, wire/config/CLI/rollout surfaces, source inclusion and unchanged plan-enabled rendering.",
+      "evidence": "One WaitingCapabilities type is exported by extension-api and one borrowed field is added to TurnContextContributionInput; in-tree constructors are updated. Derivation is in a private 309-line core module and extension contract in 59 lines. No new production core->goal dependency: goal depends on core, while existing core Cargo.toml goal entry is dev-dependencies only. BUILD.bazel includes Rust source globs; no dependency or compile-data changes are needed. Candidate has no changed app-server protocol, raw-event protocol, CLI, config, rollout or dependency files. Hosted lint/small/app-server/core lanes attest compilation and regression coverage. The public Rust input field is a source compatibility change for external struct literals, disclosed in notes; no wire breaking change is established. runtime.rs update_plan_enabled call remains unchanged and steering.rs retains its rendering branch; existing enabled-checklist continuation test passes. Actual replacement of that pass-through remains staged to the separate guidance leaf under the no-prompt-text scope, rather than being claimed implemented here.",
+      "finding_ids": []
+    }
+  ],
+  "free_hunt": []
+}
+```

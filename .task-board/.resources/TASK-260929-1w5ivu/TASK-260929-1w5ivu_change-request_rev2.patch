@@ -1,0 +1,2268 @@
+diff --git a/codex-rs/core/src/session/world_state.rs b/codex-rs/core/src/session/world_state.rs
+index c0d7dea64d78afdee4d19784759aa17bbd845576..bd1cd69bda6a3b9c486d039c6c7adcb790341b8c 100644
+--- a/codex-rs/core/src/session/world_state.rs
++++ b/codex-rs/core/src/session/world_state.rs
+@@ -305,6 +305,7 @@ impl Session {
+                         .executor_capability_discovery
+                         .as_deref(),
+                     extension_metrics: Some(Arc::clone(&extension_metrics)),
++                    waiting_capabilities: &step_context.waiting_capabilities,
+                     session_store: &self.services.session_extension_data,
+                     thread_store: &self.services.thread_extension_data,
+                     turn_store: turn_context.extension_data.as_ref(),
+diff --git a/codex-rs/core/tests/suite/mod.rs b/codex-rs/core/tests/suite/mod.rs
+index 760424c1d18c909d4d62657f66070128952c2c61..e3181684c674b76ab6d4107786b08e1de53e17d7 100644
+--- a/codex-rs/core/tests/suite/mod.rs
++++ b/codex-rs/core/tests/suite/mod.rs
+@@ -242,6 +242,7 @@ mod unstable_features_warning;
+ mod user_notification;
+ mod user_shell_cmd;
+ mod view_image;
++mod waiting_guidance;
+ mod web_search;
+ #[path = "web_search_system_proxy_tests.rs"]
+ mod web_search_system_proxy;
+diff --git a/codex-rs/core/tests/suite/waiting_guidance.rs b/codex-rs/core/tests/suite/waiting_guidance.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4dcf2ee844c4edb504cf0b42fad2271a9ffbd0c6
+--- /dev/null
++++ b/codex-rs/core/tests/suite/waiting_guidance.rs
+@@ -0,0 +1,1040 @@
++//! Goal waiting-guidance agreement between the developer fragment and request tools.
++//!
++//! Every test drives real `/responses` requests through `test_codex` with the
++//! goal extension installed and asserts the exact request count. The World
++//! State section rendered from each sampling step's `WaitingCapabilities`
++//! must match what the same request advertises: the sleep/stdin sentences iff
++//! those tools are present, the native wait sentence with the actual dotted
++//! tool name, and the negative exec sentence whenever no completion wake can
++//! be promised.
++//!
++//! World State runs on every sampling step and diffs against the persisted
++//! snapshot: identical capabilities add no new item across steps or turn
++//! boundaries, a capability change renders exactly one updated fragment on
++//! the next request, and the goal stopping renders exactly one retraction
++//! that supersedes the earlier fragment. History is append-only, so "matches
++//! the same request's tools" means the most recent guidance or retraction in
++//! that request's history. The V1 native wait tool is deferred behind tool
++//! search by default, so fixtures without a discovery step agree on its
++//! absence; only the discovery test carries the native sentence.
++//!
++//! Request counts stay exact because no automatic goal continuation can fire
++//! after the final turn: tool-driven tests end with the goal completed, while
++//! the service-set tests skip the live-manager rebind, so continuation is
++//! structurally impossible there and the production turn-start reconcile
++//! still publishes the goal marker for the first request.
++#![allow(clippy::unwrap_used)]
++
++use std::sync::Arc;
++use std::sync::Mutex;
++use std::sync::Weak;
++
++use anyhow::Result;
++use codex_analytics::AnalyticsEventsClient;
++use codex_core::StartThreadOptions;
++use codex_core::TurnInputRequest;
++use codex_core::config::Config;
++use codex_core::config::CurrentTimeReminderConfig;
++use codex_extension_api::AsyncNotificationSupport;
++use codex_extension_api::ContextContributor;
++use codex_extension_api::ExtensionData;
++use codex_extension_api::ExtensionDataInit;
++use codex_extension_api::ExtensionFuture;
++use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::PromptFragment;
++use codex_extension_api::ThreadStartInput;
++use codex_extension_api::ToolPolicy;
++use codex_extension_api::TurnContextContributionInput;
++use codex_extension_api::WaitingCapabilities;
++use codex_features::Feature;
++use codex_features::SleepToolMode;
++use codex_goal_extension::GoalExtensionConfig;
++use codex_goal_extension::GoalObjectiveUpdate;
++use codex_goal_extension::GoalRuntimeHandle;
++use codex_goal_extension::GoalService;
++use codex_goal_extension::GoalSetRequest;
++use codex_goal_extension::GoalTokenBudgetUpdate;
++use codex_goal_extension::install_with_backend;
++use codex_login::CodexAuth;
++use codex_models_manager::bundled_models_response;
++use codex_protocol::ThreadId;
++use codex_protocol::models::PermissionProfile;
++use codex_protocol::openai_models::ModelVisibility;
++use codex_protocol::openai_models::ModelsResponse;
++use codex_protocol::protocol::AskForApproval;
++use codex_protocol::protocol::EventMsg;
++use codex_protocol::protocol::SessionSource;
++use codex_protocol::user_input::UserInput;
++use codex_tools::ToolName;
++use core_test_support::apps_test_server::configure_search_capable_model;
++use core_test_support::responses::ResponseMock;
++use core_test_support::responses::ResponsesRequest;
++use core_test_support::responses::ev_assistant_message;
++use core_test_support::responses::ev_completed;
++use core_test_support::responses::ev_completed_with_tokens;
++use core_test_support::responses::ev_function_call;
++use core_test_support::responses::ev_response_created;
++use core_test_support::responses::ev_tool_search_call;
++use core_test_support::responses::mount_models_once;
++use core_test_support::responses::mount_sse_once;
++use core_test_support::responses::mount_sse_sequence;
++use core_test_support::responses::namespace_child_tool;
++use core_test_support::responses::sse;
++use core_test_support::responses::start_mock_server;
++use core_test_support::skip_if_no_network;
++use core_test_support::test_codex::TestCodex;
++use core_test_support::test_codex::test_codex;
++use core_test_support::wait_for_event;
++use pretty_assertions::assert_eq;
++use serde_json::Value;
++use serde_json::json;
++use tempfile::TempDir;
++use wiremock::BodyPrintLimit;
++use wiremock::MockServer;
++
++// Distinctive substrings of the §9 sentences. Suite tests match these inside
++// developer message texts only, so tool descriptions elsewhere in the request
++// can never pollute the counts; byte-exactness is pinned in ext/goal/tests.
++const EXEC_POSITIVE_MARKER: &str = "can acknowledge notify_on_exit subscriptions";
++const EXEC_NEGATIVE_MARKER: &str = "cannot promise an exec completion wake";
++const SLEEP_MARKER: &str = "clock.sleep is available as a direct tool";
++const STDIN_MARKER: &str = "An empty write_stdin with a long yield_time_ms";
++const NATIVE_WAIT_MARKER: &str = "The native agent wait tool is available";
++const NATIVE_MAIL_MARKER: &str = "child mailbox results";
++const NATIVE_V1_DOTTED_NAME: &str = "multi_agent_v1.wait_agent";
++// Distinctive substring of the one-shot active→inactive retraction, which is
++// not a §9 sentence and is therefore tracked separately.
++const RETRACTION_MARKER: &str = "no longer applies; the goal is not active";
++const ALL_SENTENCE_MARKERS: [&str; 6] = [
++    EXEC_POSITIVE_MARKER,
++    EXEC_NEGATIVE_MARKER,
++    SLEEP_MARKER,
++    STDIN_MARKER,
++    NATIVE_WAIT_MARKER,
++    NATIVE_MAIL_MARKER,
++];
++
++fn developer_occurrences(request: &ResponsesRequest, needle: &str) -> usize {
++    request
++        .message_input_texts("developer")
++        .iter()
++        .map(|text| text.matches(needle).count())
++        .sum()
++}
++
++fn assert_no_fragment(request: &ResponsesRequest) {
++    for marker in ALL_SENTENCE_MARKERS {
++        assert_eq!(
++            developer_occurrences(request, marker),
++            0,
++            "unexpected waiting guidance for marker {marker}",
++        );
++    }
++    assert_eq!(
++        developer_occurrences(request, RETRACTION_MARKER),
++        0,
++        "unexpected waiting retraction",
++    );
++}
++
++fn tool_names(body: &Value) -> Vec<String> {
++    body.get("tools")
++        .and_then(Value::as_array)
++        .map(|tools| {
++            tools
++                .iter()
++                .filter_map(|tool| {
++                    tool.get("name")
++                        .or_else(|| tool.get("type"))
++                        .and_then(Value::as_str)
++                        .map(str::to_string)
++                })
++                .collect()
++        })
++        .unwrap_or_default()
++}
++
++fn exec_command_advertises_notify(body: &Value) -> bool {
++    body.get("tools")
++        .and_then(Value::as_array)
++        .is_some_and(|tools| {
++            tools.iter().any(|tool| {
++                tool.get("name").and_then(Value::as_str) == Some("exec_command")
++                    && tool
++                        .get("parameters")
++                        .and_then(|parameters| parameters.get("properties"))
++                        .and_then(|properties| properties.get("notify_on_exit"))
++                        .is_some()
++            })
++        })
++}
++
++fn tool_search_output_has_namespace_child(
++    request: &ResponsesRequest,
++    call_id: &str,
++    namespace: &str,
++    tool_name: &str,
++) -> bool {
++    namespace_child_tool(&request.tool_search_output(call_id), namespace, tool_name).is_some()
++}
++
++struct WaitingCapabilitiesRecorder {
++    captures: Arc<Mutex<Vec<WaitingCapabilities>>>,
++}
++
++impl ContextContributor for WaitingCapabilitiesRecorder {
++    fn contribute_turn_context<'a>(
++        &'a self,
++        input: TurnContextContributionInput<'a>,
++    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
++        Box::pin(async move {
++            self.captures
++                .lock()
++                .expect("captures lock should not be poisoned")
++                .push(input.waiting_capabilities.clone());
++            Vec::new()
++        })
++    }
++}
++
++fn install(
++    registry: &mut ExtensionRegistryBuilder<Config>,
++    db: &Arc<codex_state::StateRuntime>,
++    service: &Arc<GoalService>,
++    manager: Weak<codex_core::ThreadManager>,
++) {
++    install_with_backend(
++        registry,
++        db.clone(),
++        AnalyticsEventsClient::disabled(),
++        /*metrics_client*/ None,
++        manager,
++        service.clone(),
++        |c: &Config| GoalExtensionConfig {
++            enabled: c.features.enabled(Feature::Goals),
++            max_goal_token_budget: c.max_goal_token_budget,
++            continuation_pacing: c.features.enabled(Feature::GoalContinuationPacing),
++        },
++    );
++}
++
++async fn fixture(
++    server: &MockServer,
++    configure: impl FnOnce(&mut Config) + Send + 'static,
++    live_manager: bool,
++) -> Result<(
++    TestCodex,
++    Arc<codex_state::StateRuntime>,
++    Arc<GoalService>,
++    Arc<Mutex<Vec<WaitingCapabilities>>>,
++)> {
++    let home = Arc::new(TempDir::new()?);
++    let config = core_test_support::load_default_config_for_test(&home).await;
++    let db = codex_core::init_state_db(&config)
++        .await
++        .expect("state database");
++    let service = Arc::new(GoalService::new());
++    let captures = Arc::new(Mutex::new(Vec::new()));
++    let mut registry = ExtensionRegistryBuilder::<Config>::new();
++    registry.prompt_contributor(Arc::new(WaitingCapabilitiesRecorder {
++        captures: Arc::clone(&captures),
++    }));
++    install(&mut registry, &db, &service, Weak::new());
++    let test = test_codex()
++        .with_home(home)
++        .with_extensions(Arc::new(registry.build()))
++        .with_config(|c| {
++            c.features
++                .disable(Feature::CurrentTimeReminder)
++                .expect("feature");
++            c.sleep_tool_mode = SleepToolMode::ModelDriven;
++        })
++        .with_model_info_override("gpt-5.5", |m| {
++            m.experimental_supported_tools.retain(|t| t != "clock");
++        })
++        .with_config(configure)
++        .build_with_auto_env(server)
++        .await?;
++    if live_manager {
++        // TestCodex creates its manager after accepting the extension
++        // registry. Bind the installed goal runtime to that live manager via
++        // the production thread-start hook before driving any tool or turn.
++        test.codex
++            .thread_extension_data()
++            .remove::<GoalRuntimeHandle>();
++        let mut bound = ExtensionRegistryBuilder::<Config>::new();
++        install(
++            &mut bound,
++            &db,
++            &service,
++            Arc::downgrade(&test.thread_manager),
++        );
++        for contributor in bound.build().thread_lifecycle_contributors() {
++            contributor
++                .on_thread_start(ThreadStartInput {
++                    config: &test.config,
++                    session_source: &SessionSource::Cli,
++                    persistent_thread_state_available: true,
++                    environments: &[],
++                    mcp_resource_client: None,
++                    extension_metrics: None,
++                    session_store: &ExtensionData::new(
++                        test.session_configured.session_id.to_string(),
++                    ),
++                    thread_store: test.codex.thread_extension_data(),
++                })
++                .await;
++        }
++    }
++    Ok((test, db, service, captures))
++}
++
++async fn set_active_goal(
++    service: &GoalService,
++    db: &Arc<codex_state::StateRuntime>,
++    thread_id: ThreadId,
++) -> Result<()> {
++    let outcome = service
++        .set_thread_goal(
++            db,
++            GoalSetRequest {
++                thread_id,
++                objective: GoalObjectiveUpdate::Set("waiting guidance work"),
++                status: None,
++                token_budget: GoalTokenBudgetUpdate::Keep,
++                max_goal_token_budget: None,
++            },
++        )
++        .await
++        .map_err(anyhow::Error::new)?;
++    outcome.apply_runtime_effects(service).await;
++    Ok(())
++}
++
++async fn tool_steps(server: &MockServer, steps: &[(&str, &str)]) -> ResponseMock {
++    let scripts = steps
++        .iter()
++        .enumerate()
++        .map(|(index, (name, arguments))| {
++            let id = format!("response-{index}");
++            let mut events = vec![ev_response_created(&id)];
++            if !name.is_empty() {
++                events.push(ev_function_call(name, name, arguments));
++            }
++            events.push(ev_completed_with_tokens(&id, /*total_tokens*/ 10));
++            sse(events)
++        })
++        .collect();
++    mount_sse_sequence(server, scripts).await
++}
++
++async fn assistant_turn(server: &MockServer) -> ResponseMock {
++    mount_sse_once(
++        server,
++        sse(vec![
++            ev_response_created("resp-1"),
++            ev_assistant_message("msg-1", "done"),
++            ev_completed("resp-1"),
++        ]),
++    )
++    .await
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_post_create_carries_fragment_matching_tools() -> Result<()> {
++    // AC5 (goal set mid-thread) + AC6 (post-create, sleep iff): turn 1 has no
++    // goal so its request carries no fragment and no sleep tool; the goal is
++    // then set mid-thread via the service and turn 2's request carries
++    // exactly one fragment whose claims match the same request's tools. The
++    // V1 native wait tool is deferred behind tool search and undiscovered in
++    // this fixture, so sentence and tool agree on its absence. Dead manager,
++    // so no continuation can follow the final turn even with the goal active.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mock = tool_steps(&server, &[("", ""), ("", "")]).await;
++    let (test, db, service, _) = fixture(&server, |_| {}, /*live_manager*/ false).await?;
++    test.submit_text_turn("hello without a goal").await?;
++    set_active_goal(&service, &db, test.session_configured.thread_id).await?;
++    test.submit_text_turn("work with a goal").await?;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 2);
++    // Exact split: the pre-goal request carries nothing; the post-create
++    // request carries exactly one fragment.
++    assert_no_fragment(&requests[0]);
++    assert!(requests[0].tool_by_name("clock", "sleep").is_none());
++    for request in &requests {
++        assert_eq!(
++            developer_occurrences(request, SLEEP_MARKER),
++            request.tool_by_name("clock", "sleep").is_some() as usize,
++        );
++    }
++    let request = &requests[1];
++    assert_eq!(developer_occurrences(request, EXEC_NEGATIVE_MARKER), 1);
++    assert_eq!(developer_occurrences(request, SLEEP_MARKER), 1);
++    assert_eq!(developer_occurrences(request, STDIN_MARKER), 1);
++    assert_eq!(developer_occurrences(request, NATIVE_WAIT_MARKER), 0);
++    assert_eq!(developer_occurrences(request, EXEC_POSITIVE_MARKER), 0);
++    assert_eq!(developer_occurrences(request, NATIVE_MAIL_MARKER), 0);
++    assert!(request.tool_by_name("clock", "sleep").is_some());
++    assert!(
++        request
++            .tool_by_name("multi_agent_v1", "wait_agent")
++            .is_none()
++    );
++    assert!(
++        tool_names(&request.body_json()).contains(&"write_stdin".to_string()),
++        "stdin sentence needs the write_stdin tool",
++    );
++    assert!(!exec_command_advertises_notify(&request.body_json()));
++    assert!(!tool_names(&request.body_json()).contains(&"exec_notification".to_string()),);
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_tool_created_goal_reacts_at_next_turn() -> Result<()> {
++    // AC5/AC6 (tool-driven create): turn 1 creates the goal via the
++    // create_goal tool and the post-create follow-up already carries the
++    // fragment, because World State runs on every sampling step
++    // (`record_step_world_state_if_changed` in `core/src/session/turn.rs`
++    // records the diff before the request input is assembled). Turn 2 adds
++    // nothing while the snapshot is unchanged; completing the goal mid-turn-2
++    // renders exactly one retraction on the follow-up request, superseding
++    // the stale fragment. The V1 native wait tool is deferred behind tool
++    // search and undiscovered here, so sentence and tool agree on its
++    // absence. Ends completed, so no continuation fires after the final turn.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let create = json!({"objective": "waiting guidance work"}).to_string();
++    let stop = json!({"status": "complete"}).to_string();
++    let mock = tool_steps(
++        &server,
++        &[
++            ("create_goal", &create),
++            ("", ""),
++            ("update_goal", &stop),
++            ("", ""),
++        ],
++    )
++    .await;
++    let (test, _, _, _) = fixture(&server, |_| {}, /*live_manager*/ true).await?;
++    test.submit_text_turn("create a goal").await?;
++    test.submit_text_turn("complete it").await?;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 4);
++    assert_no_fragment(&requests[0]);
++    assert!(requests[0].tool_by_name("clock", "sleep").is_none());
++    // requests[1] is the post-create follow-up: the fragment arrives with
++    // the same request that advertises clock.sleep (P2's next-request grant
++    // via the `on_tool_finish` reconcile in `ext/goal/src/extension.rs`).
++    // requests[2] adds nothing at the turn boundary: the count stays 1.
++    for request in &requests[1..3] {
++        assert_eq!(developer_occurrences(request, EXEC_NEGATIVE_MARKER), 1);
++        assert_eq!(developer_occurrences(request, SLEEP_MARKER), 1);
++        assert_eq!(developer_occurrences(request, STDIN_MARKER), 1);
++        assert_eq!(developer_occurrences(request, NATIVE_WAIT_MARKER), 0);
++        assert_eq!(developer_occurrences(request, EXEC_POSITIVE_MARKER), 0);
++        assert_eq!(developer_occurrences(request, NATIVE_MAIL_MARKER), 0);
++        assert_eq!(developer_occurrences(request, RETRACTION_MARKER), 0);
++        assert!(request.tool_by_name("clock", "sleep").is_some());
++        assert!(
++            request
++                .tool_by_name("multi_agent_v1", "wait_agent")
++                .is_none()
++        );
++        assert!(
++            tool_names(&request.body_json()).contains(&"write_stdin".to_string()),
++            "stdin sentence needs the write_stdin tool",
++        );
++        assert!(!exec_command_advertises_notify(&request.body_json()));
++        assert!(!tool_names(&request.body_json()).contains(&"exec_notification".to_string()),);
++    }
++    // requests[3] is post-completion: the rebuilt router drops clock.sleep,
++    // no new fragment is added, and exactly one retraction supersedes the
++    // stale sleep sentence still retained in history.
++    assert_eq!(developer_occurrences(&requests[3], RETRACTION_MARKER), 1);
++    assert_eq!(developer_occurrences(&requests[3], EXEC_NEGATIVE_MARKER), 1);
++    assert!(requests[3].tool_by_name("clock", "sleep").is_none());
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_code_mode_only_agrees_with_nested_tools() -> Result<()> {
++    // AC6 (code-mode-only agreement): code mode nests direct tools inside the
++    // exec cell but never hides clock.sleep: SleepHandler is DirectModelOnly
++    // (`core/src/tools/handlers/sleep.rs::exposure`), which
++    // `is_hidden_by_code_mode_only` (`core/src/tools/spec_plan.rs`) leaves
++    // direct (P3-1's `code_mode_only_hides_nested_waits_but_keeps_direct_sleep`
++    // pins sleep=true, stdin=false). With an active goal granting sleep under
++    // ModelDriven, the request therefore keeps clock.sleep direct and the
++    // fragment keeps the sleep sentence: agreement in the present direction.
++    // write_stdin IS nested-only here, so tool and sentence agree absent.
++    // Dead manager, so no continuation can follow the single turn.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mock = assistant_turn(&server).await;
++    let (test, db, service, _) = fixture(
++        &server,
++        |config| {
++            config.model = Some("test-gpt-5.1-codex".to_string());
++            let _ = config.features.enable(Feature::CodeMode);
++            let _ = config.features.enable(Feature::CodeModeOnly);
++            let _ = config.features.enable(Feature::ExecutedToolCallMetadata);
++        },
++        /*live_manager*/ false,
++    )
++    .await?;
++    set_active_goal(&service, &db, test.session_configured.thread_id).await?;
++    test.submit_text_turn("hello code mode").await?;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 1);
++    let request = &requests[0];
++    assert_eq!(developer_occurrences(request, EXEC_NEGATIVE_MARKER), 1);
++    assert_eq!(developer_occurrences(request, SLEEP_MARKER), 1);
++    for marker in [
++        STDIN_MARKER,
++        NATIVE_WAIT_MARKER,
++        NATIVE_MAIL_MARKER,
++        EXEC_POSITIVE_MARKER,
++    ] {
++        assert_eq!(
++            developer_occurrences(request, marker),
++            0,
++            "unexpected waiting guidance for marker {marker}",
++        );
++    }
++    assert!(request.tool_by_name("clock", "sleep").is_some());
++    let names = tool_names(&request.body_json());
++    assert!(!names.contains(&"write_stdin".to_string()));
++    assert!(
++        request
++            .tool_by_name("multi_agent_v1", "wait_agent")
++            .is_none()
++    );
++    assert!(request.inputs_of_type("tool_search_output").is_empty());
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_remote_catalog_without_clock_omits_sleep_sentence() -> Result<()> {
++    // AC6 (remote catalog): the remote entry without clock support is the
++    // active catalog; with reminder sleep suppressed and no shell-backed
++    // tools, the request carries no sleep tool and the fragment carries only
++    // the negative exec sentence. Goal-driven sleep is suppressed here by the
++    // reminder `sleep_tool: false` gate (a goal alone would grant it); P3-1's
++    // matrix proves the snapshot itself follows the remote entry.
++    skip_if_no_network!(Ok(()));
++
++    // Use MockServer directly so the first /models request returns our
++    // same-slug remote replacement.
++    let server = MockServer::builder()
++        .body_print_limit(BodyPrintLimit::Limited(80_000))
++        .start()
++        .await;
++    let catalog = bundled_models_response()?;
++    let mut remote = catalog
++        .models
++        .iter()
++        .find(|model| model.slug == "gpt-6-astra")
++        .expect("bundled gpt-6-astra should exist")
++        .clone();
++    assert!(
++        remote
++            .experimental_supported_tools
++            .iter()
++            .any(|tool| tool == "clock"),
++        "bundled gpt-6-astra should support clock",
++    );
++    remote.visibility = ModelVisibility::List;
++    remote.experimental_supported_tools = vec!["send_user_message_async".to_string()];
++    let models_mock = mount_models_once(
++        &server,
++        ModelsResponse {
++            models: vec![remote],
++        },
++    )
++    .await;
++    let responses_mock = assistant_turn(&server).await;
++
++    let home = Arc::new(TempDir::new()?);
++    let config = core_test_support::load_default_config_for_test(&home).await;
++    let db = codex_core::init_state_db(&config)
++        .await
++        .expect("state database");
++    let service = Arc::new(GoalService::new());
++    let mut registry = ExtensionRegistryBuilder::<Config>::new();
++    install(&mut registry, &db, &service, Weak::new());
++    let test = test_codex()
++        .with_home(home)
++        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
++        .with_model("gpt-6-astra")
++        .with_extensions(Arc::new(registry.build()))
++        .with_config(|c| {
++            c.features
++                .enable(Feature::CurrentTimeReminder)
++                .expect("feature");
++            c.current_time_reminder = Some(CurrentTimeReminderConfig {
++                sleep_tool: false,
++                ..Default::default()
++            });
++            c.features.enable(Feature::SleepTool).expect("feature");
++            c.sleep_tool_mode = SleepToolMode::ModelDriven;
++            c.agents_enabled = false;
++        })
++        .build_with_auto_env(&server)
++        .await?;
++    set_active_goal(&service, &db, test.session_configured.thread_id).await?;
++    test.submit_text_turn("hello remote catalog").await?;
++
++    assert_eq!(models_mock.requests().len(), 1);
++    let requests = responses_mock.requests();
++    assert_eq!(requests.len(), 1);
++    let request = &requests[0];
++    assert_eq!(developer_occurrences(request, EXEC_NEGATIVE_MARKER), 1);
++    for marker in [
++        SLEEP_MARKER,
++        STDIN_MARKER,
++        NATIVE_WAIT_MARKER,
++        NATIVE_MAIL_MARKER,
++        EXEC_POSITIVE_MARKER,
++    ] {
++        assert_eq!(
++            developer_occurrences(request, marker),
++            0,
++            "unexpected waiting guidance for marker {marker}",
++        );
++    }
++    assert!(request.tool_by_name("clock", "sleep").is_none());
++    assert!(!tool_names(&request.body_json()).contains(&"write_stdin".to_string()),);
++    let remote_models = test
++        .thread_manager
++        .get_models_manager()
++        .get_remote_models()
++        .await;
++    let replaced = remote_models
++        .iter()
++        .find(|model| model.slug == "gpt-6-astra")
++        .expect("replaced slug should be listed");
++    assert_eq!(
++        replaced.experimental_supported_tools,
++        vec!["send_user_message_async".to_string()],
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_excluded_receipt_tool_gives_negative_exec_sentence() -> Result<()> {
++    // AC6 (excluded receipt tool): on a capable host with the receipt tool
++    // allow-listed out, exec_command still advertises the opt-in but the
++    // fragment carries the negative exec sentence. A second thread supplies
++    // the startup ToolPolicy; its runtime never binds a live manager and the
++    // turn completes the goal, so no continuation can follow.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mock = tool_steps(
++        &server,
++        &[("update_goal", r#"{"status":"complete"}"#), ("", "")],
++    )
++    .await;
++    let (test, db, service, _) = fixture(&server, |_| {}, /*live_manager*/ false).await?;
++
++    let mut thread_extension_init = ExtensionDataInit::new();
++    thread_extension_init.insert(ToolPolicy {
++        allowed_tools: Some(vec![
++            ToolName::plain("update_goal"),
++            ToolName::plain("exec_command"),
++            ToolName::plain("write_stdin"),
++            ToolName::namespaced("clock", "sleep"),
++        ]),
++        ..ToolPolicy::default()
++    });
++    let second = test
++        .thread_manager
++        .start_thread(StartThreadOptions {
++            thread_extension_init,
++            ..StartThreadOptions::new(test.config.clone())
++        })
++        .await?;
++    second
++        .thread
++        .thread_extension_data()
++        .insert(AsyncNotificationSupport::Available);
++    set_active_goal(&service, &db, second.thread_id).await?;
++    second
++        .thread
++        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
++            text: "complete the waiting work".to_string(),
++            text_elements: Vec::new(),
++        }]))
++        .await?;
++    wait_for_event(&second.thread, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 2);
++    let request = &requests[0];
++    assert_eq!(developer_occurrences(request, EXEC_NEGATIVE_MARKER), 1);
++    assert_eq!(developer_occurrences(request, SLEEP_MARKER), 1);
++    assert_eq!(developer_occurrences(request, STDIN_MARKER), 1);
++    assert_eq!(developer_occurrences(request, EXEC_POSITIVE_MARKER), 0);
++    assert_eq!(developer_occurrences(request, NATIVE_WAIT_MARKER), 0);
++    assert_eq!(developer_occurrences(request, NATIVE_MAIL_MARKER), 0);
++    let names = tool_names(&request.body_json());
++    assert!(names.contains(&"exec_command".to_string()));
++    assert!(exec_command_advertises_notify(&request.body_json()));
++    assert!(!names.contains(&"exec_notification".to_string()));
++    assert!(!names.contains(&"wait_agent".to_string()));
++    assert!(request.tool_by_name("clock", "sleep").is_some());
++    // The follow-up runs after the completion removed the marker: no new
++    // fragment, exactly one retraction, and the rebuilt router drops
++    // clock.sleep.
++    assert_eq!(developer_occurrences(&requests[1], EXEC_NEGATIVE_MARKER), 1);
++    assert_eq!(developer_occurrences(&requests[1], RETRACTION_MARKER), 1);
++    assert!(requests[1].tool_by_name("clock", "sleep").is_none());
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_headless_host_gives_negative_exec_sentence() -> Result<()> {
++    // AC6 (headless host): without host wake support the exec schema omits
++    // the opt-in and the fragment carries the negative exec sentence, while
++    // sleep/stdin guidance still matches the advertised tools. The V1 native
++    // wait tool is deferred behind tool search and undiscovered here, so
++    // sentence and tool agree on its absence. Dead manager, so no
++    // continuation can follow the single turn.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mock = assistant_turn(&server).await;
++    let (test, db, service, _) = fixture(&server, |_| {}, /*live_manager*/ false).await?;
++    set_active_goal(&service, &db, test.session_configured.thread_id).await?;
++    test.submit_text_turn("hello headless host").await?;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 1);
++    let request = &requests[0];
++    assert_eq!(developer_occurrences(request, EXEC_NEGATIVE_MARKER), 1);
++    assert_eq!(developer_occurrences(request, SLEEP_MARKER), 1);
++    assert_eq!(developer_occurrences(request, STDIN_MARKER), 1);
++    assert_eq!(developer_occurrences(request, NATIVE_WAIT_MARKER), 0);
++    assert_eq!(developer_occurrences(request, EXEC_POSITIVE_MARKER), 0);
++    assert_eq!(developer_occurrences(request, NATIVE_MAIL_MARKER), 0);
++    assert!(!exec_command_advertises_notify(&request.body_json()));
++    assert!(!tool_names(&request.body_json()).contains(&"exec_notification".to_string()),);
++    assert!(request.tool_by_name("clock", "sleep").is_some());
++    assert!(
++        request
++            .tool_by_name("multi_agent_v1", "wait_agent")
++            .is_none()
++    );
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_non_goal_thread_has_no_fragment() -> Result<()> {
++    // AC3/AC6 (non-goal thread): the goal extension is installed but no goal
++    // exists, so no waiting sentence reaches the request.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mock = assistant_turn(&server).await;
++    let (test, _, _, _) = fixture(&server, |_| {}, /*live_manager*/ false).await?;
++    test.submit_text_turn("hello without a goal").await?;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 1);
++    assert_no_fragment(&requests[0]);
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_unchanged_capabilities_stable_across_sampling_steps() -> Result<()> {
++    // AC5 (no churn): three sampling requests within one turn carry the
++    // fragment exactly once each; identical capabilities add no new item.
++    // Dead manager, so no continuation can follow the single turn.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mut first = ev_completed("resp-1");
++    first["response"]["end_turn"] = json!(false);
++    let mut second = ev_completed("resp-2");
++    second["response"]["end_turn"] = json!(false);
++    let mock = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-1"),
++                ev_assistant_message("msg-1", "waiting"),
++                first,
++            ]),
++            sse(vec![
++                ev_response_created("resp-2"),
++                ev_assistant_message("msg-2", "still waiting"),
++                second,
++            ]),
++            sse(vec![
++                ev_response_created("resp-3"),
++                ev_assistant_message("msg-3", "done"),
++                ev_completed("resp-3"),
++            ]),
++        ],
++    )
++    .await;
++    let (test, db, service, _) = fixture(&server, |_| {}, /*live_manager*/ false).await?;
++    set_active_goal(&service, &db, test.session_configured.thread_id).await?;
++    test.submit_text_turn("wait without working").await?;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 3);
++    for request in &requests {
++        assert_eq!(developer_occurrences(request, EXEC_NEGATIVE_MARKER), 1);
++        assert_eq!(developer_occurrences(request, SLEEP_MARKER), 1);
++        // The V1 native wait tool is deferred behind tool search and
++        // undiscovered here, so sentence and tool agree on its absence.
++        assert_eq!(developer_occurrences(request, NATIVE_WAIT_MARKER), 0);
++        assert!(
++            request
++                .tool_by_name("multi_agent_v1", "wait_agent")
++                .is_none()
++        );
++    }
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_unchanged_capabilities_stable_across_turns() -> Result<()> {
++    // AC5/F2 (no churn across turns): three consecutive turns with an active
++    // goal and identical capabilities carry exactly one fragment in total;
++    // the turn boundary adds no new item. Dead manager, so no continuation
++    // can follow the final turn.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let mock = tool_steps(&server, &[("", ""), ("", ""), ("", "")]).await;
++    let (test, db, service, _) = fixture(&server, |_| {}, /*live_manager*/ false).await?;
++    set_active_goal(&service, &db, test.session_configured.thread_id).await?;
++    test.submit_text_turn("first waiting turn").await?;
++    test.submit_text_turn("second waiting turn").await?;
++    test.submit_text_turn("third waiting turn").await?;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 3);
++    for request in &requests {
++        assert_eq!(developer_occurrences(request, EXEC_NEGATIVE_MARKER), 1);
++        assert_eq!(developer_occurrences(request, SLEEP_MARKER), 1);
++        assert_eq!(developer_occurrences(request, STDIN_MARKER), 1);
++        assert_eq!(developer_occurrences(request, NATIVE_WAIT_MARKER), 0);
++        assert_eq!(developer_occurrences(request, RETRACTION_MARKER), 0);
++        assert!(request.tool_by_name("clock", "sleep").is_some());
++        assert!(
++            request
++                .tool_by_name("multi_agent_v1", "wait_agent")
++                .is_none()
++        );
++    }
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_goal_stop_adds_no_new_fragment() -> Result<()> {
++    // AC5/F1 (goal stops being active): completing the goal in turn 2 means
++    // the follow-up request carries exactly one retraction, and turn 3 adds
++    // nothing further while history stays intact. Ends with no goal, so no
++    // continuation fires.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let create = json!({"objective": "waiting guidance work"}).to_string();
++    let stop = json!({"status": "complete"}).to_string();
++    let mock = tool_steps(
++        &server,
++        &[
++            ("create_goal", &create),
++            ("", ""),
++            ("update_goal", &stop),
++            ("", ""),
++            ("", ""),
++        ],
++    )
++    .await;
++    let (test, _, _, _) = fixture(&server, |_| {}, /*live_manager*/ true).await?;
++    test.submit_text_turn("create a goal").await?;
++    test.submit_text_turn("complete it").await?;
++    test.submit_text_turn("follow up after completion").await?;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 5);
++    assert_no_fragment(&requests[0]);
++    // The turn-1 follow-up and the turn-2 first request share the single
++    // fragment; nothing is added at the turn boundary.
++    for request in &requests[1..3] {
++        assert_eq!(developer_occurrences(request, EXEC_NEGATIVE_MARKER), 1);
++        assert_eq!(developer_occurrences(request, SLEEP_MARKER), 1);
++        assert_eq!(developer_occurrences(request, RETRACTION_MARKER), 0);
++        assert!(request.tool_by_name("clock", "sleep").is_some());
++    }
++    // The first request after the stop carries the retraction exactly once;
++    // the stale fragment is retained but superseded, never duplicated.
++    assert_eq!(developer_occurrences(&requests[3], RETRACTION_MARKER), 1);
++    assert_eq!(developer_occurrences(&requests[3], EXEC_NEGATIVE_MARKER), 1);
++    assert!(requests[3].tool_by_name("clock", "sleep").is_none());
++    // Turn 3 adds nothing: same counts, while its context update is still
++    // recorded.
++    assert_eq!(
++        developer_occurrences(&requests[4], RETRACTION_MARKER),
++        1,
++        "stopping the goal must add no further retraction",
++    );
++    assert_eq!(
++        developer_occurrences(&requests[4], EXEC_NEGATIVE_MARKER),
++        1,
++        "stopping the goal must add no new fragment",
++    );
++    assert!(
++        requests[4].input().len() > requests[3].input().len(),
++        "turn 3 must still record its context update",
++    );
++    assert!(requests[4].tool_by_name("clock", "sleep").is_none());
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn waiting_guidance_discovered_native_wait_updates_fragment() -> Result<()> {
++    // AC5 (native wait discovered via tool search): the post-discovery
++    // follow-up renders exactly one updated fragment carrying the native
++    // sentence with the snapshot's actual dotted name, because World State
++    // runs on every sampling step. Turn 2 adds nothing at the boundary, and
++    // completing the goal renders exactly one retraction. Ends completed, so
++    // no continuation fires.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let search_call_id = "tool-search-wait-agent";
++    let create = json!({"objective": "waiting guidance work"}).to_string();
++    let stop = json!({"status": "complete"}).to_string();
++    let mock = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-1"),
++                ev_function_call("call-create", "create_goal", &create),
++                ev_completed("resp-1"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-2"),
++                ev_tool_search_call(search_call_id, &json!({"query": "wait agent"})),
++                ev_completed("resp-2"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-3"),
++                ev_assistant_message("msg-1", "found it"),
++                ev_completed("resp-3"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-4"),
++                ev_function_call("call-update", "update_goal", &stop),
++                ev_completed("resp-4"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-5"),
++                ev_assistant_message("msg-2", "done"),
++                ev_completed("resp-5"),
++            ]),
++        ],
++    )
++    .await;
++    let (test, _, _, captures) = fixture(
++        &server,
++        configure_search_capable_model,
++        /*live_manager*/ true,
++    )
++    .await?;
++    test.submit_turn_with_approval_and_permission_profile(
++        "Find the wait agent tool",
++        AskForApproval::Never,
++        PermissionProfile::Disabled,
++    )
++    .await?;
++    test.submit_turn_with_approval_and_permission_profile(
++        "Use what you found",
++        AskForApproval::Never,
++        PermissionProfile::Disabled,
++    )
++    .await?;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 5);
++    let first_tools = tool_names(&requests[0].body_json());
++    assert!(
++        first_tools.iter().any(|name| name == "tool_search"),
++        "first request should advertise tool_search: {first_tools:?}",
++    );
++    assert!(
++        !first_tools.iter().any(|name| name == "wait_agent"),
++        "v1 wait_agent should be hidden before search: {first_tools:?}",
++    );
++    assert_no_fragment(&requests[0]);
++    // requests[1] is the post-create follow-up: the fragment arrives without
++    // the native sentence (V1 still undiscovered).
++    assert_eq!(developer_occurrences(&requests[1], EXEC_NEGATIVE_MARKER), 1);
++    assert_eq!(developer_occurrences(&requests[1], SLEEP_MARKER), 1);
++    assert_eq!(developer_occurrences(&requests[1], NATIVE_WAIT_MARKER), 0);
++    assert_eq!(developer_occurrences(&requests[1], RETRACTION_MARKER), 0);
++    assert!(requests[1].tool_by_name("clock", "sleep").is_some());
++    assert!(
++        tool_search_output_has_namespace_child(
++            &requests[2],
++            search_call_id,
++            "multi_agent_v1",
++            "wait_agent",
++        ),
++        "expected tool_search to return multi_agent_v1.wait_agent",
++    );
++    // requests[2] is the post-discovery follow-up: exactly one updated
++    // fragment is added, so the shared sentences count 2 while the native
++    // sentence and dotted name appear once. Turn 2 (requests[3]) adds
++    // nothing at the boundary.
++    for request in &requests[2..4] {
++        assert_eq!(developer_occurrences(request, EXEC_NEGATIVE_MARKER), 2);
++        assert_eq!(developer_occurrences(request, SLEEP_MARKER), 2);
++        assert_eq!(developer_occurrences(request, NATIVE_WAIT_MARKER), 1);
++        assert_eq!(developer_occurrences(request, NATIVE_V1_DOTTED_NAME), 1);
++        assert_eq!(developer_occurrences(request, RETRACTION_MARKER), 0);
++    }
++    // requests[4] is post-completion: exactly one retraction, no new
++    // fragment.
++    assert_eq!(developer_occurrences(&requests[4], RETRACTION_MARKER), 1);
++    assert_eq!(developer_occurrences(&requests[4], EXEC_NEGATIVE_MARKER), 2);
++    assert_eq!(developer_occurrences(&requests[4], NATIVE_WAIT_MARKER), 1);
++    assert!(
++        !tool_names(&requests[3].body_json())
++            .iter()
++            .any(|name| name == "wait_agent"),
++        "deferred wait stays out of the tools list after discovery",
++    );
++    let captures = captures.lock().expect("captures lock should read");
++    assert!(
++        captures.len() >= 2,
++        "expected pre- and post-discovery samples, got {}",
++        captures.len(),
++    );
++    assert_eq!(
++        captures.first().expect("pre-discovery sample").native_wait,
++        None,
++        "native_wait should be None before discovery",
++    );
++    assert_eq!(
++        captures.last().expect("post-discovery sample").native_wait,
++        Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++        "native_wait should carry the discovered native name after search",
++    );
++    Ok(())
++}
+diff --git a/codex-rs/ext/extension-api/src/contributors/world_state.rs b/codex-rs/ext/extension-api/src/contributors/world_state.rs
+index c2379b8b7fcf09a1ecd051287711a90f5c331929..40d2d35ca575b32af20884058bab8e1641a38aad 100644
+--- a/codex-rs/ext/extension-api/src/contributors/world_state.rs
++++ b/codex-rs/ext/extension-api/src/contributors/world_state.rs
+@@ -9,6 +9,7 @@ use serde_json::Value;
+ 
+ use crate::ExtensionData;
+ use crate::ExtensionMetrics;
++use crate::WaitingCapabilities;
+ 
+ /// Host state available while an extension contributes one sampling step's World State.
+ pub struct WorldStateContributionInput<'a> {
+@@ -23,6 +24,10 @@ pub struct WorldStateContributionInput<'a> {
+     pub executor_capability_discovery: Option<&'a ExecutorCapabilityDiscoverySnapshot>,
+     /// Metrics bound to the captured model for this sampling step.
+     pub extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
++    /// Waiting tools callable in this sampling step, derived from the final
++    /// captured router: the same snapshot as this step's
++    /// `TurnContextContributionInput`.
++    pub waiting_capabilities: &'a WaitingCapabilities,
+     pub session_store: &'a ExtensionData,
+     pub thread_store: &'a ExtensionData,
+     pub turn_store: &'a ExtensionData,
+diff --git a/codex-rs/ext/goal/src/extension.rs b/codex-rs/ext/goal/src/extension.rs
+index 070b4f4484aaa33b03ac6dd629b37b94367d5771..08d49099c6bfc503195475926f10f0b2906f4246 100644
+--- a/codex-rs/ext/goal/src/extension.rs
++++ b/codex-rs/ext/goal/src/extension.rs
+@@ -11,8 +11,8 @@ use codex_extension_api::ExtensionData;
+ use codex_extension_api::ExtensionEventSink;
+ use codex_extension_api::ExtensionFuture;
+ use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::GoalActivity;
+ use codex_extension_api::PlanCommitInput;
+-use codex_extension_api::PromptFragment;
+ use codex_extension_api::ThreadIdleInput;
+ use codex_extension_api::ThreadLifecycleContributor;
+ use codex_extension_api::ThreadResumeInput;
+@@ -27,13 +27,14 @@ use codex_extension_api::ToolFinishInput;
+ use codex_extension_api::ToolLifecycleContributor;
+ use codex_extension_api::ToolLifecycleFuture;
+ use codex_extension_api::TurnAbortInput;
+-use codex_extension_api::TurnContextContributionInput;
+ use codex_extension_api::TurnErrorInput;
+ use codex_extension_api::TurnInputContext;
+ use codex_extension_api::TurnInputContributor;
+ use codex_extension_api::TurnLifecycleContributor;
+ use codex_extension_api::TurnStartInput;
+ use codex_extension_api::TurnStopInput;
++use codex_extension_api::WorldStateContributionInput;
++use codex_extension_api::WorldStateSectionContribution;
+ use codex_otel::MetricsClient;
+ use codex_protocol::ThreadId;
+ use codex_protocol::items::TurnItem;
+@@ -650,12 +651,23 @@ impl<C> ContextContributor for GoalExtension<C>
+ where
+     C: Send + Sync + 'static,
+ {
+-    fn contribute_turn_context<'a>(
++    fn contribute_world_state<'a>(
+         &'a self,
+-        input: TurnContextContributionInput<'a>,
+-    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
++        input: WorldStateContributionInput<'a>,
++    ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
+         Box::pin(async move {
+-            crate::steering::waiting_capability_fragments(input.waiting_capabilities)
++            // Goal-active threads only: the marker is present for Active and
++            // BudgetLimited goals and removed for every other status, so
++            // threads that never had a goal (or whose goal is paused,
++            // blocked, usage-limited, or complete) contribute no section and
++            // see no model-visible change. There is deliberately no core
++            // fragment for goal-less threads.
++            let goal_active = input.thread_store.get::<GoalActivity>().is_some();
++            crate::waiting_world_state::goal_waiting_guidance_sections(
++                goal_active,
++                input.waiting_capabilities,
++                input.previous_world_state,
++            )
+         })
+     }
+ }
+diff --git a/codex-rs/ext/goal/src/lib.rs b/codex-rs/ext/goal/src/lib.rs
+index c4092acf8cab94303f453a9592e865d3bc8bc942..ffc58372e0b93bd125364f1c27f4049e86c35ded 100644
+--- a/codex-rs/ext/goal/src/lib.rs
++++ b/codex-rs/ext/goal/src/lib.rs
+@@ -14,6 +14,7 @@ mod runtime;
+ mod spec;
+ mod steering;
+ mod tool;
++mod waiting_world_state;
+ 
+ pub use api::GoalObjectiveUpdate;
+ pub use api::GoalService;
+diff --git a/codex-rs/ext/goal/src/steering.rs b/codex-rs/ext/goal/src/steering.rs
+index dc4aa8813a8a9ee27d8c6c3a527348eb76b0c559..76f345a3bc09936482688e1a2b5129a61a305417 100644
+--- a/codex-rs/ext/goal/src/steering.rs
++++ b/codex-rs/ext/goal/src/steering.rs
+@@ -1,7 +1,9 @@
+ use codex_core::context::ContextualUserFragment;
+ use codex_core::context::InternalContextSource;
+ use codex_core::context::InternalModelContextFragment;
++use codex_extension_api::ContentItemKind;
+ use codex_extension_api::PromptFragment;
++use codex_extension_api::ToolName;
+ use codex_extension_api::WaitingCapabilities;
+ use codex_prompts::without_update_plan_instructions;
+ use codex_protocol::models::ResponseItem;
+@@ -59,15 +61,84 @@ pub(crate) fn continuation_steering_item(
+     goal_context_input_item(continuation_prompt(goal, update_plan_enabled))
+ }
+ 
++/// Byte-exact waiting-guidance sentences from final-plan §9.
++///
++/// Rust selects these static strings from the sampling-step
++/// [`WaitingCapabilities`] snapshot; no new template syntax is involved. The
++/// §9 "none of the positive flags" no-wait/end-turn paragraph is NOT emitted
++/// here: plan §10 defers it until P4b pacing is active.
++pub(crate) const WAITING_EXEC_NOTIFY: &str = "exec_command can acknowledge notify_on_exit subscriptions. For finite background work, request a notification; after the tool acknowledges it, do independent work and then end the turn. Its completion will be delivered by the runtime. Use write_stdin only for needed intermediate output or interaction. Use exec_notification to read retained terminal output or release a mistaken subscription without terminating the process.";
++pub(crate) const WAITING_NO_EXEC_NOTIFY: &str = "This session cannot promise an exec completion wake. A yielded exec session by itself is not a reason to expect automatic resumption.";
++pub(crate) const WAITING_SLEEP: &str = "clock.sleep is available as a direct tool. Use a substantial input-interruptible wait when a notification subscription is unavailable. Do not place clock.sleep inside a code-mode exec cell.";
++pub(crate) const WAITING_STDIN: &str = "An empty write_stdin with a long yield_time_ms can wait for one known live exec session. Read again early only when intermediate output is needed to decide the next action.";
++pub(crate) const WAITING_NATIVE_WAIT: &str = "The native agent wait tool is available for Codex-managed children. Pass multiple child identifiers where that tool supports them to wait for whichever changes first. It cannot observe arbitrary shell or remote jobs.";
++pub(crate) const WAITING_NATIVE_MAIL_WAIT: &str = "When this active goal yields with owned native child work still running, the runtime can wait for child mailbox results. Do not repeatedly inspect child logs merely to keep the goal alive.";
++
++/// Hard cap on the rendered native wait tool name, in characters.
++///
++/// The name is the only variable datum in the fragment; everything else is
++/// static §9 text. Truncation appends `…` so a capped name is recognizable.
++pub(crate) const MAX_NATIVE_WAIT_TOOL_NAME_CHARS: usize = 128;
++
+ /// Goal-specific waiting guidance for this sampling step.
+ ///
+-/// The continuation-guidance leaf renders developer capabilities from
+-/// `capabilities` here. The snapshot leaf only threads the snapshot through
+-/// and emits nothing, so no prompt text changes in this leaf.
++/// Renders exactly one [`PromptFragment`] in the developer-capabilities slot
++/// from this step's [`WaitingCapabilities`] snapshot, in fixed §9 order:
++/// exactly one of the exec sentences, then the sleep, stdin, native wait
++/// (with the snapshot's actual tool name), and native mail wait sentences
++/// for each set flag. The caller (goal's `ContextContributor`) emits nothing
++/// unless the thread's goal is active, so this renderer always returns one
++/// fragment.
+ pub(crate) fn waiting_capability_fragments(
+-    _capabilities: &WaitingCapabilities,
++    capabilities: &WaitingCapabilities,
+ ) -> Vec<PromptFragment> {
+-    Vec::new()
++    let mut sentences = Vec::with_capacity(5);
++    if capabilities.exec_notify {
++        sentences.push(WAITING_EXEC_NOTIFY.to_string());
++    } else {
++        sentences.push(WAITING_NO_EXEC_NOTIFY.to_string());
++    }
++    if capabilities.sleep {
++        sentences.push(WAITING_SLEEP.to_string());
++    }
++    if capabilities.stdin {
++        sentences.push(WAITING_STDIN.to_string());
++    }
++    if let Some(native_wait) = capabilities.native_wait.as_ref() {
++        sentences.push(format!(
++            "{WAITING_NATIVE_WAIT} (Tool name: {}.)",
++            render_native_wait_tool_name(native_wait)
++        ));
++    }
++    if capabilities.native_mail_wait {
++        sentences.push(WAITING_NATIVE_MAIL_WAIT.to_string());
++    }
++    vec![PromptFragment::developer_capability(
++        sentences.join("\n"),
++        ContentItemKind("goal.waiting_capabilities".to_string()),
++    )]
++}
++
++/// Renders the snapshot's actual native wait tool name, bounded by
++/// [`MAX_NATIVE_WAIT_TOOL_NAME_CHARS`].
++///
++/// Namespaced tools use the dotted `namespace.name` form; default-namespace
++/// tools render as the bare name. Overlong names truncate at a character
++/// boundary with a trailing `…`.
++pub(crate) fn render_native_wait_tool_name(name: &ToolName) -> String {
++    let tool = &name.name;
++    let display = match name.namespace.as_deref() {
++        Some(namespace) if !name.is_default_namespace() => format!("{namespace}.{tool}"),
++        _ => tool.clone(),
++    };
++    if display.chars().count() <= MAX_NATIVE_WAIT_TOOL_NAME_CHARS {
++        return display;
++    }
++    let truncated: String = display
++        .chars()
++        .take(MAX_NATIVE_WAIT_TOOL_NAME_CHARS)
++        .collect();
++    format!("{truncated}…")
+ }
+ 
+ fn goal_context_input_item(prompt: String) -> ResponseItem {
+diff --git a/codex-rs/ext/goal/src/waiting_world_state.rs b/codex-rs/ext/goal/src/waiting_world_state.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3861777df6bc9da81f5bb634613e91e373806717
+--- /dev/null
++++ b/codex-rs/ext/goal/src/waiting_world_state.rs
+@@ -0,0 +1,140 @@
++//! Waiting guidance as a change-diffed World State section.
++//!
++//! Goal renders the §9 waiting-capability sentences for the current sampling
++//! step through this section. The harness persists each step's snapshot and
++//! renders a fragment only when it differs, so identical capabilities add no
++//! new context across sampling steps or turn boundaries, while a capability
++//! change (or the goal stopping) surfaces on the very next request. Threads
++//! that never activate a goal contribute no section at all.
++
++use codex_extension_api::PreviousWorldStateSection;
++use codex_extension_api::RenderedWorldStateFragment;
++use codex_extension_api::WaitingCapabilities;
++use codex_extension_api::WorldStateSectionContribution;
++use serde_json::Value;
++
++use crate::steering::WAITING_EXEC_NOTIFY;
++use crate::steering::WAITING_NO_EXEC_NOTIFY;
++use crate::steering::render_native_wait_tool_name;
++
++/// Stable section id, persisted in rollouts.
++pub(crate) const WORLD_STATE_ID: &str = "goal_waiting_guidance";
++
++const START_MARKER: &str = "<goal_waiting_guidance>";
++const END_MARKER: &str = "</goal_waiting_guidance>";
++
++/// One-shot correction rendered on the active→inactive transition.
++///
++/// Static and bounded; pinned byte-exact in `ext/goal/tests`.
++pub(crate) const WAITING_GUIDANCE_RETRACTION: &str =
++    "Waiting guidance given earlier in this thread no longer applies; the goal is not active.";
++
++/// Builds this step's waiting-guidance sections: zero or one.
++///
++/// While the goal is active (`goal_active`, the P2 `GoalActivity` scope:
++/// Active or BudgetLimited), contributes the capability snapshot for this
++/// step's [`WaitingCapabilities`]. When the goal is not active, contributes a
++/// `false` snapshot exactly when a previous entry exists, so the harness
++/// renders one retraction; otherwise contributes nothing, keeping a zero
++/// footprint for threads that never had an active goal.
++pub(crate) fn goal_waiting_guidance_sections(
++    goal_active: bool,
++    capabilities: &WaitingCapabilities,
++    previous_world_state: Option<&serde_json::Map<String, Value>>,
++) -> Vec<WorldStateSectionContribution> {
++    let previously_recorded =
++        previous_world_state.is_some_and(|state| state.contains_key(WORLD_STATE_ID));
++    if !goal_active && !previously_recorded {
++        return Vec::new();
++    }
++    vec![if goal_active {
++        active_section(capabilities)
++    } else {
++        inactive_section()
++    }]
++}
++
++/// Comparison snapshot for one sampling step: the five capability flags plus
++/// the capped native wait display name.
++///
++/// The name is the same string the fragment shows, so names differing only
++/// beyond the cap compare equal and cannot churn the section. An absent name
++/// is omitted rather than null: core strips null object fields before it
++/// persists a snapshot, so a null field would never equal the restored
++/// previous snapshot and would re-render the fragment on every step.
++fn waiting_guidance_snapshot(capabilities: &WaitingCapabilities) -> Value {
++    let mut snapshot = serde_json::json!({
++        "exec_notify": capabilities.exec_notify,
++        "native_mail_wait": capabilities.native_mail_wait,
++        "sleep": capabilities.sleep,
++        "stdin": capabilities.stdin,
++    });
++    if let Some(native_wait) = capabilities.native_wait.as_ref() {
++        snapshot["native_wait"] = Value::String(render_native_wait_tool_name(native_wait));
++    }
++    snapshot
++}
++
++fn active_section(capabilities: &WaitingCapabilities) -> WorldStateSectionContribution {
++    let snapshot = waiting_guidance_snapshot(capabilities);
++    // The world-state envelope replaces the turn-context slot and content
++    // kind; only the §9 sentence text is reused.
++    let body = crate::steering::waiting_capability_fragments(capabilities)
++        .first()
++        .map(|fragment| fragment.text().to_string())
++        .unwrap_or_default();
++    WorldStateSectionContribution::new(WORLD_STATE_ID, snapshot.clone(), move |previous| {
++        let changed = match previous {
++            PreviousWorldStateSection::Known(previous) => previous != &snapshot,
++            // Activation, or a re-render after compaction evicted the
++            // fragment while the snapshot survived (core maps that to Absent
++            // via the retained matcher below).
++            PreviousWorldStateSection::Absent => true,
++            // Unreachable: no legacy matcher is registered. Fail visible,
++            // because an untyped history hit cannot prove the five flags and
++            // the tool name still match.
++            PreviousWorldStateSection::Unknown => true,
++        };
++        changed.then(|| {
++            RenderedWorldStateFragment::new("developer", (START_MARKER, END_MARKER), body.clone())
++        })
++    })
++    .with_retained_fragment_matcher(is_active_waiting_guidance_fragment)
++}
++
++fn inactive_section() -> WorldStateSectionContribution {
++    WorldStateSectionContribution::new(WORLD_STATE_ID, Value::Bool(false), |previous| {
++        let retract = match previous {
++            // Already retracted: stay silent.
++            PreviousWorldStateSection::Known(Value::Bool(false)) => false,
++            // A recorded active snapshot means stale guidance may still be
++            // model-visible: correct it exactly once.
++            PreviousWorldStateSection::Known(_) => true,
++            // No recorded entry (defensive: the contributor skips the section
++            // in this case): nothing to correct.
++            PreviousWorldStateSection::Absent => false,
++            // Unreachable without a legacy matcher; mirror the template by
++            // correcting possibly-stale history.
++            PreviousWorldStateSection::Unknown => true,
++        };
++        retract.then(|| {
++            RenderedWorldStateFragment::new(
++                "developer",
++                (START_MARKER, END_MARKER),
++                WAITING_GUIDANCE_RETRACTION,
++            )
++        })
++    })
++}
++
++/// Recognizes this section's active fragment in retained model history.
++///
++/// Requires the section markers plus one of the two mutually exclusive exec
++/// sentences, so the marker-sharing retraction never counts as retained
++/// guidance (which would suppress the re-render after compaction).
++fn is_active_waiting_guidance_fragment(role: &str, text: &str) -> bool {
++    role == "developer"
++        && text.trim_start().starts_with(START_MARKER)
++        && text.trim_end().ends_with(END_MARKER)
++        && (text.contains(WAITING_EXEC_NOTIFY) || text.contains(WAITING_NO_EXEC_NOTIFY))
++}
+diff --git a/codex-rs/ext/goal/templates/goals/continuation.md b/codex-rs/ext/goal/templates/goals/continuation.md
+index 0e0a273389d62226c31e1d28b1bd8dbae0ccbda8..bba7f894733a3d51480dd6ef7531580751c06d58 100644
+--- a/codex-rs/ext/goal/templates/goals/continuation.md
++++ b/codex-rs/ext/goal/templates/goals/continuation.md
+@@ -21,7 +21,7 @@ Use the current worktree and external state as authoritative. Previous conversat
+ 
+ No-progress check:
+ - Classify the previous goal turn as progress, a verified wait, or no progress. Progress changes authoritative state, completes work, or yields evidence that changes the next action; status restatements and unexecuted plans are no progress.
+-- A verified wait polls a specific process, session, job, or tool handle confirmed live now. Conversation, intent, prior output, or a lock or state file alone is insufficient. Treat work as stopped only when authoritative state says it is terminal or its handle is missing. An observation timeout or transient polling failure is not terminal: re-poll the same handle or inspect other authoritative state; never restart solely because observation expired.
++- A verified wait uses a concrete work handle or a runtime-acknowledged completion subscription. A fresh liveness poll is not required on every turn. Do independent work first. When only waiting remains, use the waiting capabilities supplied by the runtime for this sampling step. An acknowledged subscription permits ending the turn while the runtime waits; a session ID alone does not. Otherwise prefer a single long, input-interruptible wait to repeated short checks. The runtime controls continuation delays and check-in limits; do not simulate them with short polling loops. Conversation, intent, old output, and lock or state files alone are not current liveness evidence. A missing handle, observation timeout, failed lookup, or transient read error does not prove completion: distinguish a terminal result from lost observation before restarting work. Waiting alone is not a blocker, and it is not goal completion.
+ - Revalidate a no-progress turn and take the next available safe action. If none exists because the same genuine blocker remains, report it and leave the goal active until the blocked audit threshold is met. Treat equivalent blockers as the same condition across turns even when their wording or stated next step changes.
+ 
+ Progress visibility:
+diff --git a/codex-rs/ext/goal/tests/steering.rs b/codex-rs/ext/goal/tests/steering.rs
+index ba8bb468427e6e43d39e43311651a8d06b6831cc..c3f5302b56b2c3fe65cf38c8c62da81a3ebce68d 100644
+--- a/codex-rs/ext/goal/tests/steering.rs
++++ b/codex-rs/ext/goal/tests/steering.rs
+@@ -7,6 +7,8 @@ mod steering;
+ use codex_core::context::ContextualUserFragment;
+ use codex_core::context::InternalContextSource;
+ use codex_core::context::InternalModelContextFragment;
++use codex_extension_api::ContentItemKind;
++use codex_extension_api::PromptSlot;
+ use codex_extension_api::ToolName;
+ use codex_extension_api::WaitingCapabilities;
+ use codex_protocol::ThreadId;
+@@ -70,24 +72,301 @@ fn test_goal(objective: &str) -> ThreadGoal {
+     }
+ }
+ 
++/// Byte-exact §9 verified-wait paragraph (without the "- " bullet prefix).
++const SECTION_NINE_CONTRACT_PARAGRAPH: &str = "A verified wait uses a concrete work handle or a runtime-acknowledged completion subscription. A fresh liveness poll is not required on every turn. Do independent work first. When only waiting remains, use the waiting capabilities supplied by the runtime for this sampling step. An acknowledged subscription permits ending the turn while the runtime waits; a session ID alone does not. Otherwise prefer a single long, input-interruptible wait to repeated short checks. The runtime controls continuation delays and check-in limits; do not simulate them with short polling loops. Conversation, intent, old output, and lock or state files alone are not current liveness evidence. A missing handle, observation timeout, failed lookup, or transient read error does not prove completion: distinguish a terminal result from lost observation before restarting work. Waiting alone is not a blocker, and it is not goal completion.";
++
++fn continuation_text(objective: &str, update_plan_enabled: bool) -> String {
++    let item = steering::continuation_steering_item(&test_goal(objective), update_plan_enabled);
++    let ResponseItem::Message { content, .. } = item else {
++        panic!("expected goal continuation message");
++    };
++    let [ContentItem::InputText { text }] = content.as_slice() else {
++        panic!("expected goal continuation text");
++    };
++    text.clone()
++}
++
+ #[test]
+-fn waiting_capabilities_reach_goal_renderer_without_prompt_text() {
+-    // The snapshot leaf threads the snapshot through to the goal contributor
+-    // without rendering guidance; the continuation-guidance leaf owns this
+-    // renderer's evolution.
+-    for capabilities in [
+-        WaitingCapabilities::none(),
+-        WaitingCapabilities {
+-            sleep: true,
+-            stdin: true,
+-            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
+-            exec_notify: true,
+-            native_mail_wait: true,
+-        },
+-    ] {
+-        assert_eq!(
+-            steering::waiting_capability_fragments(&capabilities),
+-            Vec::new(),
++fn continuation_prompt_carries_section_nine_verified_wait_contract() {
++    // AC1: both template variants (with and without update_plan) render the
++    // exact §9 paragraph as a bullet and none of the removed text.
++    for update_plan_enabled in [true, false] {
++        let text = continuation_text("Finish the feature.", update_plan_enabled);
++        let expected_bullet = format!("- {SECTION_NINE_CONTRACT_PARAGRAPH}");
++        assert!(
++            text.contains(expected_bullet.as_str()),
++            "update_plan_enabled={update_plan_enabled}: missing §9 paragraph in:\n{text}",
++        );
++        assert!(
++            !text.contains("confirmed live now"),
++            "update_plan_enabled={update_plan_enabled}: removed text present in:\n{text}",
++        );
++        assert!(
++            !text.contains("never restart solely because observation expired"),
++            "update_plan_enabled={update_plan_enabled}: removed text present in:\n{text}",
+         );
+     }
+ }
++
++#[test]
++fn waiting_guidance_constants_match_section_nine_texts() {
++    // AC2/AC8: pins the renderer constants to the byte-exact §9 sentences so
++    // a rewording mutant fails here rather than silently drifting the prompt.
++    assert_eq!(
++        steering::WAITING_EXEC_NOTIFY,
++        "exec_command can acknowledge notify_on_exit subscriptions. For finite background work, request a notification; after the tool acknowledges it, do independent work and then end the turn. Its completion will be delivered by the runtime. Use write_stdin only for needed intermediate output or interaction. Use exec_notification to read retained terminal output or release a mistaken subscription without terminating the process."
++    );
++    assert_eq!(
++        steering::WAITING_NO_EXEC_NOTIFY,
++        "This session cannot promise an exec completion wake. A yielded exec session by itself is not a reason to expect automatic resumption."
++    );
++    assert_eq!(
++        steering::WAITING_SLEEP,
++        "clock.sleep is available as a direct tool. Use a substantial input-interruptible wait when a notification subscription is unavailable. Do not place clock.sleep inside a code-mode exec cell."
++    );
++    assert_eq!(
++        steering::WAITING_STDIN,
++        "An empty write_stdin with a long yield_time_ms can wait for one known live exec session. Read again early only when intermediate output is needed to decide the next action."
++    );
++    assert_eq!(
++        steering::WAITING_NATIVE_WAIT,
++        "The native agent wait tool is available for Codex-managed children. Pass multiple child identifiers where that tool supports them to wait for whichever changes first. It cannot observe arbitrary shell or remote jobs."
++    );
++    assert_eq!(
++        steering::WAITING_NATIVE_MAIL_WAIT,
++        "When this active goal yields with owned native child work still running, the runtime can wait for child mailbox results. Do not repeatedly inspect child logs merely to keep the goal alive."
++    );
++}
++
++#[test]
++fn waiting_guidance_renders_exact_sentences_in_fixed_order() {
++    // AC2: one developer-capabilities fragment; the exec sentence first, then
++    // sleep, stdin, native wait (with the snapshot's actual tool name), and
++    // native mail wait. The deferred no-wait/end-turn paragraph is absent.
++    let fragments = steering::waiting_capability_fragments(&WaitingCapabilities {
++        sleep: true,
++        stdin: true,
++        native_wait: Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++        exec_notify: true,
++        native_mail_wait: true,
++    });
++    assert_eq!(fragments.len(), 1);
++    let fragment = &fragments[0];
++    assert_eq!(fragment.slot(), PromptSlot::DeveloperCapabilities);
++    assert_eq!(
++        fragment.content_kind(),
++        &ContentItemKind("goal.waiting_capabilities".to_string()),
++    );
++    let native_line = format!(
++        "{} (Tool name: multi_agent_v1.wait_agent.)",
++        steering::WAITING_NATIVE_WAIT
++    );
++    let expected = [
++        steering::WAITING_EXEC_NOTIFY,
++        steering::WAITING_SLEEP,
++        steering::WAITING_STDIN,
++        native_line.as_str(),
++        steering::WAITING_NATIVE_MAIL_WAIT,
++    ]
++    .join("\n");
++    assert_eq!(fragment.text(), expected);
++    assert!(
++        !fragment.text().contains("No blocking or notification wait"),
++        "deferred no-wait paragraph must not render: {}",
++        fragment.text(),
++    );
++}
++
++#[test]
++fn waiting_guidance_selects_sentences_per_flag() {
++    // AC2: exactly one exec sentence always; every other sentence iff its
++    // flag, with the snapshot's actual (not hard-coded) native wait name.
++    let fragments = steering::waiting_capability_fragments(&WaitingCapabilities::none());
++    assert_eq!(fragments.len(), 1);
++    assert_eq!(fragments[0].text(), steering::WAITING_NO_EXEC_NOTIFY);
++
++    for (capabilities, present, absent) in [
++        (
++            WaitingCapabilities {
++                sleep: true,
++                ..WaitingCapabilities::none()
++            },
++            vec![steering::WAITING_SLEEP, steering::WAITING_NO_EXEC_NOTIFY],
++            vec![
++                steering::WAITING_EXEC_NOTIFY,
++                steering::WAITING_STDIN,
++                steering::WAITING_NATIVE_WAIT,
++                steering::WAITING_NATIVE_MAIL_WAIT,
++            ],
++        ),
++        (
++            WaitingCapabilities {
++                stdin: true,
++                native_mail_wait: true,
++                ..WaitingCapabilities::none()
++            },
++            vec![
++                steering::WAITING_STDIN,
++                steering::WAITING_NATIVE_MAIL_WAIT,
++                steering::WAITING_NO_EXEC_NOTIFY,
++            ],
++            vec![
++                steering::WAITING_EXEC_NOTIFY,
++                steering::WAITING_SLEEP,
++                steering::WAITING_NATIVE_WAIT,
++            ],
++        ),
++        (
++            WaitingCapabilities {
++                exec_notify: true,
++                native_wait: Some(ToolName::namespaced("custom_wait_ns", "wait_agent")),
++                ..WaitingCapabilities::none()
++            },
++            vec![steering::WAITING_EXEC_NOTIFY, steering::WAITING_NATIVE_WAIT],
++            vec![
++                steering::WAITING_NO_EXEC_NOTIFY,
++                steering::WAITING_SLEEP,
++                steering::WAITING_STDIN,
++                steering::WAITING_NATIVE_MAIL_WAIT,
++            ],
++        ),
++    ] {
++        let fragments = steering::waiting_capability_fragments(&capabilities);
++        assert_eq!(fragments.len(), 1);
++        let text = fragments[0].text().to_string();
++        for sentence in present {
++            assert!(text.contains(sentence), "missing {sentence} in:\n{text}");
++        }
++        for sentence in absent {
++            assert!(
++                !text.contains(sentence),
++                "unexpected {sentence} in:\n{text}"
++            );
++        }
++    }
++
++    let fragments = steering::waiting_capability_fragments(&WaitingCapabilities {
++        native_wait: Some(ToolName::namespaced("custom_wait_ns", "wait_agent")),
++        ..WaitingCapabilities::none()
++    });
++    assert!(
++        fragments[0].text().contains("custom_wait_ns.wait_agent"),
++        "native wait must render the snapshot's actual name: {}",
++        fragments[0].text(),
++    );
++    let fragments = steering::waiting_capability_fragments(&WaitingCapabilities {
++        native_wait: Some(ToolName::plain("wait_agent")),
++        ..WaitingCapabilities::none()
++    });
++    assert!(
++        fragments[0].text().contains("(Tool name: wait_agent.)"),
++        "plain native wait name must render bare: {}",
++        fragments[0].text(),
++    );
++}
++
++// AC4 bounds: 3 KiB and 1,000 tokens for the maximal fragment.
++const MAX_WAITING_GUIDANCE_BYTES: usize = 3072;
++const MAX_WAITING_GUIDANCE_TOKENS: usize = 1000;
++
++/// Repo token estimate: `codex_utils_string::approx_tokens_from_byte_count`
++/// is `ceil(bytes / 4)` (`APPROX_BYTES_PER_TOKEN = 4`). Computed inline so
++/// this crate gains no new dev-dependency (and no `Cargo.lock` churn).
++fn approx_tokens(text: &str) -> usize {
++    text.len().div_ceil(4)
++}
++
++#[test]
++fn waiting_guidance_fragment_is_bounded_over_every_flag_combination() {
++    // AC4: every combination of the four boolean flags crossed with native
++    // wait absent, short-named, overlong ASCII, and overlong wide-character
++    // names stays within both bounds.
++    let overlong = format!("{}.{}", "n".repeat(100), "w".repeat(100));
++    assert!(overlong.len() > steering::MAX_NATIVE_WAIT_TOOL_NAME_CHARS);
++    // Four-byte characters maximize the byte length under the character cap.
++    let overlong_wide = "𝄞".repeat(steering::MAX_NATIVE_WAIT_TOOL_NAME_CHARS + 40);
++    let native_names = [
++        None,
++        Some(ToolName::plain("wait_agent")),
++        Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++        Some(ToolName::plain(overlong)),
++        Some(ToolName::plain(overlong_wide)),
++    ];
++    let mut max_bytes = 0;
++    let mut max_tokens = 0;
++    for bits in 0..16u8 {
++        for native_wait in &native_names {
++            let capabilities = WaitingCapabilities {
++                sleep: bits & 0b0001 != 0,
++                stdin: bits & 0b0010 != 0,
++                native_wait: native_wait.clone(),
++                exec_notify: bits & 0b0100 != 0,
++                native_mail_wait: bits & 0b1000 != 0,
++            };
++            let fragments = steering::waiting_capability_fragments(&capabilities);
++            assert_eq!(fragments.len(), 1);
++            let text = fragments[0].text();
++            max_bytes = max_bytes.max(text.len());
++            max_tokens = max_tokens.max(approx_tokens(text));
++            assert!(
++                text.len() <= MAX_WAITING_GUIDANCE_BYTES,
++                "fragment exceeds 3 KiB for {capabilities:?}: {} bytes",
++                text.len(),
++            );
++            assert!(
++                approx_tokens(text) <= MAX_WAITING_GUIDANCE_TOKENS,
++                "fragment exceeds 1K tokens for {capabilities:?}: {} tokens",
++                approx_tokens(text),
++            );
++        }
++    }
++    assert!(
++        max_bytes > 0 && max_tokens > 0,
++        "bound test must observe a non-empty maximal fragment"
++    );
++}
++
++#[test]
++fn waiting_guidance_native_wait_tool_name_is_capped() {
++    // AC4/AC8: the only variable datum is hard-capped; overlong names
++    // truncate at a character boundary with a trailing ellipsis, short names
++    // render untouched.
++    let cap = steering::MAX_NATIVE_WAIT_TOOL_NAME_CHARS;
++    let long_name = "w".repeat(cap + 72);
++    let fragments = steering::waiting_capability_fragments(&WaitingCapabilities {
++        native_wait: Some(ToolName::plain(long_name)),
++        ..WaitingCapabilities::none()
++    });
++    let expected = format!("{}…", "w".repeat(cap));
++    let expected_line = format!("(Tool name: {expected}.)");
++    assert!(
++        fragments[0].text().contains(expected_line.as_str()),
++        "overlong name must truncate to {cap} chars plus ellipsis: {}",
++        fragments[0].text(),
++    );
++
++    let wide_name: String = "é".repeat(cap + 10);
++    let fragments = steering::waiting_capability_fragments(&WaitingCapabilities {
++        native_wait: Some(ToolName::plain(wide_name)),
++        ..WaitingCapabilities::none()
++    });
++    let expected = format!("{}…", "é".repeat(cap));
++    let expected_line = format!("(Tool name: {expected}.)");
++    assert!(
++        fragments[0].text().contains(expected_line.as_str()),
++        "multibyte truncation must respect character boundaries: {}",
++        fragments[0].text(),
++    );
++
++    let exact_name = "w".repeat(cap);
++    let fragments = steering::waiting_capability_fragments(&WaitingCapabilities {
++        native_wait: Some(ToolName::plain(exact_name.clone())),
++        ..WaitingCapabilities::none()
++    });
++    let expected_line = format!("(Tool name: {exact_name}.)");
++    assert!(
++        fragments[0].text().contains(expected_line.as_str()),
++        "at-cap name must render untruncated: {}",
++        fragments[0].text(),
++    );
++}
+diff --git a/codex-rs/ext/goal/tests/waiting_world_state.rs b/codex-rs/ext/goal/tests/waiting_world_state.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..75550cef1fa8784564678e9b7bd24dad06379542
+--- /dev/null
++++ b/codex-rs/ext/goal/tests/waiting_world_state.rs
+@@ -0,0 +1,320 @@
++//! Unit tests for the goal waiting-guidance World State section.
++//!
++//! Pins the zero-footprint rule, the render-diff arms (including the
++//! unreachable `Unknown` arms), the byte-exact retraction, the retained
++//! matcher that distinguishes active guidance from the retraction, and the
++//! bounded comparison snapshot.
++#![allow(dead_code)]
++
++#[path = "../src/steering.rs"]
++mod steering;
++#[path = "../src/waiting_world_state.rs"]
++mod waiting_world_state;
++
++use codex_extension_api::PreviousWorldStateSection;
++use codex_extension_api::ToolName;
++use codex_extension_api::WaitingCapabilities;
++use codex_extension_api::WorldStateSectionContribution;
++use pretty_assertions::assert_eq;
++use pretty_assertions::assert_ne;
++use serde_json::Map;
++use serde_json::Value;
++
++fn active_capabilities() -> WaitingCapabilities {
++    WaitingCapabilities {
++        sleep: true,
++        stdin: true,
++        native_wait: Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++        exec_notify: false,
++        native_mail_wait: false,
++    }
++}
++
++fn sections(
++    goal_active: bool,
++    capabilities: &WaitingCapabilities,
++    previous: Option<&Map<String, Value>>,
++) -> Vec<WorldStateSectionContribution> {
++    waiting_world_state::goal_waiting_guidance_sections(goal_active, capabilities, previous)
++}
++
++fn single_section(
++    goal_active: bool,
++    capabilities: &WaitingCapabilities,
++    previous: Option<&Map<String, Value>>,
++) -> WorldStateSectionContribution {
++    let sections = sections(goal_active, capabilities, previous);
++    assert_eq!(sections.len(), 1);
++    let Some(section) = sections.into_iter().next() else {
++        panic!("expected exactly one waiting-guidance section");
++    };
++    section
++}
++
++fn rendered_text(
++    section: &WorldStateSectionContribution,
++    previous: PreviousWorldStateSection,
++) -> String {
++    let Some(fragment) = section.render_diff(previous) else {
++        panic!("expected a rendered waiting-guidance fragment");
++    };
++    assert_eq!(fragment.role(), "developer");
++    let (start, end) = fragment.markers();
++    let body = fragment.body();
++    format!("{start}{body}{end}")
++}
++
++#[test]
++fn waiting_guidance_world_state_retraction_is_pinned_byte_exact() {
++    assert_eq!(
++        waiting_world_state::WAITING_GUIDANCE_RETRACTION,
++        "Waiting guidance given earlier in this thread no longer applies; the goal is not active."
++    );
++}
++
++#[test]
++fn waiting_guidance_world_state_zero_footprint_without_previous_entry() {
++    // Inactive goal, no recorded entry: no section at all, so threads that
++    // never had an active goal keep a zero footprint (no snapshot entry, no
++    // model-visible change).
++    let capabilities = WaitingCapabilities::none();
++    assert!(sections(false, &capabilities, None).is_empty());
++    assert!(sections(false, &capabilities, Some(&Map::new())).is_empty());
++    let mut unrelated = Map::new();
++    unrelated.insert("other_section".to_string(), Value::Bool(true));
++    assert!(sections(false, &capabilities, Some(&unrelated)).is_empty());
++    // An active goal always contributes, even without a previous entry.
++    assert_eq!(sections(true, &capabilities, None).len(), 1);
++}
++
++#[test]
++fn waiting_guidance_world_state_active_renders_full_fragment_on_absent() {
++    let capabilities = active_capabilities();
++    let section = single_section(true, &capabilities, None);
++    assert_eq!(section.id(), waiting_world_state::WORLD_STATE_ID);
++    let snapshot = section.snapshot().clone();
++    assert!(snapshot.is_object());
++    let text = rendered_text(&section, PreviousWorldStateSection::Absent);
++    let expected_body = steering::waiting_capability_fragments(&capabilities)
++        .first()
++        .map(|fragment| fragment.text().to_string())
++        .unwrap_or_default();
++    assert!(text.contains(expected_body.as_str()));
++    assert!(text.contains("multi_agent_v1.wait_agent"));
++    assert!(section.has_retained_fragment_matcher());
++    assert!(section.matches_retained_fragment("developer", text.as_str()));
++}
++
++#[test]
++fn waiting_guidance_world_state_unchanged_snapshot_renders_nothing() {
++    let capabilities = active_capabilities();
++    let section = single_section(true, &capabilities, None);
++    let snapshot = section.snapshot().clone();
++    assert!(
++        section
++            .render_diff(PreviousWorldStateSection::Known(&snapshot))
++            .is_none()
++    );
++}
++
++#[test]
++fn waiting_guidance_world_state_changed_snapshot_renders_again() {
++    let capabilities = active_capabilities();
++    let section = single_section(true, &capabilities, None);
++    // A different active snapshot re-renders the full current fragment.
++    let other = waiting_world_state::goal_waiting_guidance_sections(
++        true,
++        &WaitingCapabilities::none(),
++        None,
++    );
++    assert_eq!(other.len(), 1);
++    let other_snapshot = other[0].snapshot().clone();
++    assert_ne!(other_snapshot, *section.snapshot());
++    let text = rendered_text(&section, PreviousWorldStateSection::Known(&other_snapshot));
++    assert!(text.contains("multi_agent_v1.wait_agent"));
++    // Reactivation after a retraction renders as well.
++    let reactivated = rendered_text(
++        &section,
++        PreviousWorldStateSection::Known(&Value::Bool(false)),
++    );
++    assert!(reactivated.contains("multi_agent_v1.wait_agent"));
++}
++
++#[test]
++fn waiting_guidance_world_state_unknown_arms_fail_visible() {
++    // No legacy matcher is registered, so `Unknown` is unreachable in
++    // production; both arms are pinned to fail visible. An untyped history
++    // hit cannot prove the five flags and the tool name still match, and a
++    // possibly-stale history under an inactive goal must be corrected.
++    let capabilities = active_capabilities();
++    let active = single_section(true, &capabilities, None);
++    let text = rendered_text(&active, PreviousWorldStateSection::Unknown);
++    assert!(text.contains("multi_agent_v1.wait_agent"));
++
++    let mut previous = Map::new();
++    previous.insert(
++        waiting_world_state::WORLD_STATE_ID.to_string(),
++        active.snapshot().clone(),
++    );
++    let inactive = single_section(false, &WaitingCapabilities::none(), Some(&previous));
++    let retraction = rendered_text(&inactive, PreviousWorldStateSection::Unknown);
++    let expected = format!(
++        "<goal_waiting_guidance>{}</goal_waiting_guidance>",
++        waiting_world_state::WAITING_GUIDANCE_RETRACTION
++    );
++    assert_eq!(retraction, expected);
++}
++
++#[test]
++fn waiting_guidance_world_state_retracts_on_active_to_inactive() {
++    let capabilities = active_capabilities();
++    let active = single_section(true, &capabilities, None);
++    let active_snapshot = active.snapshot().clone();
++    let mut previous = Map::new();
++    previous.insert(
++        waiting_world_state::WORLD_STATE_ID.to_string(),
++        active_snapshot.clone(),
++    );
++    let inactive = single_section(false, &WaitingCapabilities::none(), Some(&previous));
++    assert_eq!(inactive.id(), waiting_world_state::WORLD_STATE_ID);
++    assert_eq!(*inactive.snapshot(), Value::Bool(false));
++    assert!(!inactive.has_retained_fragment_matcher());
++
++    // The recorded active snapshot means stale guidance may still be
++    // model-visible: exactly one retraction, byte-exact.
++    let Some(fragment) = inactive.render_diff(PreviousWorldStateSection::Known(&active_snapshot))
++    else {
++        panic!("expected exactly one retraction");
++    };
++    assert_eq!(fragment.role(), "developer");
++    assert_eq!(
++        fragment.body(),
++        waiting_world_state::WAITING_GUIDANCE_RETRACTION
++    );
++
++    // Already retracted, or defensively no recorded entry: stay silent.
++    assert!(
++        inactive
++            .render_diff(PreviousWorldStateSection::Known(&Value::Bool(false)))
++            .is_none()
++    );
++    assert!(
++        inactive
++            .render_diff(PreviousWorldStateSection::Absent)
++            .is_none()
++    );
++}
++
++#[test]
++fn waiting_guidance_world_state_retained_matcher_distinguishes_active_from_retraction() {
++    let active = single_section(true, &active_capabilities(), None);
++    let active_text = rendered_text(&active, PreviousWorldStateSection::Absent);
++    assert!(active.matches_retained_fragment("developer", active_text.as_str()));
++
++    // The positive-exec variant counts as retained guidance too.
++    let positive = single_section(
++        true,
++        &WaitingCapabilities {
++            exec_notify: true,
++            ..WaitingCapabilities::none()
++        },
++        None,
++    );
++    let positive_text = rendered_text(&positive, PreviousWorldStateSection::Absent);
++    assert!(active.matches_retained_fragment("developer", positive_text.as_str()));
++
++    // The marker-sharing retraction is never retained guidance: matching it
++    // would suppress the re-render after compaction evicted the real thing.
++    let mut previous = Map::new();
++    previous.insert(
++        waiting_world_state::WORLD_STATE_ID.to_string(),
++        active.snapshot().clone(),
++    );
++    let inactive = single_section(false, &WaitingCapabilities::none(), Some(&previous));
++    let retraction = rendered_text(
++        &inactive,
++        PreviousWorldStateSection::Known(active.snapshot()),
++    );
++    assert!(!active.matches_retained_fragment("developer", retraction.as_str()));
++
++    // Wrong role, unmarked text, and bare markers never match.
++    assert!(!active.matches_retained_fragment("user", active_text.as_str()));
++    assert!(!active.matches_retained_fragment("developer", "waiting guidance"));
++    assert!(!active.matches_retained_fragment(
++        "developer",
++        "<goal_waiting_guidance></goal_waiting_guidance>"
++    ));
++}
++
++#[test]
++fn waiting_guidance_world_state_snapshot_is_bounded_and_capped() {
++    // The snapshot carries the five flags plus the capped display name: the
++    // same string the fragment shows.
++    let overlong = "w".repeat(steering::MAX_NATIVE_WAIT_TOOL_NAME_CHARS + 40);
++    let capabilities = WaitingCapabilities {
++        sleep: true,
++        stdin: true,
++        native_wait: Some(ToolName::plain(overlong)),
++        exec_notify: true,
++        native_mail_wait: true,
++    };
++    let section = single_section(true, &capabilities, None);
++    let snapshot = section.snapshot();
++    let expected_name = format!("{}…", "w".repeat(steering::MAX_NATIVE_WAIT_TOOL_NAME_CHARS));
++    assert_eq!(
++        snapshot,
++        &serde_json::json!({
++            "exec_notify": true,
++            "native_mail_wait": true,
++            "native_wait": expected_name,
++            "sleep": true,
++            "stdin": true,
++        })
++    );
++    let serialized = serde_json::to_string(snapshot).unwrap_or_default();
++    assert!(
++        serialized.len() <= 512,
++        "snapshot must stay small in rollouts: {serialized}"
++    );
++
++    // An absent native wait is omitted, never null: core strips null object
++    // fields before persisting, so a null would never compare equal again.
++    let plain = single_section(true, &WaitingCapabilities::none(), None);
++    assert_eq!(
++        plain.snapshot(),
++        &serde_json::json!({
++            "exec_notify": false,
++            "native_mail_wait": false,
++            "sleep": false,
++            "stdin": false,
++        })
++    );
++}
++
++#[test]
++fn waiting_guidance_world_state_snapshot_ignores_beyond_cap_name_differences() {
++    // Names differing only beyond the cap render identically, so their
++    // snapshots compare equal and cannot churn the section.
++    let cap = steering::MAX_NATIVE_WAIT_TOOL_NAME_CHARS;
++    let left = single_section(
++        true,
++        &WaitingCapabilities {
++            native_wait: Some(ToolName::plain(format!("{}-left", "w".repeat(cap)))),
++            ..WaitingCapabilities::none()
++        },
++        None,
++    );
++    let right = single_section(
++        true,
++        &WaitingCapabilities {
++            native_wait: Some(ToolName::plain(format!("{}-right", "w".repeat(cap)))),
++            ..WaitingCapabilities::none()
++        },
++        None,
++    );
++    assert_eq!(left.snapshot(), right.snapshot());
++    assert!(
++        left.render_diff(PreviousWorldStateSection::Known(right.snapshot()))
++            .is_none()
++    );
++}
+diff --git a/codex-rs/ext/skills/tests/skills_extension.rs b/codex-rs/ext/skills/tests/skills_extension.rs
+index 5d7ddc6be07bb3f49e279eba80d02430b3688e9c..f13b7625fc6530518fc3876be9d152769805bee1 100644
+--- a/codex-rs/ext/skills/tests/skills_extension.rs
++++ b/codex-rs/ext/skills/tests/skills_extension.rs
+@@ -30,6 +30,7 @@ use codex_extension_api::ToolCallSource;
+ use codex_extension_api::ToolPayload;
+ use codex_extension_api::TurnInputContext;
+ use codex_extension_api::TurnStartInput;
++use codex_extension_api::WaitingCapabilities;
+ use codex_extension_api::WorldStateContributionInput;
+ use codex_extension_api::WorldStateSectionContribution;
+ use codex_models_manager::model_info::model_info_from_slug;
+@@ -132,6 +133,7 @@ async fn skill_world_state_fragments(
+     }];
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -317,6 +319,7 @@ async fn host_world_state_records_catalog_metrics_on_publish_and_change() -> Tes
+ 
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -345,6 +348,7 @@ async fn host_world_state_records_catalog_metrics_on_publish_and_change() -> Tes
+ 
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -383,6 +387,7 @@ async fn host_world_state_records_catalog_metrics_on_publish_and_change() -> Tes
+     turn_store.insert(HostSkillsSnapshot::new(Arc::new(outcome)));
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -455,6 +460,7 @@ async fn persisted_host_snapshot_deduplicates_warning_after_reinitialization() -
+     turn_store.insert(host_snapshot.clone());
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &model_info,
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -497,6 +503,7 @@ async fn persisted_host_snapshot_deduplicates_warning_after_reinitialization() -
+     resumed_turn_store.insert(host_snapshot);
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &model_info,
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -588,6 +595,7 @@ async fn executor_cloud_and_host_share_catalog_world_state_flow() -> TestResult
+     let metrics = Arc::new(RecordingMetrics::default());
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -697,6 +705,7 @@ async fn nonempty_executor_empty_host_records_catalog_metrics() -> TestResult {
+ 
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -776,6 +785,7 @@ async fn host_world_state_uses_provider_catalog_with_core_compatible_rendering()
+ 
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -857,6 +867,7 @@ async fn shadow_selection_uses_host_catalog_when_instructions_are_disabled() ->
+ 
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -1116,6 +1127,7 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
+     };
+     let available_sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -1175,6 +1187,7 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
+     let unavailable_turn_store = ExtensionData::new("turn-2");
+     let unavailable_sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: Some(&available_world_state),
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -1213,6 +1226,7 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
+     let restored_turn_store = ExtensionData::new("turn-3");
+     let restored_sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: Some(&unavailable_world_state),
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -1269,6 +1283,7 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
+     ] {
+         registry.context_contributors()[0]
+             .contribute_world_state(WorldStateContributionInput {
++                waiting_capabilities: &WaitingCapabilities::none(),
+                 previous_world_state: None,
+                 model_info: &catalog_model_info(),
+                 thread_id: codex_protocol::ThreadId::new(),
+@@ -1296,6 +1311,7 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
+     let listing_disabled_turn_store = ExtensionData::new("turn-4");
+     let listing_disabled_sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -1559,6 +1575,7 @@ async fn catalog_rebalances_only_to_avoid_omissions_and_retains_the_allocation()
+                 start_registered_turn(&registry, &session_store, &thread_store, &turn_id).await;
+                 let sections = registry.context_contributors()[0]
+                     .contribute_world_state(WorldStateContributionInput {
++                        waiting_capabilities: &WaitingCapabilities::none(),
+                         previous_world_state: Some(&previous),
+                         model_info: &model,
+                         thread_id: codex_protocol::ThreadId::new(),
+@@ -2180,6 +2197,7 @@ async fn root_qualified_locator_selects_only_the_matching_executor_skill() -> Te
+     let turn_store = ExtensionData::new("turn-1");
+     registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -2310,6 +2328,7 @@ async fn model_context_window_scales_executor_and_cloud_catalogs() -> TestResult
+     let turn_store = ExtensionData::new("turn-1");
+     let sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &model_info,
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -2326,6 +2345,7 @@ async fn model_context_window_scales_executor_and_cloud_catalogs() -> TestResult
+     // Core rebuilds world state before each sampling step.
+     let _repeated_sections = registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &model_info,
+             thread_id: codex_protocol::ThreadId::new(),
+@@ -2423,6 +2443,7 @@ async fn executor_catalog_emits_at_most_four_warnings() -> TestResult {
+ 
+     registry.context_contributors()[0]
+         .contribute_world_state(WorldStateContributionInput {
++            waiting_capabilities: &WaitingCapabilities::none(),
+             previous_world_state: None,
+             model_info: &catalog_model_info(),
+             thread_id: codex_protocol::ThreadId::new(),
+diff --git a/codex-rs/ext/skills/tests/skills_extension/presentation_dedup_tests.rs b/codex-rs/ext/skills/tests/skills_extension/presentation_dedup_tests.rs
+index ad078fba53d4f8e78153c599d03691bbbaa1ecb3..ca366fe9818d1b426f903d4d942578068e2cf84d 100644
+--- a/codex-rs/ext/skills/tests/skills_extension/presentation_dedup_tests.rs
++++ b/codex-rs/ext/skills/tests/skills_extension/presentation_dedup_tests.rs
+@@ -105,6 +105,7 @@ async fn cloud_preference_preserves_aliases_reads_and_executor_fallback() -> Tes
+             let turn_store = ExtensionData::new(stage);
+             let sections = registry.context_contributors()[0]
+                 .contribute_world_state(WorldStateContributionInput {
++                    waiting_capabilities: &WaitingCapabilities::none(),
+                     previous_world_state: Some(&previous),
+                     model_info: &model_info,
+                     thread_id: codex_protocol::ThreadId::new(),

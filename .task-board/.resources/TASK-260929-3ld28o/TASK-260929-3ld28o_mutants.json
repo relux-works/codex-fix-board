@@ -1,0 +1,66 @@
+[
+  {
+    "name": "file_completed_requires_auto_approved",
+    "patch": "--- a/codex-rs/ext/goal/src/accounting.rs\n+++ b/codex-rs/ext/goal/src/accounting.rs\n@@ -288,7 +288,8 @@\n     pub(crate) fn record_state_change_for_item(&self, turn_id: &str, item: &TurnItem) {\n         match item {\n             TurnItem::FileChange(item)\n-                if matches!(item.status, Some(PatchApplyStatus::Completed)) =>\n+                if matches!(item.status, Some(PatchApplyStatus::Completed))\n+                    && matches!(item.auto_approved, Some(true)) =>\n             {\n                 self.record_applied_file_change(turn_id);\n             }\n"
+  },
+  {
+    "name": "plan_transition_ignores_content",
+    "patch": "--- a/codex-rs/ext/goal/src/accounting.rs\n+++ b/codex-rs/ext/goal/src/accounting.rs\n@@ -266,7 +266,7 @@\n         let mut inner = self.inner();\n         let transition = match inner.last_committed_plan.as_deref() {\n             None => true,\n-            Some(previous) => !plans_equal(previous, new_plan),\n+            Some(previous) => previous.len() != new_plan.len(),\n         };\n         inner.last_committed_plan = Some(new_plan.to_vec());\n         if !transition {\n"
+  },
+  {
+    "name": "spawn_only_spawn_agent_counts",
+    "patch": "--- a/codex-rs/ext/goal/src/accounting.rs\n+++ b/codex-rs/ext/goal/src/accounting.rs\n@@ -297,9 +297,6 @@\n                     && matches!(\n                         item.tool,\n                         CollabAgentTool::SpawnAgent\n-                            | CollabAgentTool::SendInput\n-                            | CollabAgentTool::SendMessage\n-                            | CollabAgentTool::FollowupTask\n                     ) =>\n             {\n                 self.record_spawn_followup(turn_id);\n"
+  },
+  {
+    "name": "file_failed_counts_as_applied",
+    "patch": "--- a/codex-rs/ext/goal/src/accounting.rs\n+++ b/codex-rs/ext/goal/src/accounting.rs\n@@ -288,7 +288,10 @@\n     pub(crate) fn record_state_change_for_item(&self, turn_id: &str, item: &TurnItem) {\n         match item {\n             TurnItem::FileChange(item)\n-                if matches!(item.status, Some(PatchApplyStatus::Completed)) =>\n+                if matches!(\n+                    item.status,\n+                    Some(PatchApplyStatus::Completed) | Some(PatchApplyStatus::Failed)\n+                ) =>\n             {\n                 self.record_applied_file_change(turn_id);\n             }\n"
+  },
+  {
+    "name": "identical_plan_always_counts",
+    "patch": "--- a/codex-rs/ext/goal/src/accounting.rs\n+++ b/codex-rs/ext/goal/src/accounting.rs\n@@ -264,10 +264,7 @@\n     /// turn; identical submissions and unknown turns leave counts unchanged.\n     pub(crate) fn record_plan_transition(&self, turn_id: &str, new_plan: &[PlanItemArg]) -> bool {\n         let mut inner = self.inner();\n-        let transition = match inner.last_committed_plan.as_deref() {\n-            None => true,\n-            Some(previous) => !plans_equal(previous, new_plan),\n-        };\n+        let transition = true;\n         inner.last_committed_plan = Some(new_plan.to_vec());\n         if !transition {\n             return false;\n"
+  },
+  {
+    "name": "command_execution_counts_as_state_change",
+    "patch": "--- a/codex-rs/ext/goal/src/accounting.rs\n+++ b/codex-rs/ext/goal/src/accounting.rs\n@@ -312,6 +312,9 @@\n             {\n                 self.record_spawn_followup(turn_id);\n             }\n+            TurnItem::CommandExecution(_) => {\n+                self.record_spawn_followup(turn_id);\n+            }\n             TurnItem::UserMessage(_)\n             | TurnItem::FunctionCallOutput(_)\n             | TurnItem::HookPrompt(_)\n"
+  },
+  {
+    "name": "tool_finish_success_records_mutation",
+    "patch": "--- a/codex-rs/ext/goal/src/extension.rs\n+++ b/codex-rs/ext/goal/src/extension.rs\n@@ -553,6 +553,11 @@\n                 input.tool_name,\n                 input.outcome,\n             );\n+            if matches!(input.outcome, ToolCallOutcome::Completed { success: true }) {\n+                runtime\n+                    .accounting_state()\n+                    .record_goal_mutation(input.turn_id);\n+            }\n             if input.tool_name.is_default_namespace()\n                 && input.tool_name.name == CREATE_GOAL_TOOL_NAME\n                 && matches!(input.outcome, ToolCallOutcome::Completed { success: true })\n"
+  },
+  {
+    "name": "agent_message_counts_as_state_change",
+    "patch": "--- a/codex-rs/ext/goal/src/accounting.rs\n+++ b/codex-rs/ext/goal/src/accounting.rs\n@@ -312,6 +312,9 @@\n             {\n                 self.record_spawn_followup(turn_id);\n             }\n+            TurnItem::AgentMessage(_) => {\n+                self.record_spawn_followup(turn_id);\n+            }\n             TurnItem::UserMessage(_)\n             | TurnItem::FunctionCallOutput(_)\n             | TurnItem::HookPrompt(_)\n"
+  },
+  {
+    "name": "agent_message_state_keyword_counts",
+    "patch": "--- a/codex-rs/ext/goal/src/accounting.rs\n+++ b/codex-rs/ext/goal/src/accounting.rs\n@@ -312,6 +312,13 @@\n             {\n                 self.record_spawn_followup(turn_id);\n             }\n+            TurnItem::AgentMessage(message)\n+                if message.content.iter().any(|content| match content {\n+                    AgentMessageContent::Text { text } => text.contains(\"STATE\"),\n+                }) =>\n+            {\n+                self.record_spawn_followup(turn_id);\n+            }\n             TurnItem::UserMessage(_)\n             | TurnItem::FunctionCallOutput(_)\n             | TurnItem::HookPrompt(_)\n"
+  },
+  {
+    "name": "send_input_status_ignores_delivery_result",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs\n+++ b/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs\n@@ -109,20 +109,11 @@\n         let status = local_agent_control.get_status(receiver_thread_id).await;\n-        // Report the delivery result, not child liveness: a refused send is\n-        // Failed even while the child stays Running, and an accepted send is\n-        // Completed even if the child errors afterwards. Liveness stays in\n-        // agents_states for display.\n-        let delivery_status = if result.is_ok() {\n-            CollabAgentToolCallStatus::Completed\n-        } else {\n-            CollabAgentToolCallStatus::Failed\n-        };\n         session\n             .emit_turn_item_completed(\n                 &turn,\n                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {\n                     id: call_id,\n                     tool: CollabAgentTool::SendInput,\n-                    status: delivery_status,\n+                    status: collab_tool_call_status(&status, Some(receiver_thread_id)),\n                     sender_thread_id: session.thread_id,\n                     receiver_thread_ids: vec![receiver_thread_id],\n                     receiver_agents: vec![CollabAgentRef {\n"
+  },
+  {
+    "name": "code_mode_nested_file_change_emitted_twice",
+    "patch": "--- a/codex-rs/core/src/tools/events.rs\n+++ b/codex-rs/core/src/tools/events.rs\n@@ -630,15 +630,29 @@\n     ctx.session\n         .emit_turn_item_completed(\n             ctx.turn,\n             TurnItem::FileChange(FileChangeItem {\n                 id: ctx.call_id.to_string(),\n-                changes,\n-                status: Some(status),\n+                changes: changes.clone(),\n+                status: Some(status.clone()),\n                 auto_approved: None,\n-                stdout: Some(stdout),\n-                stderr: Some(stderr),\n+                stdout: Some(stdout.clone()),\n+                stderr: Some(stderr.clone()),\n             }),\n         )\n         .await;\n+\n+    ctx.session\n+        .emit_turn_item_completed(\n+            ctx.turn,\n+            TurnItem::FileChange(FileChangeItem {\n+                id: ctx.call_id.to_string(),\n+                changes,\n+                status: Some(status),\n+                auto_approved: None,\n+                stdout: Some(stdout),\n+                stderr: Some(stderr),\n+            }),\n+        )\n+        .await;\n \n     if let Some(tracker) = ctx.turn_diff_tracker {\n"
+  },
+  {
+    "name": "goal_update_complete_only_records",
+    "patch": "--- a/codex-rs/ext/goal/src/tool.rs\n+++ b/codex-rs/ext/goal/src/tool.rs\n@@ -317,8 +317,10 @@\n                 )\n             })?;\n         self.runtime.background_wait_state().note_goal_mutation();\n-        self.accounting_state\n-            .record_goal_mutation(invocation.turn_id.as_str());\n+        if args.status == ThreadGoalStatus::Complete {\n+            self.accounting_state\n+                .record_goal_mutation(invocation.turn_id.as_str());\n+        }\n         self.metrics\n             .record_terminal_if_status_changed(previous_status, &goal);\n         self.analytics.status_changed(\n"
+  },
+  {
+    "name": "external_goal_set_does_not_record",
+    "patch": "--- a/codex-rs/ext/goal/src/runtime.rs\n+++ b/codex-rs/ext/goal/src/runtime.rs\n@@ -388,11 +388,6 @@\n             .analytics\n             .status_changed(&goal, previous_status, GoalEventAttribution::NoTurn);\n         self.inner.background_wait.note_goal_mutation();\n-        if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {\n-            self.inner\n-                .accounting_state\n-                .record_goal_mutation(turn_id.as_str());\n-        }\n         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {\n             !replaced_existing_goal && previous_goal.objective != goal.objective\n         });\n"
+  },
+  {
+    "name": "external_goal_clear_does_not_record",
+    "patch": "--- a/codex-rs/ext/goal/src/runtime.rs\n+++ b/codex-rs/ext/goal/src/runtime.rs\n@@ -439,11 +439,6 @@\n         self.inner.analytics.cleared(&goal);\n         self.inner.background_wait.note_clear();\n         if committed.is_none() {\n-            if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {\n-                self.inner\n-                    .accounting_state\n-                    .record_goal_mutation(turn_id.as_str());\n-            }\n             self.inner.accounting_state.clear_active_goal();\n         }\n         Ok(())\n"
+  },
+  {
+    "name": "spawn_followup_message_tools_dropped",
+    "patch": "--- a/codex-rs/ext/goal/src/accounting.rs\n+++ b/codex-rs/ext/goal/src/accounting.rs\n@@ -297,9 +297,7 @@\n                     && matches!(\n                         item.tool,\n                         CollabAgentTool::SpawnAgent\n                             | CollabAgentTool::SendInput\n-                            | CollabAgentTool::SendMessage\n-                            | CollabAgentTool::FollowupTask\n                     ) =>\n             {\n                 self.record_spawn_followup(turn_id);\n"
+  },
+  {
+    "name": "spawn_status_ignores_delivery_result",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs\n+++ b/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs\n@@ -175,21 +175,13 @@\n     let agents_states = new_thread_id\n         .map(|thread_id| [(thread_id, status.clone())].into_iter().collect())\n         .unwrap_or_default();\n-    // Report the spawn result, not child liveness: an accepted spawn is\n-    // Completed even if the child has already errored, and a refused spawn\n-    // is Failed. Liveness stays in agents_states for display.\n-    let delivery_status = if result.is_ok() {\n-        CollabAgentToolCallStatus::Completed\n-    } else {\n-        CollabAgentToolCallStatus::Failed\n-    };\n     session\n         .emit_turn_item_completed(\n             turn,\n             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {\n                 id: call_id,\n                 tool: CollabAgentTool::SpawnAgent,\n-                status: delivery_status,\n+                status: collab_tool_call_status(&status, new_thread_id),\n                 sender_thread_id: session.thread_id,\n                 receiver_thread_ids,\n                 receiver_agents,\n"
+  }
+]

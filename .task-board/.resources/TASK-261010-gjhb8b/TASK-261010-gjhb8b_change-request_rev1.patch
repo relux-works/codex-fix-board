@@ -1,0 +1,213 @@
+diff --git a/.research/261010_exec_tmpdir_panel.md b/.research/261010_exec_tmpdir_panel.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..5772a59a702a33a95459c3aef43605cdd8776351
+--- /dev/null
++++ b/.research/261010_exec_tmpdir_panel.md
+@@ -0,0 +1,207 @@
++# TASK-261010-gjhb8b — r141-panel-a-task-261007-3v81ko-rev1
++
++changes_requested
++
++Read-only, non-recording review of CR-TASK-261007-3v81ko-1 revision 1. Replay is exact: base `07c018be3507b8d4a5558a85a117b94ed2a23872` plus the attached patch gives `e5b504a6db93a1a72cb79cbac37030ad13a26db1`, equal to the expected candidate tree. The same temporary index was checked again after the sweep with the same result. No nested worktree, build, test execution, source-task write or product-code edit was made.
++
++Key findings: an existing Clap exit still bypasses the cleanup owner; returned errors change stderr; the new leak scanners treat read faults as clean; the signal-bound text overstates SIGTERM support. The real hosted kills defend two arg0-error paths, while the original `.tmp*` incident remains unproven.
++
++Commands actually executed by this panel (exit codes)
++
++| Command / exact scope | Exit | Evidence |
++|---|---:|---|
++| `task-board m 'set_status(TASK-261010-gjhb8b, status=analysis)'` | 0 | Assigned panel only |
++| Initial `mkdir; rm -f; git read-tree` attempt | no process / no exit code | Tool policy rejected the rm-style command before execution; no replay gate ran in that attempt |
++| `mkdir -p .temp` | 0 | Replay directory |
++| `python3 -c 'from pathlib import Path; Path(".temp/TASK-261010-gjhb8b-replay.idx").unlink(missing_ok=True)'` | 0 | Cleared only task-owned temporary index |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-gjhb8b-replay.idx" git read-tree 07c018be3507b8d4a5558a85a117b94ed2a23872` | 0 | Base loaded |
++| `task-board resource get TASK-261007-3v81ko TASK-261007-3v81ko_change-request_rev1.patch --output .temp/TASK-261007-3v81ko_change-request_rev1.patch` | 0 | Patch downloaded read-only |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-gjhb8b-replay.idx" git apply --cached .temp/TASK-261007-3v81ko_change-request_rev1.patch` | 0 | Patch replay |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-gjhb8b-replay.idx" git write-tree` (twice) | 0 each | Exact expected tree, twice |
++| `git diff --stat 07c018be3507b8d4a5558a85a117b94ed2a23872 e5b504a6db93a1a72cb79cbac37030ad13a26db1` and scoped `git diff ... -- codex-rs/exec` | 0 each | Three changed files, 241 insertions / 95 deletions |
++| `task-board q 'get(TASK-261007-3v81ko) { description scope ac notes }'` | 0 | Source AC/context |
++| `task-board q 'get(TASK-261007-3v81ko) { preconditionResources outcomeResources }'` | 0 | Source-resource inventory |
++| `task-board resource get TASK-261007-3v81ko NAME --output .temp/NAME` for `surface-table.md`, `producer-brief.md`, `TASK-261007-3v81ko_results.md`, `TASK-261007-3v81ko_hosted-precheck-1.md`, `leak-handoff-note-2.md`, `TASK-261007-3v81ko_mutants.json`, `TASK-261007-3v81ko_change-request_rev1-validation.log` | 0 each (7/7) | Evidence inputs retrieved before verdict |
++| `gh run view 38009138137 --repo ivanopcode/codex --json headSha,conclusion,jobs,url` and compact jobs/conclusion projection | 0 each | Aggregate expected failure; per-job conclusions inspected |
++| `gh run view 38009138137 --repo ivanopcode/codex --job ID --log > .temp/TASK-261010-gjhb8b-hosted-NAME.log` for `114086722322` (snapshot-small), `114086722383` (mutant2-small), `114086722426` (mutant1-small), `114084835321` (lint) | 0 each (4/4) | Log-download exit codes; these are not test exit codes |
++| `git cat-file -t 73c75aedfa7434b0d04cd54c83b062532d9d24dd` | 0 | Hosted snapshot object exists as a tree |
++| `git rev-parse bd805b90^{tree}` | 0 | `73c75aedfa7434b0d04cd54c83b062532d9d24dd` |
++| `git diff --exit-code 73c75aedfa7434b0d04cd54c83b062532d9d24dd bd805b90` | 0 | Snapshot commit/tree identical |
++| `git diff --exit-code bd805b90 e5b504a6db93a1a72cb79cbac37030ad13a26db1 -- codex-rs/exec codex-rs/Cargo.lock codex-rs/justfile .github/actions` | 0 | Target/code/test/config input equality |
++| `git diff --exit-code 73c75aedfa7434b0d04cd54c83b062532d9d24dd e5b504a6db93a1a72cb79cbac37030ad13a26db1 -- codex-rs .github/actions` | 0 | All Rust and setup-action inputs identical |
++| Python exact-diff comparison: checked subprocess `git diff 73c75aedfa7434b0d04cd54c83b062532d9d24dd e5b504a6db93a1a72cb79cbac37030ad13a26db1` against checked subprocess `git diff 39c264c 07c018be3507b8d4a5558a85a117b94ed2a23872`; assert byte equality | 0 (both subprocesses 0) | Operator green-equivalent delta claim independently verified |
++| Python static-mechanism assertions over candidate `git show` outputs | 0 | 6/6: both parsers; changed stdin return; added final error; two fault-discarding scans; Ctrl-C-only exec task; no in-process signal subscription |
++| `git diff --exit-code`, `git diff --cached --exit-code`, `git status --short` before writing this research artifact | 0 each | Clean source/index; `.temp` evidence is ignored |
++| `task-board q 'get(TASK-261010-gjhb8b) { checklist }'`, task class/name read; `task-board spawn directives "$TASK_BOARD_RUN_ID"` | 0 each | Own task research lifecycle; no directives |
++
++
++| `python3 .temp/TASK-261010-gjhb8b-write-verdict.py` initial attempt | 1 | Artifact generation failed with SyntaxError (unescaped apostrophe); no verdict file was produced in that attempt |
++| Python writer quote correction, then `python3 .temp/TASK-261010-gjhb8b-write-verdict.py` | 0 each | Generator corrected and research artifact written; no product-code edit |
++| `python3 .temp/TASK-261010-gjhb8b-verify-verdict.py` | 0 | Independently parsed surface-table JSON; one verdict-findings block, all required keys, 5/5 unique rows, 4 findings, allowed severities, one-word verdict, replay and command evidence |
++| `git diff --check` | 0 | Tracked source whitespace check only; this does not validate the untracked Markdown |
++| `git status --short` after artifact creation | 0 | Only `?? .research/`; no product-source edits |
++
++All candidate reads used `git show e5b504a6...:<path>` for exec lib/main/tests, CLI main, arg0 lib, app-server lib/in_process and app-server-client lib (exit 0 each); further `sed`, `nl`, Python log extraction, `git diff` workflow inspection and successful scoped `rg`/`git grep` reads exited 0. Discovery failures were not gates and were not counted green: the first source query used unsupported `resources` (exit 1, corrected to preconditionResources/outcomeResources); `cat` of the skill-relative reviewer role failed (exit 1, then installed `~/.roles/reviewer/role.md` was read with exit 0); a nonexistent board `.roles` search returned 2; searches for missing skill-role/catalog or Cargo registry sources returned 1 (no match); `command -v logbook` returned 1 (not installed). `task-board resource list` returned help with exit 0, not a resource inventory. `task-board q 'schema()'` exited 0 solely to repair the unknown field. An initial basic-regex signal search returned 1; the corrected extended-regex query returned 0. None of those observations is a product test pass. Primary library documentation reads succeeded via the web tool, which supplies no shell exit code.
++
++Hosted execution accepted as evidence, not rerun locally
++
++[Run 38009138137](https://github.com/ivanopcode/codex/actions/runs/38009138137) uses workflow head `07c018be...` but checks out snapshot `bd805b90` inside its jobs. Snapshot lint and small logs independently confirm that checkout. Snapshot small ran the production `codex-exec` binary: **433/433 tests passed**, including 3/3 tmpdir cleanup cases. Snapshot lint/small/core/app-server job conclusions are success; the attached precheck and live job API agree. No raw numeric exit for each individual passing command is invented from a job conclusion.
++
++Both mutant small lanes are **failing, exit 100**, as recorded in their logs: [empty_stdin_process_exit](https://github.com/ivanopcode/codex/actions/runs/38009138137/job/114086722426) failed `exec_empty_stdin_leaves_no_tmpdirs`; [error_seen_process_exit](https://github.com/ivanopcode/codex/actions/runs/38009138137/job/114086722383) failed `exec_server_error_leaves_no_tmpdirs`. Each log reports `CODEX_HOME/tmp/arg0 leaked session dirs`, including all three attempts. These are expected failures because each mutant restores destructor-skipping exit at one site. Overall workflow conclusion **failure** is therefore expected, not a failing snapshot. The unchanged error-code tests do not kill these mutants.
++
++The CR validation log records only `/Users/administrator/Developer/ReluxWorks/codex/.temp/goal-token-burn/impl/mini-hosted-gate.sh` → **exit 0**, with required/green commands **1/1** and `test_case_coverage=unknown`. Its 466 bytes are fully readable; it contains green-equivalence attestation, not a local full suite.
++
++Fact-check sources
++
++Candidate citations in the JSON refer to tree `e5b504a6db93a1a72cb79cbac37030ad13a26db1`, never ambient worktree code. Source task AC, `surface-table.md`, producer results, hosted-precheck-1 and handoff-note-2 were obtained read-only by the board CLI. The pinned [Clap 4.5.58 Parser documentation](https://docs.rs/clap/4.5.58/clap/trait.Parser.html#method.parse) confirms that `parse` exits instead of returning on errors; the cleanup-bypass conclusion follows from that API behavior and the inspected ownership call chain. [Rust's Result Termination implementation](https://doc.rust-lang.org/src/std/process.rs.html) emits an `Error:` prefix, and [Anyhow 1.0.103 formatting](https://docs.rs/anyhow/1.0.103/anyhow/struct.Error.html#display-representations) explains Debug/backtrace output from returning an error through main. Thus the stderr change is a static inference supported by the documented formatter and both unchanged main signatures, not a claimed local binary run.
++
++Logbook entry — 2026-10-10
++
++This entry travels in this task-scoped outcome, as the project-management run write boundary permits; no logbook CLI is installed and no control-root file was edited. Panel replay matched exactly. The published green is an explicitly authorized code-identical reuse, not an exact candidate-tree run. Two real arg0-error mutants were killed, but four scope/evidence problems need review (A-F1–A-F4), and the original `.tmp*` symptom remains unknown. Only the assigned panel task receives mutations. All five surface rows were swept before verdict.
++
++```verdict-findings
++{
++  "findings": [
++    {
++      "id": "A-F1",
++      "row": "tmpdir cleanup on every exit",
++      "invariant": "Every normal exec exit must return through the owner of its TempDir guard, including errors at the public entry point.",
++      "mechanism": "Residual, pre-existing bypass inside the stated every-exit scope: arg0_dispatch_or_else creates the CODEX_HOME/tmp/arg0/codex-arg0* guard before calling main_fn. codex-exec then calls TopCli::parse (exec/src/main.rs:34); codex exec calls MultitoolCli::parse (cli/src/main.rs:1033). Clap 4.5.58 parse exits on invalid arguments/help rather than returning, so run_main_with_arg0_guard never reaches its drop. The patch changes only exec/src/lib.rs and leaves both dispatchers untouched. Invalid arguments therefore still skip destruction when alias setup succeeds. This is static call-chain proof, not a runtime reproduction in this panel.",
++      "reproductions": [
++        {
++          "test_file": "codex-rs/exec/tests/suite/tmpdir_cleanup.rs (requested new exec_parse_error_leaves_no_tmpdirs test)",
++          "command": "INSTA_WORKSPACE_ROOT=\"$PWD\" just test -p codex-exec -E 'test(exec_parse_error_leaves_no_tmpdirs)'",
++          "expected_failure": "After adding the named test, invoke the real codex-exec binary with --definitely-invalid-option and an isolated CODEX_HOME whose alias setup is verified. Clap exits 2 and leaves codex-arg0* behind. Also exercise --help (exit 0). Not executed here."
++        },
++        {
++          "test_file": "codex-rs/cli/tests/exec_tmpdir_cleanup.rs (requested new exec_parse_error_leaves_no_tmpdirs test)",
++          "command": "INSTA_WORKSPACE_ROOT=\"$PWD\" just test -p codex-cli -E 'test(exec_parse_error_leaves_no_tmpdirs)'",
++          "expected_failure": "After adding the named test, invoke codex exec --definitely-invalid-option, verify alias setup happened, then assert no arg0 session dir remains. Current dispatcher exits before dropping it. Not executed here."
++        }
++      ],
++      "severity": "bypass",
++      "repeat-of": null
++    },
++    {
++      "id": "A-F2",
++      "row": "exit status and observable behavior",
++      "invariant": "Cleanup is the only observable change; stderr bytes and ordering remain stable.",
++      "mechanism": "exec/src/lib.rs:2249 changes the empty-stdin branch from eprintln plus exit(1) to an anyhow error. Both public mains return anyhow::Result; Rust Termination prints Error: followed by Debug output when the error reaches main. The final diagnostic consequently changes from No prompt provided via stdin. to Error: No prompt provided via stdin. Likewise configuration errors acquire Error: Error loading config.toml..., and lib.rs:1313 emits an additional Error: exec turn failed after print_final_output for server failures. Anyhow can also emit a backtrace when enabled. Existing tests use substring matches or only status 1, so the hosted green does not preserve the surface-table output invariant. Exit 1 is still preserved on the tested error paths.",
++      "reproductions": [
++        {
++          "test_file": "codex-rs/exec/tests/suite/prompt_stdin.rs (requested new exec_empty_stdin_preserves_stderr test)",
++          "command": "INSTA_WORKSPACE_ROOT=\"$PWD\" just test -p codex-exec -E 'test(exec_empty_stdin_preserves_stderr)'",
++          "expected_failure": "After adding the test, capture deterministic stderr for a real binary with empty piped stdin and compare the terminal diagnostic line with the base bytes. Candidate has an added Error: prefix. Disable ambient backtraces for the basic comparison; separately exercise enabled backtraces. Not executed here."
++        },
++        {
++          "test_file": "codex-rs/exec/tests/suite/server_error_exit.rs (requested exact-output assertion)",
++          "command": "INSTA_WORKSPACE_ROOT=\"$PWD\" just test -p codex-exec -E 'test(exits_non_zero_when_server_reports_error)'",
++          "expected_failure": "With a new assertion excluding an extra terminal diagnostic, the existing mock response.failed entry-point test fails because candidate adds Error: exec turn failed after final output. Current unchanged test passes because it checks only code(1). Requested assertion not executed here."
++        }
++      ],
++      "severity": "regression",
++      "repeat-of": null
++    },
++    {
++      "id": "A-F3",
++      "row": "regression test and mutants",
++      "invariant": "The cleanup oracle may attest absence only after a successful, complete directory read; the protected resource must actually have existed.",
++      "mechanism": "New tmpdir_cleanup.rs:10-13 and :29-33 convert every read_dir error to an empty Vec and flatten away per-entry read failures. assert_no_leaks then interprets these as clean. ENOTDIR, permission/I/O faults and partial reads are not evidence of absence. In addition the tests never establish that arg0 setup succeeded: production explicitly permits setup failure and proceeds with no guard. In release builds the fixture places CODEX_HOME under the child TMPDIR, which arg0/src/lib.rs:344-356 explicitly refuses, making its arg0 check vacuous there. Hosted debug mutants do kill real leaks; this finding concerns the untested oracle fail-open states, not a claim that those observed kills were false.",
++      "reproductions": [
++        {
++          "test_file": "codex-rs/exec/tests/suite/tmpdir_cleanup.rs (requested leak_scan_rejects_unreadable_root oracle attack)",
++          "command": "INSTA_WORKSPACE_ROOT=\"$PWD\" just test -p codex-exec -E 'test(leak_scan_rejects_unreadable_root)'",
++          "expected_failure": "After adding the test, place a regular file at an expected scan-directory path; require a scan failure instead of an empty result. Current helper maps ENOTDIR to empty. Add partial-read fault coverage where the harness supports it. Not executed here."
++        },
++        {
++          "test_file": "codex-rs/exec/tests/suite/tmpdir_cleanup.rs (requested arg0_setup_is_exercised assertion)",
++          "command": "INSTA_WORKSPACE_ROOT=\"$PWD\" just test -p codex-exec --release -E 'test(tmpdir_cleanup)'",
++          "expected_failure": "With an assertion that the child created the arg0 root and no alias-setup warning occurred, current release fixture fails: home is beneath temp_dir so production refuses alias setup. Move home outside the isolated system temp root while retaining the scan and verify setup before claiming arg0 coverage. Requested assertion/release run not executed here."
++        }
++      ],
++      "severity": "robustness",
++      "repeat-of": null
++    },
++    {
++      "id": "A-F4",
++      "row": "signal and abort bound",
++      "invariant": "The published signal bound must distinguish verified graceful paths, unverified delivery and unsupported termination paths.",
++      "mechanism": "The results resource states Ctrl-C / SIGTERM go through existing turn/interrupt + graceful shutdown, then labels signal delivery unverified. Candidate exec/src/lib.rs:1114-1120 subscribes only to tokio::signal::ctrl_c. Its InProcessAppServerClient::start calls app-server in_process::start (app-server-client/src/lib.rs:355-359), whose runtime installs no SIGTERM subscription; the SIGTERM handler in app-server/src/lib.rs belongs to the separate transport-server runner. Thus the positive SIGTERM graceful-routing claim is unsupported by this exec path. SIGKILL/abort limitation is accurately stated. Correction can be a truthful SIGTERM bound; implementing a new signal mechanism is not required by AC2 if it is explicitly bounded.",
++      "reproductions": [
++        {
++          "test_file": "TASK-261007-3v81ko_results.md (signal-bound claim) and codex-rs/exec/tests/suite/tmpdir_cleanup.rs (optional requested signal test)",
++          "command": "INSTA_WORKSPACE_ROOT=\"$PWD\" just test -p codex-exec -E 'test(exec_sigterm_cleanup)'",
++          "expected_failure": "If coverage is claimed, add the named Unix public-entry test: wait for a verified live arg0 directory during a deliberately blocked turn, deliver SIGTERM, wait for process termination, and require cleanup. Static call-chain predicts termination without the exec Ctrl-C interrupt path. Runtime outcome remains unverified here. Alternatively correct the results to say SIGTERM cleanup is unsupported/unverified without asserting graceful routing."
++        }
++      ],
++      "severity": "robustness",
++      "repeat-of": null
++    }
++  ],
++  "notes": [
++    "No accept_cr, reject_cr, withdraw_cr, set_status, handoff, resource mutation or notes write was performed on TASK-261007-3v81ko. This is the non-recording panel; all outcome/lifecycle writes target TASK-261010-gjhb8b.",
++    "All finding reproduction commands are REQUESTED future attacks, not commands executed in this panel. Proposed test names must be added before running their filters; current tests without the requested assertions do not demonstrate those failures. Local cargo/just/build/runtime test execution count is zero.",
++    "Surface sweep 5/5, exactly one result per row; static mechanisms verified 6/6. No claim of exhaustive transitive TempDir inventory or dynamic path coverage.",
++    "Hosted snapshot tree is 73c75aedfa7434b0d04cd54c83b062532d9d24dd at bd805b90, not the replay tree. No exact-e5b504a6 execution is attached. Operator resource leak-handoff-note-2 authorizes green-equivalent reuse; independently verified all codex-rs and .github/actions bytes match and total delta equals exactly trunk 39c264c..07c018be. Hosted conclusions are evidence about those identical code/test inputs, not an invented exact-tree run.",
++    "Run 38009138137 aggregate conclusion is failure, EXPECTED because mutant-1 small and mutant-2 small each exit 100. Snapshot lint/small/core/app-server jobs are success. The CR validation log is 466 bytes and records mini-hosted-gate exit 0 with required=1 green=1 and test_case_coverage=unknown; it is not a local full-suite log.",
++    "Producer reports original .tmp* success/error leak was not reproduced. Hosted failures show CODEX_HOME/tmp/arg0/codex-arg0* leaks, not .tmp* leaks. AC1 original eight-directory symptom and repeated N-run workload remain unknown; the tests make one invocation per isolated fixture (three cases total). Do not claim the incident root cause or original symptom is fixed from this proxy.",
++    "AC assessment: AC1 only narrower three-fixture no-leak observations available; AC2 success/server-error/empty-stdin supported but parser gap and signal-bound correction needed; AC3 two named site mutants killed; AC4 held statically; AC5 snapshot four lanes green under explicit green-equivalent authorization, aggregate expected-red, no exact candidate-tree run."
++  ],
++  "surface_results": [
++    {
++      "row": "tmpdir cleanup on every exit",
++      "result": "broken",
++      "reason": "A-F1: both parser entry points still bypass the guard; the three hosted cases establish a narrower bound, not every exit. Original eight .tmp* dirs per successful run remain unreproduced."
++    },
++    {
++      "row": "exit status and observable behavior",
++      "result": "broken",
++      "reason": "A-F2: error propagation preserves tested status 1 but changes stderr and adds a terminal diagnostic; static source plus documented Termination/anyhow behavior."
++    },
++    {
++      "row": "signal and abort bound",
++      "result": "broken",
++      "reason": "A-F4: SIGKILL/abort and unverified delivery are stated, but SIGTERM graceful routing is positively claimed without a handler on the exec path."
++    },
++    {
++      "row": "persistent state unchanged",
++      "result": "held",
++      "reason": "Static diff attack: only error-return mechanics and tests change. No CODEX_HOME/sqlite/rollout allocation or deletion path changes. arg0 guard already owns only CODEX_HOME/tmp/arg0/codex-arg0*, not persistent state. Held for location/deletion invariance, not bit-identical incidental flushing at process exit."
++    },
++    {
++      "row": "regression test and mutants",
++      "result": "broken",
++      "reason": "Hosted evidence establishes 2/2 one-site mutants killed specifically by real arg0 leak assertions; A-F3 nevertheless exposes fail-open scan results and unverified setup/release coverage in the newly added oracle. Coverage is 2/13 removed exit sites mutated, 0/2 mutants proving the originally reported .tmp* leak, 0 signal-injection tests."
++    }
++  ],
++  "free_hunt": {
++    "budget": "One bounded pass over public dispatchers/arg0 lifetime, changed Result propagation and the in-process signal call chain after sweeping five rows; stop after source verification and hosted-log cross-checks. No builds or edits to product code.",
++    "attacks": [
++      {
++        "surface": "Public parser exit before run_main",
++        "result": "broken",
++        "finding": "A-F1",
++        "evidence": "exec/src/main.rs:34; cli/src/main.rs:1033; arg0/src/lib.rs:232,280-284; Clap 4.5.58 Parser docs"
++      },
++      {
++        "surface": "Release test fixture prevents alias setup",
++        "result": "broken",
++        "finding": "A-F3",
++        "evidence": "tmpdir_cleanup.rs:51-54,75-77; arg0/src/lib.rs:344-356"
++      },
++      {
++        "surface": "False transfer of transport-server SIGTERM support into embedded exec runtime",
++        "result": "broken",
++        "finding": "A-F4",
++        "evidence": "exec/src/lib.rs:974,1116; app-server-client/src/lib.rs:355-359; app-server/src/in_process.rs event loops; separate app-server/src/lib.rs:216-227"
++      }
++    ],
++    "remaining_bounds": [
++      "Original host-reported .tmp* allocation source not identified; no root-cause proof.",
++      "Only Linux hosted debug entry-point evidence inspected; macOS/Windows execution unknown.",
++      "No fault-injected directory enumeration or OS-signal injection was executed.",
++      "No claim of comprehensive coverage for all thirteen return conversions, remote execution, resume/fork or detached-task TempDir ownership."
++    ]
++  }
++}
++```

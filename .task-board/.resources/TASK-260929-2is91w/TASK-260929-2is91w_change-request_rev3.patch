@@ -1,0 +1,2610 @@
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index d3fecd3ab4ac94f696408478d9951166f21c5465..d333fdc1a69e3c1b7d38e285205689008393caca 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -3968,6 +3968,17 @@ impl Session {
+             selected_plugins,
+         ) = prepared_tools??;
+         turn_context.extension_data.insert(selected_plugins);
++        let discovered = {
++            let state = self.state.lock().await;
++            crate::tools::waiting_capabilities::discovered_waiting_tools_from_history(
++                state.history.raw_items(),
++            )
++        };
++        let waiting_capabilities = crate::tools::waiting_capabilities::derive_waiting_capabilities(
++            &tool_router,
++            &self.services.thread_extension_data,
++            &discovered,
++        );
+         Ok(Arc::new(StepContext {
+             preempt: turn_context
+                 .config
+@@ -3984,6 +3995,7 @@ impl Session {
+             executor_capability_discovery,
+             mcp,
+             tool_router,
++            waiting_capabilities,
+             loaded_agents_md,
+         }))
+     }
+@@ -4283,7 +4295,7 @@ impl Session {
+         }
+     }
+ 
+-    async fn build_turn_context_contribution_items(
++    pub(crate) async fn build_turn_context_contribution_items(
+         &self,
+         step_context: &StepContext,
+     ) -> Vec<ResponseItem> {
+@@ -4300,6 +4312,7 @@ impl Session {
+                     thread_store: &self.services.thread_extension_data,
+                     turn_store: turn_context.extension_data.as_ref(),
+                     model_context_window: step_context.settings.model_info.usable_context_window(),
++                    waiting_capabilities: &step_context.waiting_capabilities,
+                 })
+                 .await
+             {
+@@ -4397,6 +4410,7 @@ impl Session {
+                     thread_store: &self.services.thread_extension_data,
+                     turn_store: turn_context.extension_data.as_ref(),
+                     model_context_window: step_context.settings.model_info.usable_context_window(),
++                    waiting_capabilities: &step_context.waiting_capabilities,
+                 })
+                 .await
+             {
+diff --git a/codex-rs/core/src/session/step_context.rs b/codex-rs/core/src/session/step_context.rs
+index d0f6d77c90de6fdc24b750e547eb2d7d565ccd06..77231612ed3dfb4c609c133483146de3c8cd132e 100644
+--- a/codex-rs/core/src/session/step_context.rs
++++ b/codex-rs/core/src/session/step_context.rs
+@@ -39,6 +39,9 @@ pub(crate) struct StepContext {
+     pub(crate) mcp: Arc<McpBinding>,
+     /// The finalized tool plan advertised and executed for this exact sampling request.
+     pub(crate) tool_router: Arc<ToolRouter>,
++    /// Waiting tools callable in this sampling step, derived once from the
++    /// finalized router above. Both context paths share this same instance.
++    pub(crate) waiting_capabilities: codex_extension_api::WaitingCapabilities,
+     /// The canonical AGENTS.md value observed with this environment snapshot.
+     pub(crate) loaded_agents_md: Option<Arc<LoadedAgentsMd>>,
+ }
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index 833a4eefc576469e982245ebf4854588ff0d1926..6f02a26fe78fdd2451f41e3d15974915db58a110 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -299,6 +299,9 @@ impl StepContext {
+                 /*tool_namespaces_info*/ None,
+                 &[],
+             )),
++            // The empty test router exposes no waiting tools; host and policy
++            // markers default off without a thread store.
++            waiting_capabilities: codex_extension_api::WaitingCapabilities::none(),
+             loaded_agents_md: None,
+         })
+     }
+@@ -307,9 +310,17 @@ impl StepContext {
+         mut self: Arc<Self>,
+         tool_router: Arc<ToolRouter>,
+     ) -> Arc<Self> {
+-        Arc::get_mut(&mut self)
+-            .expect("test step context must not be shared before its tool router is set")
+-            .tool_router = tool_router;
++        // Tool flags follow the replacement router; host and policy markers
++        // default off without a thread store, and no tools are discovered.
++        let waiting_capabilities = crate::tools::waiting_capabilities::derive_waiting_capabilities(
++            &tool_router,
++            &codex_extension_api::ExtensionData::new(self.turn.sub_id.clone()),
++            &std::collections::HashSet::new(),
++        );
++        let this = Arc::get_mut(&mut self)
++            .expect("test step context must not be shared before its tool router is set");
++        this.tool_router = tool_router;
++        this.waiting_capabilities = waiting_capabilities;
+         self
+     }
+ }
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents/wait.rs b/codex-rs/core/src/tools/handlers/multi_agents/wait.rs
+index 2a8523b53a38b79e897afa3871b23f14d3a7b30f..97add3c321140f61972f819f6ad34a53d23ef79a 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents/wait.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents/wait.rs
+@@ -283,6 +283,10 @@ fn wait_receiver_agents(
+ }
+ 
+ impl CoreToolRuntime for Handler {
++    fn is_native_wait_tool(&self) -> bool {
++        true
++    }
++
+     fn matches_kind(&self, payload: &ToolPayload) -> bool {
+         matches!(payload, ToolPayload::Function { .. })
+     }
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs
+index 514b63ece596b8e87fcabe1e5dea09d2f91cffb9..8b1d41024796ea843aaab882a9baebae676ef18b 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs
+@@ -118,6 +118,10 @@ impl Handler {
+ }
+ 
+ impl CoreToolRuntime for Handler {
++    fn is_native_wait_tool(&self) -> bool {
++        true
++    }
++
+     fn matches_kind(&self, payload: &ToolPayload) -> bool {
+         matches!(payload, ToolPayload::Function { .. })
+     }
+diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
+index 41ed0189b8bfd80d938a16073b2af5c40b18d2f9..d53dee3111485784f05b59b4b33ceead008d2d5a 100644
+--- a/codex-rs/core/src/tools/mod.rs
++++ b/codex-rs/core/src/tools/mod.rs
+@@ -23,6 +23,7 @@ pub(crate) mod spec_plan;
+ pub(crate) mod tool_dispatch_trace;
+ mod tool_namespaces_info;
+ mod user_messaging;
++pub(crate) mod waiting_capabilities;
+ pub(crate) use user_messaging::record_confirmed_code_mode_send;
+ 
+ use std::borrow::Cow;
+diff --git a/codex-rs/core/src/tools/multi_agent_tool.rs b/codex-rs/core/src/tools/multi_agent_tool.rs
+index 098e43364618ec85eaf7fc88037374b59869d871..d1a3a209f1dbfd353912ef6ca7336533d209e61a 100644
+--- a/codex-rs/core/src/tools/multi_agent_tool.rs
++++ b/codex-rs/core/src/tools/multi_agent_tool.rs
+@@ -117,6 +117,10 @@ impl ToolExecutor<ToolInvocation> for MultiAgentV2ToolOverrides {
+ }
+ 
+ impl CoreToolRuntime for MultiAgentV2ToolOverrides {
++    fn is_native_wait_tool(&self) -> bool {
++        self.handler.is_native_wait_tool()
++    }
++
+     fn wait_until_ready<'a>(&'a self, session: &'a Arc<Session>) -> Option<BoxFuture<'a, ()>> {
+         self.handler.wait_until_ready(session)
+     }
+diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
+index 7d88650f59d9bf3cabbabfd346bbf8d9f0ca8495..24bdd8d6235901d2ae562986fc4262c2657d0936 100644
+--- a/codex-rs/core/src/tools/registry.rs
++++ b/codex-rs/core/src/tools/registry.rs
+@@ -83,6 +83,15 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
+         None
+     }
+ 
++    /// Whether this runtime is a native agent wait tool (V1 or V2).
++    ///
++    /// Dynamic, MCP, and extension tools named `wait_agent` must not satisfy
++    /// this: only the native handlers (and their V2 namespace wrapper) return
++    /// true, so capability derivation can distinguish executable provenance.
++    fn is_native_wait_tool(&self) -> bool {
++        false
++    }
++
+     fn matches_kind(&self, payload: &ToolPayload) -> bool {
+         matches!(
+             payload,
+@@ -501,7 +510,6 @@ impl ToolRegistry {
+         names
+     }
+ 
+-    #[cfg(test)]
+     pub(crate) fn tool_exposure(&self, name: &ToolName) -> Option<ToolExposure> {
+         self.tools
+             .get(&name.clone().with_default_namespace())
+diff --git a/codex-rs/core/src/tools/router.rs b/codex-rs/core/src/tools/router.rs
+index d9f1f63eed9cd28b40ac69820e82d6f796ad1dea..469a55094afc7c7b1cf81da58d52a16b9e84d490 100644
+--- a/codex-rs/core/src/tools/router.rs
++++ b/codex-rs/core/src/tools/router.rs
+@@ -214,6 +214,27 @@ impl ToolRouter {
+         self.registry.mcp_namespaces()
+     }
+ 
++    /// The finalized exposure for `name`, if the tool survived exclusions.
++    pub(crate) fn tool_exposure(
++        &self,
++        name: &ToolName,
++    ) -> Option<crate::tools::registry::ToolExposure> {
++        self.registry.tool_exposure(name)
++    }
++
++    /// The registered native agent wait tool, if any.
++    ///
++    /// Scans the finalized registry for a V1 or V2 native wait runtime and
++    /// returns its actual [`ToolName`] (including any configured V2
++    /// namespace). Dynamic, MCP, and extension tools named `wait_agent` never
++    /// match: only native runtimes report provenance.
++    pub(crate) fn native_wait_tool(&self) -> Option<ToolName> {
++        self.registry
++            .entries()
++            .find(|tool| tool.runtime.is_native_wait_tool())
++            .map(|tool| tool.runtime.tool_name())
++    }
++
+     #[cfg(test)]
+     pub(crate) fn registered_tool_names_for_test(&self) -> Vec<ToolName> {
+         self.registry.tool_names_for_test()
+@@ -224,7 +245,7 @@ impl ToolRouter {
+         &self,
+         name: &ToolName,
+     ) -> Option<crate::tools::registry::ToolExposure> {
+-        self.registry.tool_exposure(name)
++        self.tool_exposure(name)
+     }
+ 
+     pub(crate) fn create_diff_consumer(
+diff --git a/codex-rs/core/src/tools/waiting_capabilities.rs b/codex-rs/core/src/tools/waiting_capabilities.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f8615e4ee058b9fb5a4fd84d36f35c16fea08236
+--- /dev/null
++++ b/codex-rs/core/src/tools/waiting_capabilities.rs
+@@ -0,0 +1,303 @@
++//! Derives the sampling-step [`WaitingCapabilities`] from the final tool router.
++//!
++//! The snapshot is computed once per sampling step from the finalized
++//! [`ToolRouter`]: exclusions and name collisions are already resolved, so a
++//! tool that is absent or shadowed in the plan yields `false` here. A tool
++//! flag is true when the tool is directly model-visible, or when it is
++//! deferred in the registry and tool search has loaded it into this thread's
++//! history (discovered). Undiscovered deferred tools and nested-only
++//! code-mode tools do not count. Host and policy markers come from the thread
++//! store only: acknowledged completion subscriptions (receipts, mailbox
++//! entries, pending work) are tool-result data and never capability flags.
++
++use std::collections::HashSet;
++
++use crate::tools::router::ToolRouter;
++use codex_extension_api::AsyncNotificationSupport;
++use codex_extension_api::ExtensionData;
++use codex_extension_api::GoalBackgroundWaitAdmission;
++use codex_extension_api::WaitingCapabilities;
++use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
++use codex_protocol::models::ResponseItem;
++use codex_tools::ResponsesApiNamespaceTool;
++use codex_tools::ToolExposure;
++use codex_tools::ToolName;
++use codex_tools::ToolSpec;
++
++const CLOCK_NAMESPACE: &str = "clock";
++const SLEEP_TOOL_NAME: &str = "sleep";
++const WRITE_STDIN_TOOL_NAME: &str = "write_stdin";
++const EXEC_COMMAND_TOOL_NAME: &str = "exec_command";
++const EXEC_NOTIFICATION_TOOL_NAME: &str = "exec_notification";
++const WAIT_AGENT_TOOL_NAME: &str = "wait_agent";
++const NOTIFY_ON_EXIT_PROPERTY: &str = "notify_on_exit";
++
++/// Derives the waiting snapshot for one sampling step.
++///
++/// `router` must be the final captured router for the step; `thread_store`
++/// supplies the host-support and installed-policy markers; `discovered`
++/// carries the waiting tools tool search has loaded into this thread's
++/// history (see [`discovered_waiting_tools_from_history`]). Nothing else —
++/// in particular no receipt, mailbox, or pending-work state — influences
++/// the result.
++pub(crate) fn derive_waiting_capabilities(
++    router: &ToolRouter,
++    thread_store: &ExtensionData,
++    discovered: &HashSet<ToolName>,
++) -> WaitingCapabilities {
++    let specs = router.model_visible_specs();
++    let sleep = is_callable(
++        router,
++        &specs,
++        discovered,
++        &ToolName::namespaced(CLOCK_NAMESPACE, SLEEP_TOOL_NAME),
++    );
++    let stdin = is_callable(
++        router,
++        &specs,
++        discovered,
++        &ToolName::plain(WRITE_STDIN_TOOL_NAME),
++    );
++    let native_wait = find_native_wait_agent(router, &specs, discovered);
++    let host_available = AsyncNotificationSupport::read_from(thread_store).is_available();
++    let exec_notify = host_available
++        && exec_command_advertises_notify_on_exit(router, &specs, discovered)
++        && stdin
++        && is_callable(
++            router,
++            &specs,
++            discovered,
++            &ToolName::plain(EXEC_NOTIFICATION_TOOL_NAME),
++        );
++    let native_mail_wait =
++        host_available && thread_store.get::<GoalBackgroundWaitAdmission>().is_some();
++    WaitingCapabilities {
++        sleep,
++        stdin,
++        native_wait,
++        exec_notify,
++        native_mail_wait,
++    }
++}
++
++/// Collects the waiting tools tool search has loaded into history.
++///
++/// Scans `ToolSearchOutput` items for loadable specs naming a waiting tool:
++/// `clock.sleep`, `write_stdin`, any `wait_agent`, `exec_command`, or
++/// `exec_notification`. Names are normalized with the default namespace so
++/// callers can compare directly. Tools that were later excluded or lost a
++/// collision are still returned here; derivation re-checks the finalized
++/// registry before counting them.
++///
++/// Only outputs that survive prompt normalization count: a client output
++/// needs a matching `ToolSearchCall` (same `call_id`) earlier in history,
++/// mirroring the orphan rule in `remove_orphan_outputs`, while server
++/// outputs survive without a call and are accepted as the normalizer treats
++/// them. An orphaned client output never reaches the model, so it must not
++/// flip a deferred flag.
++pub(crate) fn discovered_waiting_tools_from_history<'a>(
++    items: impl Iterator<Item = &'a ResponseItem>,
++) -> HashSet<ToolName> {
++    let mut calls = HashSet::new();
++    let mut discovered = HashSet::new();
++    for item in items {
++        match item {
++            ResponseItem::ToolSearchCall {
++                call_id: Some(call_id),
++                ..
++            } => {
++                calls.insert(call_id.as_str());
++            }
++            ResponseItem::ToolSearchOutput {
++                call_id,
++                execution,
++                tools,
++                ..
++            } => {
++                let paired = match call_id {
++                    Some(call_id) => execution == "server" || calls.contains(call_id.as_str()),
++                    None => false,
++                };
++                if !paired {
++                    continue;
++                }
++                for value in tools {
++                    for name in tool_names_from_loadable_value(value) {
++                        if is_waiting_relevant(&name) {
++                            discovered.insert(name.with_default_namespace());
++                        }
++                    }
++                }
++            }
++            _ => {}
++        }
++    }
++    discovered
++}
++
++/// Whether `name` is a waiting tool the snapshot can advertise.
++fn is_waiting_relevant(name: &ToolName) -> bool {
++    match name.name.as_str() {
++        SLEEP_TOOL_NAME => name.namespace.as_deref() == Some(CLOCK_NAMESPACE),
++        WRITE_STDIN_TOOL_NAME | EXEC_COMMAND_TOOL_NAME | EXEC_NOTIFICATION_TOOL_NAME => {
++            name.is_default_namespace()
++        }
++        WAIT_AGENT_TOOL_NAME => true,
++        _ => false,
++    }
++}
++
++/// Extracts [`ToolName`]s from one serialized loadable spec value.
++///
++/// Mirrors the handler's normalization: a top-level function becomes a plain
++/// name, and namespace children in the default `functions` namespace become
++/// plain names as well. Malformed values yield nothing.
++fn tool_names_from_loadable_value(value: &serde_json::Value) -> Vec<ToolName> {
++    let Some(spec_type) = value.get("type").and_then(serde_json::Value::as_str) else {
++        return Vec::new();
++    };
++    if spec_type == "function" {
++        return value
++            .get("name")
++            .and_then(serde_json::Value::as_str)
++            .map(|name| vec![ToolName::plain(name.to_string())])
++            .unwrap_or_default();
++    }
++    if spec_type != "namespace" {
++        return Vec::new();
++    }
++    let Some(namespace) = value.get("name").and_then(serde_json::Value::as_str) else {
++        return Vec::new();
++    };
++    let Some(tools) = value.get("tools").and_then(serde_json::Value::as_array) else {
++        return Vec::new();
++    };
++    tools
++        .iter()
++        .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
++        .map(|name| {
++            if namespace == DEFAULT_FUNCTION_NAMESPACE {
++                ToolName::plain(name.to_string())
++            } else {
++                ToolName::namespaced(namespace.to_string(), name.to_string())
++            }
++        })
++        .collect()
++}
++
++/// Whether `name` is callable as a model tool in this sampling step.
++///
++/// Directly-visible tools count. Deferred tools count only when tool search
++/// has discovered them: the name must appear in `discovered` and the
++/// finalized registry must still hold it as deferred, so exclusions and
++/// collisions (which remove or replace the registry entry) keep yielding
++/// false. Nested-only code-mode tools never count.
++fn is_callable(
++    router: &ToolRouter,
++    specs: &[ToolSpec],
++    discovered: &HashSet<ToolName>,
++    name: &ToolName,
++) -> bool {
++    if is_directly_visible(specs, name) {
++        return true;
++    }
++    discovered.contains(&name.clone().with_default_namespace())
++        && router
++            .tool_exposure(name)
++            .is_some_and(ToolExposure::is_deferred)
++}
++
++/// Whether `name` is directly model-visible in the finalized plan.
++///
++/// This mirrors the direct branch of `ToolRouter::exposes_tool` while
++/// deliberately excluding nested code-mode tools and deferred tools: neither
++/// is callable as a direct model tool in this sampling step.
++fn is_directly_visible(specs: &[ToolSpec], name: &ToolName) -> bool {
++    let name = name.clone().with_default_namespace();
++    specs.iter().any(|spec| match spec {
++        ToolSpec::Function(_) | ToolSpec::Freeform(_) => {
++            name.is_default_namespace() && spec.name() == name.name
++        }
++        ToolSpec::Namespace(namespace) => {
++            name.namespace.as_deref() == Some(namespace.name.as_str())
++                && namespace.tools.iter().any(|tool| match tool {
++                    ResponsesApiNamespaceTool::Function(tool) => tool.name == name.name,
++                    ResponsesApiNamespaceTool::Custom(tool) => tool.name == name.name,
++                })
++        }
++        ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } => false,
++    })
++}
++
++/// Finds the callable native agent wait tool, if any.
++///
++/// Reads the configured native identity from the finalized registry (V1 or
++/// the configured V2 namespace, plain when unnamespaced) and requires native
++/// runtime provenance: unrelated dynamic, MCP, or extension tools named
++/// `wait_agent` never match. The registered native tool must then be
++/// directly visible or deferred-but-discovered, like every other flag.
++fn find_native_wait_agent(
++    router: &ToolRouter,
++    specs: &[ToolSpec],
++    discovered: &HashSet<ToolName>,
++) -> Option<ToolName> {
++    let name = router.native_wait_tool()?;
++    is_callable(router, specs, discovered, &name).then_some(name)
++}
++
++/// Whether the callable `exec_command` schema exposes the `notify_on_exit`
++/// opt-in the model can set.
++///
++/// Checks the directly advertised schema first; a deferred-but-discovered
++/// `exec_command` falls back to its registry spec. An excluded
++/// `exec_command` has no advertised schema and yields `false`. Incapable
++/// hosts omit the property even when the tool itself is visible.
++fn exec_command_advertises_notify_on_exit(
++    router: &ToolRouter,
++    specs: &[ToolSpec],
++    discovered: &HashSet<ToolName>,
++) -> bool {
++    if let Some(spec) = specs
++        .iter()
++        .find(|spec| spec.name() == EXEC_COMMAND_TOOL_NAME)
++    {
++        return match spec {
++            ToolSpec::Function(spec) => spec
++                .parameters
++                .properties
++                .as_ref()
++                .is_some_and(|properties| properties.contains_key(NOTIFY_ON_EXIT_PROPERTY)),
++            ToolSpec::Namespace(_)
++            | ToolSpec::ToolSearch { .. }
++            | ToolSpec::WebSearch { .. }
++            | ToolSpec::Freeform(_) => false,
++        };
++    }
++    let name = ToolName::plain(EXEC_COMMAND_TOOL_NAME);
++    if !discovered.contains(&name.clone().with_default_namespace()) {
++        return false;
++    }
++    if !router
++        .tool_exposure(&name)
++        .is_some_and(ToolExposure::is_deferred)
++    {
++        return false;
++    }
++    router
++        .tool_runtime(&name)
++        .is_some_and(|runtime| match runtime.spec() {
++            ToolSpec::Function(spec) => spec
++                .parameters
++                .properties
++                .as_ref()
++                .is_some_and(|properties| properties.contains_key(NOTIFY_ON_EXIT_PROPERTY)),
++            ToolSpec::Namespace(_)
++            | ToolSpec::ToolSearch { .. }
++            | ToolSpec::WebSearch { .. }
++            | ToolSpec::Freeform(_) => false,
++        })
++}
++
++#[cfg(test)]
++#[path = "waiting_capabilities_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/tools/waiting_capabilities_tests.rs b/codex-rs/core/src/tools/waiting_capabilities_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..739c3b3bb9058e1129c2be82625ff509ed4188d1
+--- /dev/null
++++ b/codex-rs/core/src/tools/waiting_capabilities_tests.rs
+@@ -0,0 +1,1461 @@
++use std::collections::BTreeMap;
++use std::collections::HashSet;
++use std::sync::Arc;
++use std::sync::Mutex;
++
++use codex_extension_api::AsyncNotificationSupport;
++use codex_extension_api::ContextContributor;
++use codex_extension_api::ExtensionData;
++use codex_extension_api::ExtensionFuture;
++use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::GoalActivity;
++use codex_extension_api::GoalActivityState;
++use codex_extension_api::GoalAdmissionDecision;
++use codex_extension_api::GoalBackgroundWaitAdmission;
++use codex_extension_api::PendingWorkProvider;
++use codex_extension_api::PendingWorkReceipt;
++use codex_extension_api::PendingWorkSnapshot;
++use codex_extension_api::PromptFragment;
++use codex_extension_api::ToolPolicy;
++use codex_extension_api::TurnContextContributionInput;
++use codex_extension_api::WaitingCapabilities;
++use codex_features::Feature;
++use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
++use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
++use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
++use codex_protocol::dynamic_tools::DynamicToolSpec;
++use codex_protocol::models::ResponseItem;
++use codex_protocol::openai_models::ToolMode;
++use codex_protocol::protocol::MultiAgentVersion;
++use codex_tools::JsonSchema;
++use codex_tools::ResponsesApiNamespace;
++use codex_tools::ResponsesApiNamespaceTool;
++use codex_tools::ResponsesApiTool;
++use codex_tools::ToolExposure;
++use codex_tools::ToolName;
++use codex_tools::ToolSearchInfo;
++use codex_tools::ToolSpec;
++use pretty_assertions::assert_eq;
++use tokio_util::sync::CancellationToken;
++
++use super::derive_waiting_capabilities;
++use super::discovered_waiting_tools_from_history;
++use crate::config::CurrentTimeReminderConfig;
++use crate::session::session::Session;
++use crate::session::step_context::StepContext;
++use crate::session::tests::make_session_and_context;
++use crate::session::tests::update_turn_settings_for_test;
++use crate::session::turn_context::TurnContext;
++use crate::tools::handlers::DynamicToolHandler;
++use crate::tools::handlers::SleepHandler;
++use crate::tools::handlers::multi_agents::WaitAgentHandler;
++use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
++use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
++use crate::tools::registry::ToolExecutor;
++use crate::tools::registry::ToolRegistry;
++use crate::tools::router::ToolRouter;
++use crate::tools::spec_plan::build_tool_router;
++
++fn function_spec(name: &str) -> ToolSpec {
++    ToolSpec::Function(ResponsesApiTool {
++        name: name.to_string(),
++        description: format!("{name} tool"),
++        strict: false,
++        defer_loading: None,
++        parameters: JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(false.into())),
++        output_schema: None,
++    })
++}
++
++fn namespace_spec(namespace: &str, tools: &[&str]) -> ToolSpec {
++    ToolSpec::Namespace(ResponsesApiNamespace {
++        name: namespace.to_string(),
++        description: format!("{namespace} tools"),
++        tools: tools
++            .iter()
++            .map(|name| {
++                ResponsesApiNamespaceTool::Function(ResponsesApiTool {
++                    name: (*name).to_string(),
++                    description: format!("{name} tool"),
++                    strict: false,
++                    defer_loading: None,
++                    parameters: JsonSchema::object(
++                        BTreeMap::new(),
++                        /*required*/ None,
++                        Some(false.into()),
++                    ),
++                    output_schema: None,
++                })
++            })
++            .collect(),
++    })
++}
++
++fn exec_command_spec(notify_on_exit: bool) -> ToolSpec {
++    let mut properties = BTreeMap::from([(
++        "cmd".to_string(),
++        JsonSchema::string(Some("Shell command to execute.".to_string())),
++    )]);
++    if notify_on_exit {
++        properties.insert(
++            "notify_on_exit".to_string(),
++            JsonSchema::boolean(Some("Request a completion wake.".to_string())),
++        );
++    }
++    ToolSpec::Function(ResponsesApiTool {
++        name: "exec_command".to_string(),
++        description: "Runs a command.".to_string(),
++        strict: false,
++        defer_loading: None,
++        parameters: JsonSchema::object(
++            properties,
++            Some(vec!["cmd".to_string()]),
++            Some(false.into()),
++        ),
++        output_schema: None,
++    })
++}
++
++fn tool_search_spec() -> ToolSpec {
++    ToolSpec::ToolSearch {
++        execution: "client".to_string(),
++        description: "Search tools.".to_string(),
++        parameters: JsonSchema::default(),
++    }
++}
++
++fn synthetic_router(
++    registry: ToolRegistry,
++    specs: Vec<ToolSpec>,
++    code_mode_tool_names: BTreeMap<String, ToolName>,
++) -> ToolRouter {
++    ToolRouter::from_parts(
++        registry,
++        specs,
++        ToolMode::Direct,
++        code_mode_tool_names,
++        /*tool_namespaces_info*/ None,
++        &[],
++    )
++}
++
++fn empty_router() -> ToolRouter {
++    synthetic_router(ToolRegistry::empty_for_test(), Vec::new(), BTreeMap::new())
++}
++
++fn empty_thread_store() -> ExtensionData {
++    ExtensionData::new("test-thread")
++}
++
++fn available_thread_store() -> ExtensionData {
++    let store = empty_thread_store();
++    store.insert(AsyncNotificationSupport::Available);
++    store
++}
++
++fn install_wait_policy(store: &ExtensionData) {
++    store.insert(GoalBackgroundWaitAdmission::new(|_| {
++        GoalAdmissionDecision::Allow
++    }));
++}
++
++fn full_waiting_specs(notify_on_exit: bool) -> Vec<ToolSpec> {
++    vec![
++        exec_command_spec(notify_on_exit),
++        function_spec("write_stdin"),
++        function_spec("exec_notification"),
++        namespace_spec("clock", &["curr_time", "sleep"]),
++        namespace_spec("collaboration", &["wait_agent"]),
++    ]
++}
++
++fn v1_wait_registry() -> ToolRegistry {
++    let mut registry = ToolRegistry::default();
++    registry.add_with_exposure(
++        WaitAgentHandler::new(WaitAgentTimeoutOptions::default()),
++        ToolExposure::Direct,
++    );
++    registry
++}
++
++fn v2_wait_registry(namespace: Option<&str>) -> ToolRegistry {
++    let mut registry = ToolRegistry::default();
++    let handler = crate::tools::multi_agent_tool::multi_agent_v2_handler(
++        WaitAgentHandlerV2::new(WaitAgentTimeoutOptions::default()),
++        namespace,
++        /*description_override*/ None,
++        /*parameters_override*/ None,
++    );
++    registry.register_trusted_with_exposure(handler, ToolExposure::Direct);
++    registry
++}
++
++fn full_waiting_router(notify_on_exit: bool) -> ToolRouter {
++    synthetic_router(
++        v2_wait_registry(Some("collaboration")),
++        full_waiting_specs(notify_on_exit),
++        BTreeMap::new(),
++    )
++}
++
++#[test]
++fn empty_router_yields_no_capabilities() {
++    assert_eq!(
++        derive_waiting_capabilities(&empty_router(), &empty_thread_store(), &HashSet::new()),
++        WaitingCapabilities::none(),
++    );
++}
++
++#[test]
++fn direct_sleep_counts() {
++    let router = synthetic_router(
++        ToolRegistry::empty_for_test(),
++        vec![namespace_spec("clock", &["curr_time", "sleep"])],
++        BTreeMap::new(),
++    );
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &HashSet::new()),
++        WaitingCapabilities {
++            sleep: true,
++            ..WaitingCapabilities::none()
++        },
++    );
++}
++
++#[test]
++fn nested_only_sleep_does_not_count() {
++    // Kills the `sleep_counts_nested_or_deferred` mutant: nested-only tools
++    // are not callable as direct model tools.
++    let router = synthetic_router(
++        ToolRegistry::empty_for_test(),
++        Vec::new(),
++        BTreeMap::from([(
++            "clock__sleep".to_string(),
++            ToolName::namespaced("clock", "sleep"),
++        )]),
++    );
++    assert!(router.exposes_tool(&ToolName::namespaced("clock", "sleep")));
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &HashSet::new()),
++        WaitingCapabilities::none(),
++    );
++}
++
++#[test]
++fn deferred_sleep_does_not_count_until_discovered() {
++    // The deferred entry is discoverable through tool search but not callable
++    // yet, so it must not flip the flag.
++    let mut registry = ToolRegistry::default();
++    registry.register_trusted_with_exposure(Arc::new(SleepHandler), ToolExposure::Deferred);
++    let router = synthetic_router(registry, vec![tool_search_spec()], BTreeMap::new());
++    assert!(router.exposes_tool(&ToolName::namespaced("clock", "sleep")));
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &HashSet::new()),
++        WaitingCapabilities::none(),
++    );
++}
++
++#[test]
++fn discovered_deferred_sleep_counts() {
++    // A-F2: a deferred tool becomes callable once tool search loads it.
++    let mut registry = ToolRegistry::default();
++    registry.register_trusted_with_exposure(Arc::new(SleepHandler), ToolExposure::Deferred);
++    let router = synthetic_router(registry, vec![tool_search_spec()], BTreeMap::new());
++    let discovered =
++        HashSet::from([ToolName::namespaced("clock", "sleep").with_default_namespace()]);
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &discovered),
++        WaitingCapabilities {
++            sleep: true,
++            ..WaitingCapabilities::none()
++        },
++    );
++}
++
++#[test]
++fn discovered_deferred_v1_wait_counts_with_native_provenance() {
++    // A-F2 killer for the `native_wait_ignores_discovered` mutant: a deferred
++    // V1 wait tool plus a history discovery yields `Some` with its actual
++    // native name. Provenance still applies: the registry holds the native
++    // runtime, not a decoy.
++    let mut registry = ToolRegistry::default();
++    registry.add_with_exposure(
++        WaitAgentHandler::new(WaitAgentTimeoutOptions::default()),
++        ToolExposure::Deferred,
++    );
++    let router = synthetic_router(registry, vec![tool_search_spec()], BTreeMap::new());
++    let discovered = HashSet::from([
++        ToolName::namespaced("multi_agent_v1", "wait_agent").with_default_namespace()
++    ]);
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &discovered),
++        WaitingCapabilities {
++            native_wait: Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++            ..WaitingCapabilities::none()
++        },
++    );
++}
++
++#[test]
++fn discovered_names_not_in_registry_still_yield_none() {
++    // Exclusion/collision guard for A-F2: a history discovery for a tool the
++    // finalized registry no longer holds (excluded or shadowed) must not
++    // flip any flag.
++    let router = synthetic_router(
++        ToolRegistry::empty_for_test(),
++        vec![tool_search_spec()],
++        BTreeMap::new(),
++    );
++    let discovered = HashSet::from([
++        ToolName::namespaced("clock", "sleep").with_default_namespace(),
++        ToolName::namespaced("multi_agent_v1", "wait_agent").with_default_namespace(),
++        ToolName::plain("write_stdin").with_default_namespace(),
++    ]);
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &discovered),
++        WaitingCapabilities::none(),
++    );
++}
++
++#[test]
++fn history_parsing_extracts_waiting_tools_only() {
++    let loadable = serde_json::json!({
++        "type": "namespace",
++        "name": "multi_agent_v1",
++        "description": "Native agents.",
++        "tools": [
++            {"type": "function", "name": "wait_agent", "description": "Wait."},
++            {"type": "function", "name": "spawn_agent", "description": "Spawn."},
++        ],
++    });
++    let unrelated = serde_json::json!({
++        "type": "namespace",
++        "name": "calendar",
++        "description": "Calendar.",
++        "tools": [{"type": "function", "name": "create_event", "description": "Create."}],
++    });
++    let malformed = serde_json::json!({"type": "namespace"});
++    let items = [
++        tool_search_call("search-1"),
++        tool_search_output(
++            Some("search-1"),
++            "client",
++            vec![loadable, unrelated, malformed],
++        ),
++        ResponseItem::Message {
++            id: None,
++            role: "assistant".to_string(),
++            content: Vec::new(),
++            phase: None,
++            internal_chat_message_metadata_passthrough: None,
++        },
++    ];
++    assert_eq!(
++        discovered_waiting_tools_from_history(items.iter()),
++        HashSet::from([
++            ToolName::namespaced("multi_agent_v1", "wait_agent").with_default_namespace()
++        ]),
++    );
++}
++
++fn wait_agent_loadable(namespace: &str) -> serde_json::Value {
++    serde_json::json!({
++        "type": "namespace",
++        "name": namespace,
++        "description": "Native agents.",
++        "tools": [
++            {"type": "function", "name": "wait_agent", "description": "Wait."},
++        ],
++    })
++}
++
++fn tool_search_call(call_id: &str) -> ResponseItem {
++    ResponseItem::ToolSearchCall {
++        id: None,
++        call_id: Some(call_id.to_string()),
++        status: Some("completed".to_string()),
++        execution: "client".to_string(),
++        arguments: serde_json::json!({"query": "wait agent"}),
++        internal_chat_message_metadata_passthrough: None,
++    }
++}
++
++fn tool_search_output(
++    call_id: Option<&str>,
++    execution: &str,
++    tools: Vec<serde_json::Value>,
++) -> ResponseItem {
++    ResponseItem::ToolSearchOutput {
++        id: None,
++        call_id: call_id.map(str::to_string),
++        status: "completed".to_string(),
++        execution: execution.to_string(),
++        tools,
++        internal_chat_message_metadata_passthrough: None,
++    }
++}
++
++#[test]
++fn orphan_client_tool_search_output_does_not_count() {
++    // Kills the `discovery_ignores_call_pairing` mutant (A2-F1/D-F1): a
++    // client output with no matching `ToolSearchCall` is removed by prompt
++    // normalization, so it must not count as discovered.
++    let items = [tool_search_output(
++        Some("orphan-search-1"),
++        "client",
++        vec![wait_agent_loadable("multi_agent_v1")],
++    )];
++    assert_eq!(
++        discovered_waiting_tools_from_history(items.iter()),
++        HashSet::new(),
++    );
++}
++
++#[test]
++fn mismatched_call_id_tool_search_output_does_not_count() {
++    // A client output whose call id names a different search is still an
++    // orphan: only the matching call id pairs.
++    let items = [
++        tool_search_call("search-other"),
++        tool_search_output(
++            Some("search-wait-9"),
++            "client",
++            vec![wait_agent_loadable("multi_agent_v1")],
++        ),
++    ];
++    assert_eq!(
++        discovered_waiting_tools_from_history(items.iter()),
++        HashSet::new(),
++    );
++}
++
++#[test]
++fn server_tool_search_output_counts_without_call() {
++    // The normalizer retains server outputs without a call, so discovery
++    // accepts them as well.
++    let items = [tool_search_output(
++        Some("server-search-1"),
++        "server",
++        vec![wait_agent_loadable("multi_agent_v1")],
++    )];
++    assert_eq!(
++        discovered_waiting_tools_from_history(items.iter()),
++        HashSet::from([
++            ToolName::namespaced("multi_agent_v1", "wait_agent").with_default_namespace()
++        ]),
++    );
++}
++
++#[test]
++fn direct_write_stdin_counts() {
++    let router = synthetic_router(
++        ToolRegistry::empty_for_test(),
++        vec![function_spec("write_stdin")],
++        BTreeMap::new(),
++    );
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &HashSet::new()),
++        WaitingCapabilities {
++            stdin: true,
++            ..WaitingCapabilities::none()
++        },
++    );
++}
++
++#[test]
++fn nested_only_write_stdin_does_not_count() {
++    // Kills the `stdin_counts_nested` mutant.
++    let router = synthetic_router(
++        ToolRegistry::empty_for_test(),
++        Vec::new(),
++        BTreeMap::from([("write_stdin".to_string(), ToolName::plain("write_stdin"))]),
++    );
++    assert!(router.exposes_tool(&ToolName::plain("write_stdin")));
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &HashSet::new()),
++        WaitingCapabilities::none(),
++    );
++}
++
++#[test]
++fn v1_wait_agent_carries_its_namespaced_name() {
++    // Kills the `native_wait_v2_only` mutant.
++    let router = synthetic_router(
++        v1_wait_registry(),
++        vec![namespace_spec(
++            "multi_agent_v1",
++            &["send_input", "wait_agent", "resume_agent", "close_agent"],
++        )],
++        BTreeMap::new(),
++    );
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &HashSet::new()),
++        WaitingCapabilities {
++            native_wait: Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++            ..WaitingCapabilities::none()
++        },
++    );
++}
++
++#[test]
++fn v2_wait_agent_carries_its_configured_name() {
++    // Kills the `native_wait_v1_only` mutant: the plain V2 registration
++    // counts even though it has no V1 namespace.
++    let router = synthetic_router(
++        v2_wait_registry(/*namespace*/ None),
++        vec![function_spec("wait_agent")],
++        BTreeMap::new(),
++    );
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &HashSet::new()),
++        WaitingCapabilities {
++            native_wait: Some(ToolName::plain("wait_agent")),
++            ..WaitingCapabilities::none()
++        },
++    );
++}
++
++#[test]
++fn nested_only_wait_agent_does_not_count() {
++    let router = synthetic_router(
++        ToolRegistry::empty_for_test(),
++        Vec::new(),
++        BTreeMap::from([(
++            "collaboration__wait_agent".to_string(),
++            ToolName::namespaced("collaboration", "wait_agent"),
++        )]),
++    );
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &HashSet::new()),
++        WaitingCapabilities::none(),
++    );
++}
++
++#[test]
++fn foreign_dynamic_wait_agent_does_not_claim_native_wait() {
++    // Kills the `native_wait_bare_name_match` mutant (A-F1): a directly
++    // visible dynamic `foreign.wait_agent` with no native runtime registered
++    // must not satisfy `native_wait`.
++    let namespace = DynamicToolNamespaceSpec {
++        name: "foreign".to_string(),
++        description: "Foreign tools.".to_string(),
++        tools: vec![DynamicToolNamespaceTool::Function(
++            DynamicToolFunctionSpec {
++                name: "wait_agent".to_string(),
++                description: "External callback.".to_string(),
++                input_schema: serde_json::json!({
++                    "type": "object",
++                    "properties": {},
++                    "additionalProperties": false,
++                }),
++                defer_loading: false,
++            },
++        )],
++    };
++    let DynamicToolNamespaceTool::Function(tool) = &namespace.tools[0];
++    let handler = DynamicToolHandler::new_in_namespace(&namespace, tool)
++        .expect("dynamic wait_agent should convert");
++    let mut registry = ToolRegistry::default();
++    registry.register_external(Arc::new(handler));
++    let router = synthetic_router(
++        registry,
++        vec![namespace_spec("foreign", &["wait_agent"])],
++        BTreeMap::new(),
++    );
++    assert!(
++        router
++            .model_visible_specs()
++            .iter()
++            .any(|spec| spec.name() == "foreign"),
++        "test setup should advertise the foreign decoy",
++    );
++    assert_eq!(
++        derive_waiting_capabilities(&router, &empty_thread_store(), &HashSet::new()),
++        WaitingCapabilities::none(),
++    );
++}
++
++#[test]
++fn exec_notify_true_with_host_opt_in_and_controls() {
++    let router = full_waiting_router(/*notify_on_exit*/ true);
++    assert_eq!(
++        derive_waiting_capabilities(&router, &available_thread_store(), &HashSet::new()),
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: true,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[test]
++fn exec_notify_requires_available_host() {
++    // Kills the `exec_notify_ignores_host` mutant: full controls on an
++    // incapable host promise no wake.
++    let router = full_waiting_router(/*notify_on_exit*/ true);
++    let store = empty_thread_store();
++    store.insert(AsyncNotificationSupport::Unavailable);
++    assert_eq!(
++        derive_waiting_capabilities(&router, &store, &HashSet::new()),
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[test]
++fn exec_notify_requires_notify_opt_in() {
++    // Kills the `exec_notify_ignores_opt_in` mutant.
++    let router = full_waiting_router(/*notify_on_exit*/ false);
++    assert_eq!(
++        derive_waiting_capabilities(&router, &available_thread_store(), &HashSet::new()),
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[test]
++fn missing_exec_command_schema_disables_exec_notify() {
++    // A missing exec schema reads as no opt-in from the final router.
++    let specs: Vec<ToolSpec> = full_waiting_specs(/*notify_on_exit*/ true)
++        .into_iter()
++        .filter(|spec| spec.name() != "exec_command")
++        .collect();
++    let router = synthetic_router(
++        v2_wait_registry(Some("collaboration")),
++        specs,
++        BTreeMap::new(),
++    );
++    assert_eq!(
++        derive_waiting_capabilities(&router, &available_thread_store(), &HashSet::new()),
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[test]
++fn exec_notify_requires_write_stdin() {
++    // Kills the `exec_notify_ignores_stdin` mutant.
++    let specs: Vec<ToolSpec> = full_waiting_specs(/*notify_on_exit*/ true)
++        .into_iter()
++        .filter(|spec| spec.name() != "write_stdin")
++        .collect();
++    let router = synthetic_router(
++        v2_wait_registry(Some("collaboration")),
++        specs,
++        BTreeMap::new(),
++    );
++    assert_eq!(
++        derive_waiting_capabilities(&router, &available_thread_store(), &HashSet::new()),
++        WaitingCapabilities {
++            sleep: true,
++            stdin: false,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[test]
++fn exec_notify_requires_receipt_control() {
++    // Kills the `exec_notify_ignores_receipt` mutant.
++    let specs: Vec<ToolSpec> = full_waiting_specs(/*notify_on_exit*/ true)
++        .into_iter()
++        .filter(|spec| spec.name() != "exec_notification")
++        .collect();
++    let router = synthetic_router(
++        v2_wait_registry(Some("collaboration")),
++        specs,
++        BTreeMap::new(),
++    );
++    assert_eq!(
++        derive_waiting_capabilities(&router, &available_thread_store(), &HashSet::new()),
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[test]
++fn native_mail_wait_requires_host_and_installed_policy() {
++    let router = full_waiting_router(/*notify_on_exit*/ true);
++    let store = available_thread_store();
++    install_wait_policy(&store);
++    assert_eq!(
++        derive_waiting_capabilities(&router, &store, &HashSet::new()),
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: true,
++            native_mail_wait: true,
++        },
++    );
++}
++
++#[test]
++fn native_mail_wait_requires_available_host() {
++    // Kills the `native_mail_wait_ignores_host` mutant.
++    let router = full_waiting_router(/*notify_on_exit*/ true);
++    let store = empty_thread_store();
++    install_wait_policy(&store);
++    assert_eq!(
++        derive_waiting_capabilities(&router, &store, &HashSet::new()),
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[test]
++fn native_mail_wait_requires_installed_policy() {
++    // Kills the `native_mail_wait_ignores_policy` mutant.
++    let router = full_waiting_router(/*notify_on_exit*/ true);
++    assert_eq!(
++        derive_waiting_capabilities(&router, &available_thread_store(), &HashSet::new()),
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: true,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[test]
++fn pending_and_acknowledged_work_does_not_flip_flags() {
++    let router = full_waiting_router(/*notify_on_exit*/ true);
++    let without_provider = available_thread_store();
++    let expected = derive_waiting_capabilities(&router, &without_provider, &HashSet::new());
++    let with_provider = available_thread_store();
++    with_provider.insert(PendingWorkProvider::new(|| {
++        Ok(PendingWorkSnapshot::new(
++            vec![PendingWorkReceipt::new("armed-receipt")],
++            vec![PendingWorkReceipt::new("queued-receipt")],
++            vec![PendingWorkReceipt::new("leased-receipt")],
++            /*revision*/ 7,
++        ))
++    }));
++    assert_eq!(
++        derive_waiting_capabilities(&router, &with_provider, &HashSet::new()),
++        expected,
++    );
++    // Receipts alone create no capability either.
++    assert_eq!(
++        derive_waiting_capabilities(&empty_router(), &with_provider, &HashSet::new()),
++        WaitingCapabilities::none(),
++    );
++}
++
++fn update_config(turn: &mut TurnContext, update: impl FnOnce(&mut crate::config::Config)) {
++    let mut config = (*turn.config).clone();
++    update(&mut config);
++    turn.config = Arc::new(config);
++}
++
++fn set_feature(turn: &mut TurnContext, feature: Feature, enabled: bool) {
++    // The toggled features never drive the multi-agent version (that follows
++    // the Collab feature or an explicit override), so the version set by each
++    // test stays put regardless of call order.
++    let mut config = (*turn.config).clone();
++    if enabled {
++        config
++            .features
++            .enable(feature)
++            .expect("test feature should be enableable in config");
++    } else {
++        config
++            .features
++            .disable(feature)
++            .expect("test feature should be disableable in config");
++    }
++    turn.config = Arc::new(config);
++}
++
++fn goal_activity() -> GoalActivity {
++    GoalActivity {
++        goal_id: "goal-1".to_string(),
++        revision: 1,
++        state: GoalActivityState::Active,
++    }
++}
++
++/// Builds a production tool router plus the snapshot derived from it.
++///
++/// The base disables the time reminder and multi-agent tools so each test
++/// opts into exactly the surface it covers.
++async fn snapshot_for(
++    setup: impl FnOnce(&mut Session, &mut TurnContext),
++) -> (ToolRouter, WaitingCapabilities) {
++    let (mut session, mut turn) = make_session_and_context().await;
++    set_feature(
++        &mut turn,
++        Feature::CurrentTimeReminder,
++        /*enabled*/ false,
++    );
++    turn.multi_agent_version = MultiAgentVersion::Disabled;
++    setup(&mut session, &mut turn);
++    let turn = Arc::new(turn);
++    let step_context = StepContext::for_test(Arc::clone(&turn));
++    let router = build_tool_router(
++        &session,
++        step_context.turn.as_ref(),
++        &step_context.settings.model_info,
++        &step_context.environments,
++        &step_context.mcp,
++        /*apps_enabled*/ false,
++        &turn.extension_data,
++        /*tool_suggest_candidates*/ None,
++    )
++    .expect("tool router should build");
++    let snapshot = derive_waiting_capabilities(
++        &router,
++        &session.services.thread_extension_data,
++        &HashSet::new(),
++    );
++    (router, snapshot)
++}
++
++#[tokio::test]
++async fn deterministic_base_snapshot() {
++    let (_router, snapshot) = snapshot_for(|_, _| {}).await;
++    assert_eq!(
++        snapshot,
++        WaitingCapabilities {
++            sleep: false,
++            stdin: true,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[tokio::test]
++async fn snapshot_follows_sleep_switches() {
++    // A hard sleep disable wins even with an active goal.
++    let (_, hard_off) = snapshot_for(|session, turn| {
++        set_feature(turn, Feature::SleepTool, /*enabled*/ false);
++        session
++            .services
++            .thread_extension_data
++            .insert(goal_activity());
++    })
++    .await;
++    assert_eq!(
++        hard_off,
++        WaitingCapabilities {
++            sleep: false,
++            stdin: true,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++
++    // Reminder on with sleep_tool=false (the ModelDriven default branch)
++    // exposes no sleep tool.
++    let (_, reminder_off) = snapshot_for(|_, turn| {
++        set_feature(turn, Feature::CurrentTimeReminder, /*enabled*/ true);
++    })
++    .await;
++    assert_eq!(
++        reminder_off,
++        WaitingCapabilities {
++            sleep: false,
++            stdin: true,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++
++    // Reminder sleep enabled exposes the tool.
++    let (_, reminder_on) = snapshot_for(|_, turn| {
++        set_feature(turn, Feature::CurrentTimeReminder, /*enabled*/ true);
++        update_config(turn, |config| {
++            config.current_time_reminder = Some(CurrentTimeReminderConfig {
++                sleep_tool: true,
++                ..CurrentTimeReminderConfig::default()
++            });
++        });
++    })
++    .await;
++    assert_eq!(
++        reminder_on,
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++
++    // An active goal exposes sleep without clock catalog support or reminder.
++    let (_, goal_active) = snapshot_for(|session, _| {
++        session
++            .services
++            .thread_extension_data
++            .insert(goal_activity());
++    })
++    .await;
++    assert_eq!(
++        goal_active,
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[tokio::test]
++async fn snapshot_follows_catalog_clock_support() {
++    // A remote catalog entry advertising clock support (replacing the bundled
++    // entry, which lacks it) flows through the final router into the snapshot.
++    let (_, with_clock) = snapshot_for(|_, turn| {
++        update_turn_settings_for_test(turn, |settings| {
++            Arc::make_mut(&mut settings.model_info)
++                .experimental_supported_tools
++                .push("clock".to_string());
++        });
++    })
++    .await;
++    assert_eq!(
++        with_clock,
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++
++    let (_, bundled) = snapshot_for(|_, _| {}).await;
++    assert_eq!(
++        bundled,
++        WaitingCapabilities {
++            sleep: false,
++            stdin: true,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[tokio::test]
++async fn v1_wait_tool_reports_its_namespaced_name() {
++    let (router, snapshot) = snapshot_for(|_, turn| {
++        turn.multi_agent_version = MultiAgentVersion::V1;
++        update_turn_settings_for_test(turn, |settings| {
++            Arc::make_mut(&mut settings.model_info).supports_search_tool = false;
++        });
++    })
++    .await;
++    assert!(
++        router
++            .model_visible_specs()
++            .iter()
++            .any(|spec| spec.name() == "multi_agent_v1"),
++        "test setup should expose V1 tools directly",
++    );
++    assert_eq!(
++        snapshot,
++        WaitingCapabilities {
++            sleep: false,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[tokio::test]
++async fn v2_wait_tool_reports_its_configured_name() {
++    let (router, snapshot) = snapshot_for(|_, turn| {
++        turn.multi_agent_version = MultiAgentVersion::V2;
++        update_turn_settings_for_test(turn, |settings| {
++            Arc::make_mut(&mut settings.model_info).multi_agent_version =
++                Some(MultiAgentVersion::V2);
++        });
++    })
++    .await;
++    assert!(
++        router
++            .model_visible_specs()
++            .iter()
++            .any(|spec| spec.name() == "collaboration"),
++        "test setup should expose V2 tools directly",
++    );
++    assert_eq!(
++        snapshot,
++        WaitingCapabilities {
++            sleep: false,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++fn dynamic_wait_agent(namespace: &str) -> DynamicToolSpec {
++    DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
++        name: namespace.to_string(),
++        description: format!("{namespace} tools"),
++        tools: vec![DynamicToolNamespaceTool::Function(
++            DynamicToolFunctionSpec {
++                name: "wait_agent".to_string(),
++                description: "External callback.".to_string(),
++                input_schema: serde_json::json!({
++                    "type": "object",
++                    "properties": {},
++                    "additionalProperties": false,
++                }),
++                defer_loading: false,
++            },
++        )],
++    })
++}
++
++#[tokio::test]
++async fn foreign_dynamic_wait_agent_with_native_disabled_yields_none() {
++    // Production-router A-F1: native disabled, dynamic `foreign.wait_agent`
++    // directly advertised through `append_dynamic_tool_runtimes`. The bare
++    // name must not satisfy `native_wait`.
++    let (router, snapshot) = snapshot_for(|_, turn| {
++        turn.multi_agent_version = MultiAgentVersion::Disabled;
++        turn.dynamic_tools = vec![dynamic_wait_agent("foreign")];
++    })
++    .await;
++    assert!(
++        router
++            .model_visible_specs()
++            .iter()
++            .any(|spec| spec.name() == "foreign"),
++        "test setup should advertise the foreign decoy",
++    );
++    assert_eq!(
++        snapshot,
++        WaitingCapabilities {
++            sleep: false,
++            stdin: true,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[tokio::test]
++async fn v2_wait_disabled_with_namespaced_decoy_yields_none() {
++    // Production-router A-F1: V2 selected but `wait_agent_enabled=false`, so
++    // no native wait runtime is registered. A dynamic namespaced `wait_agent`
++    // in the would-be native namespace must not satisfy `native_wait`.
++    let (router, snapshot) = snapshot_for(|_, turn| {
++        turn.multi_agent_version = MultiAgentVersion::V2;
++        update_turn_settings_for_test(turn, |settings| {
++            Arc::make_mut(&mut settings.model_info).multi_agent_version =
++                Some(MultiAgentVersion::V2);
++        });
++        update_config(turn, |config| {
++            config.multi_agent_v2.wait_agent_enabled = false;
++        });
++        turn.dynamic_tools = vec![dynamic_wait_agent("collaboration")];
++    })
++    .await;
++    assert!(
++        router.model_visible_specs().iter().any(|spec| {
++            spec.name() == "collaboration"
++                && match spec {
++                    ToolSpec::Namespace(namespace) => namespace
++                        .tools
++                        .iter()
++                        .any(|tool| matches!(tool, ResponsesApiNamespaceTool::Function(tool) if tool.name == "wait_agent")),
++                    _ => false,
++                }
++        }),
++        "test setup should advertise the decoy wait_agent",
++    );
++    assert_eq!(snapshot.native_wait, None);
++}
++
++#[tokio::test]
++async fn custom_v2_namespace_reports_its_configured_name() {
++    // Arbitrary configured V2 namespaces keep working: the snapshot carries
++    // the runtime's actual identity, not a hardcoded namespace.
++    let (router, snapshot) = snapshot_for(|_, turn| {
++        turn.multi_agent_version = MultiAgentVersion::V2;
++        update_turn_settings_for_test(turn, |settings| {
++            Arc::make_mut(&mut settings.model_info).multi_agent_version =
++                Some(MultiAgentVersion::V2);
++        });
++        update_config(turn, |config| {
++            config.multi_agent_v2.tool_namespace = Some("agents".to_string());
++        });
++    })
++    .await;
++    assert!(
++        router
++            .model_visible_specs()
++            .iter()
++            .any(|spec| spec.name() == "agents"),
++        "test setup should expose V2 tools under the custom namespace",
++    );
++    assert_eq!(
++        snapshot.native_wait,
++        Some(ToolName::namespaced("agents", "wait_agent")),
++    );
++}
++
++#[tokio::test]
++async fn discovered_v1_wait_updates_next_step_snapshot() {
++    // A-F2 through production capture: V1 tools start deferred (search
++    // enabled), the first step reports `None`, then a paired `tool_search`
++    // call plus output loading the native wait tool makes the next step
++    // report `Some`. The pair must survive prompt normalization (D-F1).
++    let (session, mut turn) = make_session_and_context().await;
++    set_feature(
++        &mut turn,
++        Feature::CurrentTimeReminder,
++        /*enabled*/ false,
++    );
++    turn.multi_agent_version = MultiAgentVersion::V1;
++    update_turn_settings_for_test(&mut turn, |settings| {
++        Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
++    });
++    let session = Arc::new(session);
++    let turn = Arc::new(turn);
++    let first = session
++        .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
++        .await
++        .expect("first step should capture");
++    assert!(
++        first
++            .tool_router
++            .model_visible_specs()
++            .iter()
++            .any(|spec| spec.name() == "tool_search"),
++        "test setup should defer V1 tools behind tool_search",
++    );
++    assert_eq!(first.waiting_capabilities.native_wait, None);
++
++    // Build the discovery payload through the real spec-to-loadable
++    // conversion the handler uses, so the history shape stays faithful.
++    let v1_spec = WaitAgentHandler::new(WaitAgentTimeoutOptions::default()).spec();
++    let search_info = ToolSearchInfo::from_tool_spec(v1_spec, /*source_info*/ None)
++        .expect("V1 wait spec should be searchable");
++    let loadable = search_info.entry.to_loadable_spec();
++    let value = serde_json::to_value(&loadable).expect("loadable spec should serialize");
++    let discovery = tool_search_output(Some("search-wait-1"), "client", vec![value]);
++    session
++        .record_conversation_items(
++            &turn,
++            &first.settings.model_info,
++            &[tool_search_call("search-wait-1"), discovery],
++        )
++        .await;
++    let second = session
++        .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
++        .await
++        .expect("second step should capture");
++    assert_eq!(
++        second.waiting_capabilities.native_wait,
++        Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++    );
++    // The paired discovery must survive the same normalization the sampling
++    // request uses; an orphan here would panic in debug or be dropped in
++    // release (D-F1 diagnostic).
++    let normalized = session
++        .clone_history()
++        .await
++        .for_prompt(&second.settings.model_info.input_modalities);
++    assert!(
++        normalized.iter().any(|item| matches!(
++            item,
++            ResponseItem::ToolSearchOutput {
++                call_id: Some(call_id),
++                tools,
++                ..
++            } if call_id == "search-wait-1" && !tools.is_empty()
++        )),
++        "paired discovery must survive prompt normalization",
++    );
++}
++
++#[tokio::test]
++async fn headless_exec_host_keeps_exec_but_disables_notification_flags() {
++    for support in [None, Some(AsyncNotificationSupport::Unavailable)] {
++        let (_, snapshot) = snapshot_for(|session, _| {
++            if let Some(support) = support {
++                session.services.thread_extension_data.insert(support);
++            }
++        })
++        .await;
++        assert_eq!(
++            snapshot,
++            WaitingCapabilities {
++                sleep: false,
++                stdin: true,
++                native_wait: None,
++                exec_notify: false,
++                native_mail_wait: false,
++            },
++            "support: {support:?}",
++        );
++    }
++}
++
++#[tokio::test]
++async fn available_host_with_policy_enables_notification_flags() {
++    let (_, snapshot) = snapshot_for(|session, _| {
++        session
++            .services
++            .thread_extension_data
++            .insert(AsyncNotificationSupport::Available);
++        install_wait_policy(&session.services.thread_extension_data);
++    })
++    .await;
++    assert_eq!(
++        snapshot,
++        WaitingCapabilities {
++            sleep: false,
++            stdin: true,
++            native_wait: None,
++            exec_notify: true,
++            native_mail_wait: true,
++        },
++    );
++}
++
++#[tokio::test]
++async fn code_mode_only_hides_nested_waits_but_keeps_direct_sleep() {
++    // Co-killer for the `stdin_counts_nested` mutant through a production
++    // router: nested-only controls must not count.
++    let (router, snapshot) = snapshot_for(|session, turn| {
++        set_feature(turn, Feature::CodeModeOnly, /*enabled*/ true);
++        set_feature(turn, Feature::CurrentTimeReminder, /*enabled*/ true);
++        update_config(turn, |config| {
++            config.current_time_reminder = Some(CurrentTimeReminderConfig {
++                sleep_tool: true,
++                ..CurrentTimeReminderConfig::default()
++            });
++        });
++        session
++            .services
++            .thread_extension_data
++            .insert(AsyncNotificationSupport::Available);
++    })
++    .await;
++    assert_eq!(router.tool_mode(), ToolMode::CodeModeOnly);
++    assert!(
++        router
++            .code_mode_tool_names()
++            .values()
++            .any(|name| name == &ToolName::plain("write_stdin")),
++        "test setup should nest write_stdin in code mode",
++    );
++    assert_eq!(
++        snapshot,
++        WaitingCapabilities {
++            sleep: true,
++            stdin: false,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[tokio::test]
++async fn excluded_receipt_tool_disables_exec_notify() {
++    let (_, snapshot) = snapshot_for(|session, turn| {
++        set_feature(turn, Feature::CurrentTimeReminder, /*enabled*/ true);
++        update_config(turn, |config| {
++            config.current_time_reminder = Some(CurrentTimeReminderConfig {
++                sleep_tool: true,
++                ..CurrentTimeReminderConfig::default()
++            });
++        });
++        session
++            .services
++            .thread_extension_data
++            .insert(AsyncNotificationSupport::Available);
++        session.tool_policy = Arc::new(ToolPolicy {
++            allowed_tools: Some(vec![
++                ToolName::plain("exec_command"),
++                ToolName::plain("write_stdin"),
++                ToolName::namespaced("clock", "sleep"),
++            ]),
++            ..ToolPolicy::default()
++        });
++    })
++    .await;
++    assert_eq!(
++        snapshot,
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++#[tokio::test]
++async fn excluded_exec_command_disables_exec_notify() {
++    // Realistic co-killer for the `exec_notify_ignores_opt_in` mutant: no
++    // advertised exec schema means no opt-in surface.
++    let (_, snapshot) = snapshot_for(|session, _| {
++        session
++            .services
++            .thread_extension_data
++            .insert(AsyncNotificationSupport::Available);
++        session.tool_policy = Arc::new(ToolPolicy {
++            allowed_tools: Some(vec![
++                ToolName::plain("write_stdin"),
++                ToolName::plain("exec_notification"),
++            ]),
++            ..ToolPolicy::default()
++        });
++    })
++    .await;
++    assert_eq!(
++        snapshot,
++        WaitingCapabilities {
++            sleep: false,
++            stdin: true,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        },
++    );
++}
++
++struct RecordingContributor {
++    captures: Arc<Mutex<Vec<(usize, WaitingCapabilities)>>>,
++}
++
++impl ContextContributor for RecordingContributor {
++    fn contribute_turn_context<'a>(
++        &'a self,
++        input: TurnContextContributionInput<'a>,
++    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
++        Box::pin(async move {
++            self.captures
++                .lock()
++                .expect("captures lock should not be poisoned")
++                .push((
++                    std::ptr::from_ref(input.waiting_capabilities) as usize,
++                    input.waiting_capabilities.clone(),
++                ));
++            Vec::new()
++        })
++    }
++}
++
++#[tokio::test]
++async fn same_snapshot_instance_reaches_both_context_paths() {
++    let (mut session, turn) = make_session_and_context().await;
++    let captures = Arc::new(Mutex::new(Vec::new()));
++    let mut builder = ExtensionRegistryBuilder::new();
++    builder.prompt_contributor(Arc::new(RecordingContributor {
++        captures: Arc::clone(&captures),
++    }));
++    session.services.extensions = Arc::new(builder.build());
++    let session = Arc::new(session);
++    let turn = Arc::new(turn);
++    let step_context = session
++        .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
++        .await
++        .expect("step context should capture");
++    let world_state = session
++        .build_world_state_for_step(&step_context)
++        .await
++        .expect("world state should build");
++    let _initial = session
++        .build_initial_context_with_world_state(&step_context, &world_state)
++        .await;
++    let _diff = session
++        .build_turn_context_contribution_items(&step_context)
++        .await;
++    let captures = captures.lock().expect("captures lock should read");
++    assert_eq!(captures.len(), 2);
++    assert_eq!(
++        captures[0].0, captures[1].0,
++        "both context paths must share one snapshot instance",
++    );
++    assert_eq!(captures[0].1, captures[1].1);
++}
++
++#[tokio::test]
++async fn waiting_snapshot_does_not_persist_to_history_or_rollout() {
++    // Production capture retains its step, so an unshared test step is used
++    // here: only the snapshot field changes between the two builds below,
++    // while both production context paths plus the persisted turn item run.
++    let (session, turn) = make_session_and_context().await;
++    let turn = Arc::new(turn);
++    let mut step_context = StepContext::for_test(Arc::clone(&turn));
++    let world_state = session
++        .build_world_state_for_step(&step_context)
++        .await
++        .expect("world state should build");
++    let before_initial = session
++        .build_initial_context_with_world_state(&step_context, &world_state)
++        .await;
++    let before_diff = session
++        .build_turn_context_contribution_items(&step_context)
++        .await;
++    let before_item = step_context.to_turn_context_item();
++    Arc::get_mut(&mut step_context)
++        .expect("test step context should be unshared")
++        .waiting_capabilities = WaitingCapabilities {
++        sleep: true,
++        stdin: true,
++        native_wait: Some(ToolName::plain("wait_agent")),
++        exec_notify: true,
++        native_mail_wait: true,
++    };
++    let after_initial = session
++        .build_initial_context_with_world_state(&step_context, &world_state)
++        .await;
++    let after_diff = session
++        .build_turn_context_contribution_items(&step_context)
++        .await;
++    assert_eq!(before_initial, after_initial);
++    assert_eq!(before_diff, after_diff);
++    assert_eq!(before_item, step_context.to_turn_context_item());
++}
+diff --git a/codex-rs/core/tests/suite/exec_notification.rs b/codex-rs/core/tests/suite/exec_notification.rs
+index 82aa5fce51fe1c931d32f357883db49a8ef1011e..ebca6e04be4bf8e2333f24310341210c647c8d7d 100644
+--- a/codex-rs/core/tests/suite/exec_notification.rs
++++ b/codex-rs/core/tests/suite/exec_notification.rs
+@@ -2,6 +2,12 @@ use anyhow::Context;
+ use anyhow::Result;
+ use codex_core::TurnInputRequest;
+ use codex_extension_api::AsyncNotificationSupport;
++use codex_extension_api::ContextContributor;
++use codex_extension_api::ExtensionFuture;
++use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::PromptFragment;
++use codex_extension_api::TurnContextContributionInput;
++use codex_extension_api::WaitingCapabilities;
+ use codex_protocol::config_types::CollaborationMode;
+ use codex_protocol::config_types::ModeKind;
+ use codex_protocol::config_types::Settings;
+@@ -31,6 +37,8 @@ use core_test_support::wait_for_event;
+ use core_test_support::wait_for_event_match;
+ use pretty_assertions::assert_eq;
+ use serde_json::json;
++use std::sync::Arc;
++use std::sync::Mutex;
+ use std::time::Duration;
+ 
+ const EXEC_COMPLETION_WRAPPER: &str = "source=\"exec_completion\"";
+@@ -724,3 +732,105 @@ async fn exec_notification_unknown_receipt_rejected() -> Result<()> {
+     wait_for_turn_complete(&test).await;
+     Ok(())
+ }
++
++struct WaitingCapabilitiesRecorder {
++    captures: Arc<Mutex<Vec<WaitingCapabilities>>>,
++}
++
++impl ContextContributor for WaitingCapabilitiesRecorder {
++    fn contribute_turn_context<'a>(
++        &'a self,
++        input: TurnContextContributionInput<'a>,
++    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
++        Box::pin(async move {
++            self.captures
++                .lock()
++                .expect("captures lock should not be poisoned")
++                .push(input.waiting_capabilities.clone());
++            Vec::new()
++        })
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn acknowledged_subscription_does_not_flip_waiting_capabilities() -> Result<()> {
++    skip_if_target_windows!(Ok(()), "uses POSIX sleep/echo");
++    skip_if_no_network!(Ok(()));
++    skip_if_sandbox!(Ok(()));
++
++    let server = start_mock_server().await;
++    let captures = Arc::new(Mutex::new(Vec::new()));
++    let mut extensions = ExtensionRegistryBuilder::new();
++    extensions.prompt_contributor(Arc::new(WaitingCapabilitiesRecorder {
++        captures: Arc::clone(&captures),
++    }));
++    let mut builder = test_codex()
++        .with_model("gpt-5.2")
++        .with_extensions(Arc::new(extensions.build()));
++    let test = builder.build_with_auto_env(&server).await?;
++    seed_available_host(&test);
++
++    let launch_args = json!({
++        "cmd": "sleep 2; echo done-mark".to_string(),
++        "yield_time_ms": 250,
++        "notify_on_exit": true,
++    });
++    mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-1"),
++                ev_function_call(
++                    "call-launch",
++                    "exec_command",
++                    &serde_json::to_string(&launch_args)?,
++                ),
++                ev_completed("resp-1"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-2"),
++                ev_assistant_message("msg-1", "launched"),
++                ev_completed("resp-2"),
++            ]),
++            // Idle wake for the opted-in exit.
++            sse(vec![
++                ev_response_created("resp-3"),
++                ev_assistant_message("msg-2", "noted the completion"),
++                ev_completed("resp-3"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-4"),
++                ev_assistant_message("msg-3", "all quiet"),
++                ev_completed("resp-4"),
++            ]),
++        ],
++    )
++    .await;
++
++    submit_exec_turn(&test, "launch with notification").await?;
++    let launch_output = wait_for_function_output(&test, "call-launch").await;
++    assert!(
++        armed_receipt_handle(&launch_output).is_some(),
++        "launch should acknowledge a receipt: {launch_output}"
++    );
++    wait_for_turn_complete(&test).await;
++    // The exit (~2s) wakes an idle turn before the explicit turn below.
++    wait_for_turn_complete(&test).await;
++    submit_exec_turn(&test, "anything new?").await?;
++    wait_for_turn_complete(&test).await;
++
++    let captures = captures.lock().expect("captures lock should read");
++    assert!(
++        captures.len() >= 2,
++        "expected pre-arm and post-arm samples, got {}",
++        captures.len(),
++    );
++    for snapshot in captures.iter() {
++        assert_eq!(*snapshot, captures[0]);
++    }
++    // The capability is present independent of subscription state; no goal is
++    // installed, so no native mail wait is advertised.
++    assert!(captures[0].exec_notify);
++    assert!(!captures[0].native_mail_wait);
++    Ok(())
++}
+diff --git a/codex-rs/core/tests/suite/search_tool.rs b/codex-rs/core/tests/suite/search_tool.rs
+index 00f37f3d141ab496f721578780fdc9a3d2a5fbaf..3e348e0871c202dcc4331e09fb7c4b168a5c75fa 100644
+--- a/codex-rs/core/tests/suite/search_tool.rs
++++ b/codex-rs/core/tests/suite/search_tool.rs
+@@ -6,9 +6,14 @@ use codex_config::types::McpServerTransportConfig;
+ use codex_core::StartThreadOptions;
+ use codex_core::TurnInputRequest;
+ use codex_core::config::Config;
++use codex_extension_api::ContextContributor;
+ use codex_extension_api::ExtensionData;
++use codex_extension_api::ExtensionFuture;
+ use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::PromptFragment;
+ use codex_extension_api::ToolContributor;
++use codex_extension_api::TurnContextContributionInput;
++use codex_extension_api::WaitingCapabilities;
+ use codex_features::Feature;
+ use codex_login::CodexAuth;
+ use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
+@@ -75,6 +80,7 @@ use serde_json::Value;
+ use serde_json::json;
+ use std::collections::HashMap;
+ use std::sync::Arc;
++use std::sync::Mutex;
+ use std::time::Duration;
+ 
+ use super::rmcp_client::remote_aware_environment_id;
+@@ -935,6 +941,134 @@ async fn tool_search_returns_deferred_v1_multi_agent_tools() -> Result<()> {
+     Ok(())
+ }
+ 
++struct WaitingCapabilitiesRecorder {
++    captures: Arc<Mutex<Vec<WaitingCapabilities>>>,
++}
++
++impl ContextContributor for WaitingCapabilitiesRecorder {
++    fn contribute_turn_context<'a>(
++        &'a self,
++        input: TurnContextContributionInput<'a>,
++    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
++        Box::pin(async move {
++            self.captures
++                .lock()
++                .expect("captures lock should not be poisoned")
++                .push(input.waiting_capabilities.clone());
++            Vec::new()
++        })
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn discovered_native_wait_updates_waiting_capabilities() -> Result<()> {
++    // A2-F1/D-F1: a REAL tool_search round trip for the deferred V1 wait
++    // tool. The next request must expose the discovered definition through
++    // paired call/output history, and the step's WaitingCapabilities must
++    // report the native name only after that discovery. Turn-context
++    // contributors run on full context and on turn-context changes, so a
++    // second turn with a different approval policy samples the post-discovery
++    // step snapshot.
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let call_id = "tool-search-wait-agent";
++    let mock = mount_sse_sequence(
++        &server,
++        vec![
++            sse(vec![
++                ev_response_created("resp-1"),
++                ev_tool_search_call(
++                    call_id,
++                    &json!({
++                        "query": "wait agent",
++                    }),
++                ),
++                ev_completed("resp-1"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-2"),
++                ev_assistant_message("msg-1", "done"),
++                ev_completed("resp-2"),
++            ]),
++            sse(vec![
++                ev_response_created("resp-3"),
++                ev_assistant_message("msg-2", "still done"),
++                ev_completed("resp-3"),
++            ]),
++        ],
++    )
++    .await;
++
++    let captures = Arc::new(Mutex::new(Vec::new()));
++    let mut extensions = ExtensionRegistryBuilder::new();
++    extensions.prompt_contributor(Arc::new(WaitingCapabilitiesRecorder {
++        captures: Arc::clone(&captures),
++    }));
++    let mut builder = test_codex()
++        .with_config(configure_search_capable_model)
++        .with_extensions(Arc::new(extensions.build()));
++    let test = builder.build_with_auto_env(&server).await?;
++    test.submit_turn_with_approval_and_permission_profile(
++        "Find the wait agent tool",
++        AskForApproval::Never,
++        PermissionProfile::Disabled,
++    )
++    .await?;
++    test.submit_turn_with_approval_and_permission_profile(
++        "Use what you found",
++        AskForApproval::OnRequest,
++        PermissionProfile::Disabled,
++    )
++    .await?;
++
++    let requests = mock.requests();
++    assert_eq!(requests.len(), 3);
++
++    let first_request_tools = tool_names(&requests[0].body_json());
++    assert!(
++        first_request_tools
++            .iter()
++            .any(|name| name == TOOL_SEARCH_TOOL_NAME),
++        "first request should advertise tool_search: {first_request_tools:?}"
++    );
++    assert!(
++        !first_request_tools.iter().any(|name| name == "wait_agent"),
++        "v1 wait_agent should be hidden before search: {first_request_tools:?}"
++    );
++
++    assert!(
++        tool_search_output_has_namespace_child(
++            &requests[1],
++            call_id,
++            "multi_agent_v1",
++            "wait_agent"
++        ),
++        "expected tool_search to return multi_agent_v1.wait_agent: {:?}",
++        tool_search_output_tools(&requests[1], call_id),
++    );
++
++    let captures = captures.lock().expect("captures lock should read");
++    assert!(
++        captures.len() >= 2,
++        "expected pre- and post-discovery samples, got {}",
++        captures.len(),
++    );
++    let first = captures.first().expect("expected a pre-discovery sample");
++    assert_eq!(
++        first.native_wait, None,
++        "native_wait should be None before discovery",
++    );
++    let last = captures.last().expect("expected a post-discovery sample");
++    assert_eq!(
++        last.native_wait,
++        Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++        "native_wait should carry the discovered native name after search",
++    );
++
++    Ok(())
++}
++
+ struct DeferredCustomTool;
+ 
+ impl ToolContributor for DeferredCustomTool {
+diff --git a/codex-rs/ext/extension-api/src/contributors/context.rs b/codex-rs/ext/extension-api/src/contributors/context.rs
+index 78dd8ae7b5bfe9dee1f292a806d0d485fd6ce15f..ce43687ca545d27260a9a8b74cf7e7c60bfef409 100644
+--- a/codex-rs/ext/extension-api/src/contributors/context.rs
++++ b/codex-rs/ext/extension-api/src/contributors/context.rs
+@@ -1,6 +1,7 @@
+ use codex_protocol::ThreadId;
+ 
+ use crate::ExtensionData;
++use crate::WaitingCapabilities;
+ 
+ /// Host context available while extensions contribute turn-scoped context fragments.
+ #[derive(Clone, Copy)]
+@@ -17,4 +18,7 @@ pub struct TurnContextContributionInput<'a> {
+     pub turn_store: &'a ExtensionData,
+     /// Usable context window of the captured model for this context build, when known.
+     pub model_context_window: Option<i64>,
++    /// Waiting tools callable in this sampling step, derived from the final
++    /// captured router. Both context paths share the same snapshot instance.
++    pub waiting_capabilities: &'a WaitingCapabilities,
+ }
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 02a45c9dbbf6b7e7c9b918168b61c7648829f8a3..d38ed7f2489caa72e49e9962b12a7bdb65a407c4 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -10,6 +10,7 @@ mod state;
+ mod tool_policy;
+ mod turn_admission;
+ mod user_instructions;
++mod waiting_capabilities;
+ 
+ pub use async_notification::AsyncNotificationSupport;
+ pub use goal_activity::GoalActivity;
+@@ -125,6 +126,7 @@ pub use user_instructions::LoadInstructionsFuture;
+ pub use user_instructions::LoadedUserInstructions;
+ pub use user_instructions::ThreadInstructionsProvider;
+ pub use user_instructions::UserInstructionsProvider;
++pub use waiting_capabilities::WaitingCapabilities;
+ 
+ pub use contributors::ToolDispatchInput;
+ 
+diff --git a/codex-rs/ext/extension-api/src/waiting_capabilities.rs b/codex-rs/ext/extension-api/src/waiting_capabilities.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..175a2c3c909d994062f8dee6f86ecd15ce9112d2
+--- /dev/null
++++ b/codex-rs/ext/extension-api/src/waiting_capabilities.rs
+@@ -0,0 +1,59 @@
++//! Sampling-step snapshot of the waiting tools the model can use right now.
++//!
++//! Core derives one [`WaitingCapabilities`] per sampling step from the
++//! finalized tool router plus thread-scoped host/policy markers, and shares
++//! that same instance with every turn-context contributor at both context
++//! paths (initial context and steady-state diffs). Contributors render
++//! waiting guidance from this snapshot instead of re-reading configuration
++//! before sampling.
++//!
++//! Every tool flag means "callable as a model tool in the finalized plan":
++//! exclusions and name collisions are already resolved; directly-visible
++//! tools count, and deferred tools count once tool search has loaded them
++//! into history. Undiscovered deferred tools and nested-only tools do not
++//! count. Acknowledged completion subscriptions are tool-result data, never
++//! capability flags: arming a receipt must not flip any flag here.
++//!
++//! The snapshot is deliberately not serializable and is never persisted to
++//! history or rollout; it lives only for its sampling step.
++
++use crate::ToolName;
++
++/// Waiting tools callable as direct model tools in one sampling step.
++///
++/// Computed once per step from the final captured router; both context paths
++/// receive the same instance so values cannot diverge within the step.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct WaitingCapabilities {
++    /// `clock.sleep` is callable in the finalized plan (direct or
++    /// deferred-but-discovered).
++    pub sleep: bool,
++    /// `write_stdin` is callable in the finalized plan (direct or
++    /// deferred-but-discovered).
++    pub stdin: bool,
++    /// A native agent wait tool (V1 or the configured V2 identity) is
++    /// callable, carrying its actual [`ToolName`]. Unrelated tools named
++    /// `wait_agent` never satisfy this.
++    pub native_wait: Option<ToolName>,
++    /// The host can promise an exec completion wake for this step: host
++    /// support is available, `exec_command` advertises the `notify_on_exit`
++    /// opt-in, and both the `write_stdin` and `exec_notification` controls
++    /// are callable.
++    pub exec_notify: bool,
++    /// The host can wait for child mailbox results for this step: host
++    /// support is available and a goal wait policy is installed.
++    pub native_mail_wait: bool,
++}
++
++impl WaitingCapabilities {
++    /// Snapshot with every capability disabled.
++    pub fn none() -> Self {
++        Self {
++            sleep: false,
++            stdin: false,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        }
++    }
++}
+diff --git a/codex-rs/ext/extension-api/tests/registry.rs b/codex-rs/ext/extension-api/tests/registry.rs
+index daf919269a27f86a49b49ff5106b59b791cc89bd..b9177452e759947b403ee91b4719438c308affd1 100644
+--- a/codex-rs/ext/extension-api/tests/registry.rs
++++ b/codex-rs/ext/extension-api/tests/registry.rs
+@@ -31,6 +31,7 @@ use codex_extension_api::TurnInputContext;
+ use codex_extension_api::TurnInputContributor;
+ use codex_extension_api::TurnItemContributor;
+ use codex_extension_api::TurnLifecycleContributor;
++use codex_extension_api::WaitingCapabilities;
+ use codex_protocol::items::HookPromptItem;
+ use codex_protocol::items::TurnItem;
+ use codex_protocol::protocol::Event;
+@@ -310,6 +311,7 @@ async fn contributors_preserve_registration_order() {
+     let session_store = ExtensionData::new("session");
+     let thread_store = ExtensionData::new("thread");
+     let turn_store = ExtensionData::new("turn");
++    let waiting_capabilities = WaitingCapabilities::none();
+ 
+     let mut fragments = Vec::new();
+     for contributor in registry.context_contributors() {
+@@ -329,6 +331,7 @@ async fn contributors_preserve_registration_order() {
+                     thread_store: &thread_store,
+                     turn_store: &turn_store,
+                     model_context_window: Some(123),
++                    waiting_capabilities: &waiting_capabilities,
+                 })
+                 .await,
+         );
+diff --git a/codex-rs/ext/extension-api/tests/waiting_capabilities.rs b/codex-rs/ext/extension-api/tests/waiting_capabilities.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..324df8214035ddccedf5103c0890905a29f9c403
+--- /dev/null
++++ b/codex-rs/ext/extension-api/tests/waiting_capabilities.rs
+@@ -0,0 +1,47 @@
++use codex_extension_api::ToolName;
++use codex_extension_api::WaitingCapabilities;
++use pretty_assertions::assert_eq;
++use pretty_assertions::assert_ne;
++
++#[test]
++fn none_disables_every_flag() {
++    assert_eq!(
++        WaitingCapabilities::none(),
++        WaitingCapabilities {
++            sleep: false,
++            stdin: false,
++            native_wait: None,
++            exec_notify: false,
++            native_mail_wait: false,
++        }
++    );
++}
++
++#[test]
++fn snapshot_compares_by_value() {
++    let left = WaitingCapabilities {
++        sleep: true,
++        stdin: true,
++        native_wait: Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++        exec_notify: true,
++        native_mail_wait: true,
++    };
++    let right = WaitingCapabilities {
++        sleep: true,
++        stdin: true,
++        native_wait: Some(ToolName::namespaced("multi_agent_v1", "wait_agent")),
++        exec_notify: true,
++        native_mail_wait: true,
++    };
++    assert_eq!(left, right);
++    assert_ne!(left, WaitingCapabilities::none());
++}
++
++#[test]
++fn snapshot_stays_small_and_bounded() {
++    assert!(
++        std::mem::size_of::<WaitingCapabilities>() <= 128,
++        "waiting snapshot must stay a small bounded struct, got {} bytes",
++        std::mem::size_of::<WaitingCapabilities>()
++    );
++}
+diff --git a/codex-rs/ext/goal/src/extension.rs b/codex-rs/ext/goal/src/extension.rs
+index dfb73b6661cde2813b1aaad581fd2b529c4ee6ac..ff19c3a8754023b44427d1464346d6df44217437 100644
+--- a/codex-rs/ext/goal/src/extension.rs
++++ b/codex-rs/ext/goal/src/extension.rs
+@@ -6,10 +6,12 @@ use codex_core::ThreadManager;
+ use codex_core::TurnStartOptions;
+ use codex_extension_api::AsyncNotificationSupport;
+ use codex_extension_api::ConfigContributor;
++use codex_extension_api::ContextContributor;
+ use codex_extension_api::ExtensionData;
+ use codex_extension_api::ExtensionEventSink;
+ use codex_extension_api::ExtensionFuture;
+ use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::PromptFragment;
+ use codex_extension_api::ThreadIdleInput;
+ use codex_extension_api::ThreadLifecycleContributor;
+ use codex_extension_api::ThreadResumeInput;
+@@ -24,6 +26,7 @@ use codex_extension_api::ToolFinishInput;
+ use codex_extension_api::ToolLifecycleContributor;
+ use codex_extension_api::ToolLifecycleFuture;
+ use codex_extension_api::TurnAbortInput;
++use codex_extension_api::TurnContextContributionInput;
+ use codex_extension_api::TurnErrorInput;
+ use codex_extension_api::TurnInputContext;
+ use codex_extension_api::TurnInputContributor;
+@@ -610,6 +613,20 @@ where
+     }
+ }
+ 
++impl<C> ContextContributor for GoalExtension<C>
++where
++    C: Send + Sync + 'static,
++{
++    fn contribute_turn_context<'a>(
++        &'a self,
++        input: TurnContextContributionInput<'a>,
++    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
++        Box::pin(async move {
++            crate::steering::waiting_capability_fragments(input.waiting_capabilities)
++        })
++    }
++}
++
+ impl<C> TurnInputContributor for GoalExtension<C>
+ where
+     C: Send + Sync + 'static,
+@@ -747,6 +764,7 @@ pub fn install_with_backend_and_clock<C>(
+     registry.token_usage_contributor(extension.clone());
+     registry.tool_lifecycle_contributor(extension.clone());
+     registry.turn_input_contributor(extension.clone());
++    registry.prompt_contributor(extension.clone());
+     registry.tool_contributor(extension);
+ }
+ 
+diff --git a/codex-rs/ext/goal/src/steering.rs b/codex-rs/ext/goal/src/steering.rs
+index 4e623e69b6bbe7e0d84afcee8d5d85cec9a4bfff..dc4aa8813a8a9ee27d8c6c3a527348eb76b0c559 100644
+--- a/codex-rs/ext/goal/src/steering.rs
++++ b/codex-rs/ext/goal/src/steering.rs
+@@ -1,6 +1,8 @@
+ use codex_core::context::ContextualUserFragment;
+ use codex_core::context::InternalContextSource;
+ use codex_core::context::InternalModelContextFragment;
++use codex_extension_api::PromptFragment;
++use codex_extension_api::WaitingCapabilities;
+ use codex_prompts::without_update_plan_instructions;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::protocol::ThreadGoal;
+@@ -57,6 +59,17 @@ pub(crate) fn continuation_steering_item(
+     goal_context_input_item(continuation_prompt(goal, update_plan_enabled))
+ }
+ 
++/// Goal-specific waiting guidance for this sampling step.
++///
++/// The continuation-guidance leaf renders developer capabilities from
++/// `capabilities` here. The snapshot leaf only threads the snapshot through
++/// and emits nothing, so no prompt text changes in this leaf.
++pub(crate) fn waiting_capability_fragments(
++    _capabilities: &WaitingCapabilities,
++) -> Vec<PromptFragment> {
++    Vec::new()
++}
++
+ fn goal_context_input_item(prompt: String) -> ResponseItem {
+     ContextualUserFragment::into(InternalModelContextFragment::new(
+         InternalContextSource::from_static("goal"),
+diff --git a/codex-rs/ext/goal/tests/steering.rs b/codex-rs/ext/goal/tests/steering.rs
+index 47c64b7ff0b6f34f315ae8dc99f131cd7b78a75e..ba8bb468427e6e43d39e43311651a8d06b6831cc 100644
+--- a/codex-rs/ext/goal/tests/steering.rs
++++ b/codex-rs/ext/goal/tests/steering.rs
+@@ -7,6 +7,8 @@ mod steering;
+ use codex_core::context::ContextualUserFragment;
+ use codex_core::context::InternalContextSource;
+ use codex_core::context::InternalModelContextFragment;
++use codex_extension_api::ToolName;
++use codex_extension_api::WaitingCapabilities;
+ use codex_protocol::ThreadId;
+ use codex_protocol::models::ContentItem;
+ use codex_protocol::models::ResponseItem;
+@@ -67,3 +69,25 @@ fn test_goal(objective: &str) -> ThreadGoal {
+         updated_at: 0,
+     }
+ }
++
++#[test]
++fn waiting_capabilities_reach_goal_renderer_without_prompt_text() {
++    // The snapshot leaf threads the snapshot through to the goal contributor
++    // without rendering guidance; the continuation-guidance leaf owns this
++    // renderer's evolution.
++    for capabilities in [
++        WaitingCapabilities::none(),
++        WaitingCapabilities {
++            sleep: true,
++            stdin: true,
++            native_wait: Some(ToolName::namespaced("collaboration", "wait_agent")),
++            exec_notify: true,
++            native_mail_wait: true,
++        },
++    ] {
++        assert_eq!(
++            steering::waiting_capability_fragments(&capabilities),
++            Vec::new(),
++        );
++    }
++}

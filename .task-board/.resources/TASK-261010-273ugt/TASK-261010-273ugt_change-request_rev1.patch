@@ -1,0 +1,211 @@
+diff --git a/artifacts/TASK-261010-273ugt_panel-verdict.md b/artifacts/TASK-261010-273ugt_panel-verdict.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..be6e0eada00a2575c1c99ec5eb0bc8438cd88dfc
+--- /dev/null
++++ b/artifacts/TASK-261010-273ugt_panel-verdict.md
+@@ -0,0 +1,205 @@
++# TASK-261010-273ugt — R141 panel A, native goal wait rev2
++
++changes_requested
++
++Ready for review. Independent, non-recording review of CR-TASK-260929-csyzcj-2.
++
++Replay check: base `39c264c34e61b5171ae13b0f756746c24ea5f51a` plus the attached revision-2 patch produces **exactly** candidate tree `78b49cd71e2ccfc855069cc05f99ec294e383e85`. Normal index and repository sources untouched.
++
++Key finding: the typed interrupted context fragment closes the prior ownership finding, but still lacks a hard size bound for the two interpolated AgentPaths. The new fragment crosses the 1K manual-review threshold and 10K item threshold under the repository estimator with syntax-valid long names. **P0 for required context/manual review**, severity `bypass` for the hard-cap contract. This is a source-contract finding; live long-name delivery was not executed.
++
++Commands directly run by this panel (real exits):
++
++| Command | Exit | Evidence |
++|---|---:|---|
++| `task-board m 'set_status(TASK-261010-273ugt, status=analysis)'` | 0 | Own task lifecycle only |
++| `mkdir -p .temp` | 0 | Temporary index parent |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-273ugt-replay.idx" git read-tree 39c264c34e61b5171ae13b0f756746c24ea5f51a` | 0 | Pinned base loaded |
++| `task-board resource get TASK-260929-csyzcj TASK-260929-csyzcj_change-request_rev2.patch --output .temp/TASK-260929-csyzcj_change-request_rev2.patch` | 0 | Patch read |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-273ugt-replay.idx" git apply --cached .temp/TASK-260929-csyzcj_change-request_rev2.patch` | 0 | Replay applied |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-273ugt-replay.idx" git write-tree` | 0 | Exact expected tree |
++| `git rev-parse '6b718428^{tree}'` | 0 | Hosted snapshot has exact candidate tree |
++| `git diff --check 39c264c34e61b5171ae13b0f756746c24ea5f51a 78b49cd71e2ccfc855069cc05f99ec294e383e85` | 0 | Whitespace check only |
++| `python3 .temp/TASK-261010-273ugt-context-bound.py` | **1** | Expected-red cap assertion: 20,039 repository-estimated tokens; this is a failing static witness, not a passing gate |
++| `git grep -n -E 'MAX.*(TASK_NAME|AGENT_NAME|AGENT_PATH)|task_name.*maxLength|task_name.*len\(' 78b49cd7 -- codex-rs` | **1** | No matching name-bound sites; corroboration only, not completeness proof |
++| `git grep -n -E 'task_name.*maxLength|maxLength.*task_name' 78b49cd7 -- codex-rs/core/src/tools/handlers/multi_agents_spec.rs` | **1** | No matching schema name cap; expected no-match |
++| `task-board q 'get(TASK-260929-csyzcj) { description scope ac }'` | 0 | Task requirements read |
++| `task-board q 'get(TASK-261010-273ugt) { ac checklist }'` | 0 | Own handoff requirements read |
++| `task-board spawn directives "$TASK_BOARD_RUN_ID"` | 0 | No active goal/directives |
++| `python3 .temp/TASK-261010-273ugt-validate-verdict.py` | 0 | Exact JSON keys, 1 fenced verdict block, 1 verdict word, 7/7 rows once, replay tree equality; see validation statement below |
++
++Additional read-only operations: `git diff --stat` and scoped source diffs; candidate `git show`, `git grep`, `git ls-tree`, `git rev-parse` blob reads; `rg --files` resource/skill discovery; `cat`, `sed`, `rg` source/resource reads; `git status --short`; Python extraction of 271 selected candidate files via `git show` (exit 0, no archive/worktree created); Python writing of witness and verdict (exit 0). Source reads used the candidate tree or its extracted files, not the ambient worktree source. All these commands exited 0 except the diagnostic lookup failures below. The source-display pipelines through sed and the bounded SleepItem grep/head were reading commands, not validation gates; no pass is inferred from their pipeline status.
++
++Diagnostic failures, kept separate from validation:
++
++- Two initial `get(...) { ... resources ... }` queries exited 1 (unknown projection); repaired with supported task-specific fields and direct resource reads.
++- The skill-relative reviewer-role lookup via `cat` exited 1 (role not at that path); the negative-evidence reference was read and the actual global `/Users/administrator/.roles/reviewer/role.md` read successfully (0). Skill role-body glob searches returned no match (1); the role registry resolves global roles separately from skill references.
++- One runtime source `sed` ran before the extraction process reached that file and exited 1; extraction was awaited to exit 0, then that exact runtime read exited 0.
++- A combined rev1-resource/command lookup exited 1 only because `command -v logbook` found no CLI; the resource and task-board executable were read. The logbook is outcome-scoped below.
++- One shell-glob source search produced `zsh: no matches found`; a later listing made the shell exit 0, so that first search provides no evidence. It was replaced with a quoted/path-explicit standalone search (0).
++- `git show 78b49cd7:codex-rs/core/src/agent/control/communication.rs` exited 128 (wrong path); the actual communication methods were located/read in `agent/control.rs` (0).
++- `task-board resource list TASK-260929-csyzcj` returned help with exit 0, not a resource listing; resource inventory was then read using `rg --files` on the authoritative task resource directory (0).
++
++Execution evidence reused, not rerun: [hosted precheck 8](board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-8.md), snapshot `6b718428`, run [38017711768](https://github.com/ivanopcode/codex/actions/runs/38017711768). Attached summary reports lint/small/core/app-server success, 5,085/5,085 core tests with no flakes, and 7/7 mutant kills. The summary does **not** publish each raw mutant command exit code or individual mutant run ID, so those are unknown here. No previous precheck is substituted for this tree. Claims below cite this evidence as attached evidence, not new panel execution.
++
++```verdict-findings
++{
++  "findings": [
++    {
++      "id": "interrupted-fragment-unbounded-paths",
++      "row": "child state transitions",
++      "invariant": "AGENTS.md model-visible-context rules 3–5: every injected item needs a hard size cap, no item may exceed 10K tokens, and a new item able to cross 1K requires P0/manual review.",
++      "mechanism": "The new InterAgentInterruptedMessage::body (core/src/context/inter_agent_interrupted_message.rs:36–40) interpolates the full parent and child AgentPath, without truncation or refusal. The V2 spawn entry passes task_name to thread_spawn_source (tools/handlers/multi_agents_common.rs:133–156), which calls AgentPath::join. The pinned protocol/src/agent_path.rs:125–180 validates syntax and reserved names but imposes no length bound. ContextualUserFragment::render (context-fragments/src/fragment.rs:91–100) returns this body unchanged. notify_parent_of_terminal_turn (agent/control/completion.rs:93–129) sends that entire body as queue-only communication; submit_inter_agent_communication, mailbox enqueue and protocol InterAgentCommunication::to_model_input_item copy it, without a cap. History recording only truncates FunctionCallOutput/CustomToolCallOutput (context_manager/history.rs:533–580); AgentMessage is retained, and normal history normalization does not cap text. Thus the literal payload is short but the new item is unbounded. An exact formatter transcription with syntax-valid child names of 4,000 and 80,000 characters yields 4,153 and 80,153 body bytes, or 1,039 and 20,039 tokens under the repository estimator. This is a statically established missing-bound contract violation; no live long-name spawn, Rust execution, actual tokenizer measurement, or outbound long-notice request was run.",
++      "reproductions": [
++        {
++          "test_file": ".temp/TASK-261010-273ugt-context-bound.py",
++          "command": "python3 .temp/TASK-261010-273ugt-context-bound.py",
++          "expected_failure": "Observed exit 1: assertion that the exact transcribed formatter stays at or below 10,000 repository-estimated tokens fails (20,039). Source/format witness only; script embedded below. Rust/public-entry reproduction remains requested, not executed."
++        }
++      ],
++      "severity": "bypass",
++      "priority": "P0",
++      "repeat-of": "none",
++      "prior_note": "Rev1 advisory context-size-bound-unverified identified the risk but did not establish a bound; this review traces the complete admission/render/delivery/history chain and supplies a repeatable static formatter witness. This is not a repeat of the fixed interrupted-fragment-outside-context finding.",
++      "requested_change": "Cap the entire new model-visible notice, including path text and any visible envelope fields, at a documented budget (preferably below the 1K manual-review threshold), while preserving full identity in internal routing data. Do not silently narrow the external AgentPath API as an incidental fix. Add a long-path boundary case to inter_agent_interrupted_message_tests.rs and a real V2 spawn -> registered goal wait -> Op::Interrupt -> outbound agent_message test in goal_native_wait.rs; prove it rejects/truncates the oversize body and preserves ordinary short notices. A narrowing mutant that stops budgeting sender/path text must fail that test.",
++      "pinned_blobs": {
++        "fragment": "d58f7b7a573f4a6ab569c202ffb1c8501c10c8ef",
++        "agent_path": "c0ad8b734a94baedc96e93186ce6d8cc3d588ce3",
++        "fragment_trait": "a81e6e395431e1e494f85cc9641af21bcda51ace",
++        "delivery": "3a1b6ad7a7257c61f5355c260c3323b5b026c859",
++        "history": "2475e685ea12ff4f3d32cb00a1cfd877969f5673"
++      }
++    }
++  ],
++  "notes": [
++    {
++      "id": "evidence-identity",
++      "text": "Replay and hosted snapshot identity both verified as 78b49cd71e2ccfc855069cc05f99ec294e383e85. git rev-parse 6b718428^{tree} independently confirms the attached precheck snapshot. Use wip-8, not older prechecks or rebased-equivalent tree 9d9354c0. Four hosted lanes report success, codex-core 5085/5085/no flakes, seven narrowing mutants killed. This panel did not query GitHub or rerun any compiled gate; these are explicitly reused attached results, with only a summarized precheck artifact available rather than individual raw mutant exit logs."
++    },
++    {
++      "id": "coverage-accounting",
++      "text": "Surface sweep 7/7: 6 held against the stated attacks, 1 broken on the static context contract. This is not a claim that every variant of all 9 ACs was executed. The producer explicitly discloses partial AC5/8/9 coverage; the per-row evidence retains those limits. No row is marked not-attacked merely because local builds are forbidden."
++    },
++    {
++      "id": "remaining-tests-requested",
++      "text": "Focused additions requested on this leaf: paused-clock native child check-in/reinsert + exhaustion/late completion; disabled/stopped runtime during the pre-insert pause; old clear/pause cleanup concurrent with a new goal generation; full resume_thread_with_history with a rendered SleepItem and unloaded child; second-child-mid-turn; non-default settings on native marker wake; two real interruption transitions. These were not run and are not claimed reproduced runtime defects. Clear/status cleanup drops the permit before manager lookup, while prefix-only remove may target a newer generation; registration after synchronous stop/disable is another static interleaving worth testing."
++    },
++    {
++      "id": "release-entry",
++      "text": "Candidate-wide release_native_wait search finds the public definition and one suite invocation, with no production service forwarding/internal caller. Its public runtime API is an explicit release surface and its mechanism is tested; absence of internal wiring remains advisory, not a newly reproduced removal failure."
++    },
++    {
++      "id": "size-and-lock",
++      "text": "Diff: 29 files, 2,039 insertions/16 deletions; 1,039 lines are the new integration fixture file. This exceeds the 800-line nonmechanical guidance. Suggested first coherent split: typed owned-child inspection + atomic ExtensionData removal, then goal-native-wait integration and context notice. Cargo changes add exactly the workspace extension-items edge. MODULE.bazel.lock is unchanged; no attached bazel-lock-update execution was identified, so drift is unknown, not asserted. No source/test/build configuration was modified by this panel."
++    },
++    {
++      "id": "scope",
++      "text": "All reads of TASK-260929-csyzcj were read-only. No accept_cr, reject_cr, withdraw_cr, set_status, handoff, notes, resource or checklist write was made on that task. Board mutations and this outcome target TASK-261010-273ugt only. No cargo, just, Rust build/test, nested worktree, commit, branch switch, rebase or merge ran."
++    }
++  ],
++  "surface_results": [
++    {
++      "row": "registration and wake",
++      "result": "held",
++      "evidence": "Hosted run 38017711768: goal_wait_registers_marker_and_wakes_on_child_completion drives V2 spawn, goal set/idle, marker insert, child completion and real outbound parent model request; ignore_native_pending is killed by that test. ExtensionData stores one SleepItem per TypeId, so repeat registration refreshes the slot rather than creating a second marker. Static production chain: runtime.rs:653–805 -> CodexThread::recheck_pending_work_for_goal_wait -> tasks/mod.rs:551 -> start_task. Bound: one-child completion fixture; no independently rerun suite.",
++      "source": "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-8.md"
++    },
++    {
++      "row": "eligibility and inspection errors",
++      "result": "held",
++      "evidence": "Hosted skip_failed_lookups killed by owned_children_inspection_propagates_failed_lookups; source confirms loaded status, UnknownChild Err and known-Unloaded separation. Runtime inspection propagates the whole error via ? before insertion; only loaded PendingInit/Running permits registration; active-goal and host-capability branches gate the path. Non-goal control is also exercised by goal_wait_ordinary_parent_stays_quiet_on_child_interrupt. Bound: backend failure test targets the narrow inspection API, not a full failing goal-idle entry; existing marker cleanup on inspection failure is not claimed.",
++      "source": "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-8.md"
++    },
++    {
++      "row": "completion-before-registration race",
++      "result": "held",
++      "evidence": "Hosted insert_after_mail_check killed by goal_wait_latch_closes_completion_before_registration. Candidate uses two real V2 children and a pre-insert latch, confirms the fast child completion mail is queued before releasing, forbids a second idle pass, and asserts the mail wake/model request with no goal-continuation steering. The retained latch prevents post-wake idle reinsertion racing the turn-start removal assertion. Runtime.rs:736–742 shares the held permit through GoalTurnStartPermit, consumed by extension.rs:276, so synchronous recheck does not reacquire its own semaphore. Bound: completion race exercised; interruption-before-registration is a different unexecuted shape.",
++      "source": "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-8.md"
++    },
++    {
++      "row": "foreign sleep ownership",
++      "result": "held",
++      "evidence": "Hosted insert_clobbers_one_foreign and unconditional_remove killed by goal_wait_preserves_foreign_sleep_across_register_and_turn_start and the small helper tests. Native_wait.rs:41–59 uses atomic insert_if/remove_if; extension-api/state.rs:140–152 holds the same mutex across predicate and remove. A foreign clock-wait-1 remains unchanged through registration and admitted turn start. Static namespace check finds no production foreign marker producer that mints goal-wait: ids; ownership remains prefix-based, not cryptographic.",
++      "source": "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-8.md"
++    },
++    {
++      "row": "marker lifecycle",
++      "result": "held",
++      "evidence": "Hosted goal_wait_removed_on_clear_release_and_resume drives release_native_wait, GoalService::clear_thread_goal and restore_thread_runtime_after_resume after explicit registration; AC1/latch prove admitted-turn removal. Hosted native_pending_exhausts_checkins_then_waits_without_deadline proves three-ticket exhaustion policy. Static source has conditional removal on disable/stop/clear/inactive/resume and next-idle reinsertion for remaining pending native work, with no removal in the Wait branch after exhaustion. Held against these attacks only: live-child fake-time check-in reinsertion, exhausted-marker retention plus late wake, dedicated disable/stop concurrency, and full rollout resume with rendered SleepItem/unloaded child remain unknown. Public release exists and is tested, but has no internal production caller (advisory inherited from rev1).",
++      "source": "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-8.md"
++    },
++    {
++      "row": "side-effect silence",
++      "result": "held",
++      "evidence": "Hosted goal_wait_registers_marker_and_wakes_on_child_completion asserts no parent event for 500 ms following registration and no goal-wait: or current_time in the wake request. Static registration writes only the typed ExtensionData slot, emits no sleep/history event, and calls no reminder API; background check-in timers/warnings have their own existing path. Bound: fixture disables CurrentTimeReminder, so preservation of an enabled reminder schedule is established by source call inspection, not an executed enabled-reminder test.",
++      "source": "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-8.md"
++    },
++    {
++      "row": "child state transitions",
++      "result": "broken",
++      "evidence": "Rev1 typed-context finding is fixed: InterAgentInterruptedMessage is a core/context struct implementing ContextualUserFragment and session_prefix delegates to render. Hosted goal_wait_registered_parent_gets_single_interrupted_notice drives real Op::Interrupt and scopes count/wording assertions to agent_message input; ordinary-parent control stays quiet. interrupted_notice_delivered_twice and interrupted_claims_success are killed. Global is_final match is unchanged; inspecting current status handles reused children. The new notice still lacks a hard size cap (interrupted-fragment-unbounded-paths). Runtime behavior for a second child spawned mid-turn, repeated Running -> Interrupted -> Running -> Interrupted transitions, and non-default inherited settings on this specific native-goal path remains unexecuted; shared wake source preserves prior cyber_access_program at tasks/mod.rs:610–618.",
++      "source": "board-resource://TASK-260929-csyzcj/precondition/TASK-260929-csyzcj_hosted-precheck-8.md"
++    }
++  ],
++  "free_hunt": {
++    "budget_minutes": 3,
++    "started_at_utc": "2026-10-10 03:53:19",
++    "ended_at_utc": "2026-10-10 03:55:18",
++    "examined": [
++      "interrupted notice admission/render/delivery/history size bound",
++      "goal-wait prefix ownership and namespace collisions",
++      "release API callsite coverage",
++      "shared permit callback consumption versus scheduler reservation",
++      "lifecycle cleanup versus newer generation",
++      "Cargo edge and change size"
++    ],
++    "findings": [
++      "interrupted-fragment-unbounded-paths"
++    ],
++    "unexecuted_suspicions": [
++      "old cleanup removing newer marker",
++      "late marker insertion after synchronous stop/disable"
++    ],
++    "bound": "Static analysis plus reused exact-tree hosted attacks; no runtime mutant or Rust test ran locally."
++  }
++}
++```
++
++Outcome-scoped logbook, 2026-10-10: replay and hosted snapshot identities match; rev1 typed-context and real-interruption test gaps are addressed. New blocking source-contract finding: the full interrupted notice has no hard cap for interpolated paths. P0/manual review flag applies to the new item crossing 1K; the static 10K witness fails with exit 1. Six other surface rows hold against the stated attacks with partial lifecycle/settings/resume coverage retained explicitly. Route to producer rework through the recording reviewer; this panel writes nothing to the source task.
++
++Static witness source (recreate the indicated local script; indented source is plain text, not an extra fenced verdict block):
++
++    import ast
++    import json
++    import re
++    import subprocess
++    
++    TREE = "78b49cd71e2ccfc855069cc05f99ec294e383e85"
++    def source(path):
++        return subprocess.check_output(["git", "show", f"{TREE}:{path}"], text=True)
++    
++    fragment = source("codex-rs/core/src/context/inter_agent_interrupted_message.rs")
++    body = fragment.split("fn body(&self) -> String {", 1)[1].split("#[cfg(test)]", 1)[0]
++    match = re.search(r'format!\(\s*("(?:[^"\\]|\\.)*")\s*,\s*self.task_name, self.sender,', body)
++    assert match, "Formatter changed: inspect before transcribing"
++    template = ast.literal_eval(match.group(1))
++    # Source-contract witness: this transcribes the exact format string, not a Rust execution.
++    # AgentPath::validate_agent_name accepts every nonempty [a-z0-9_]+ name except root.
++    # Confirmed by separately inspecting that complete pinned validator and the spawn handler.
++    results = []
++    for length in (4000, 80000):
++        task_name = "x" * length
++        assert re.fullmatch("[a-z0-9_]+", task_name) and task_name != "root"
++        sender = "/root/" + task_name
++        rendered = template.format("/root", sender)
++        byte_count = len(rendered.encode())
++        # Exact repository approx_token_count formula from utils/string/src/truncate.rs.
++        results.append({"task_name_chars": length, "body_bytes": byte_count,
++                        "repository_approx_tokens": (byte_count + 3) // 4})
++    print(json.dumps({"kind": "static-format-witness-not-runtime", "tree": TREE,
++                      "vectors": results}), flush=True)
++    assert results[-1]["repository_approx_tokens"] <= 10000, "new interrupted fragment has no hard 10K item cap"
++
++Witness stdout: `{"kind":"static-format-witness-not-runtime","vectors":[{"task_name_chars":4000,"body_bytes":4153,"repository_approx_tokens":1039},{"task_name_chars":80000,"body_bytes":80153,"repository_approx_tokens":20039}]}`. Exit 1 at the 10,000-estimated-token assertion. This does not establish the token count under any actual model tokenizer; the missing hard cap follows from the pinned source chain, while the witness uses the repository's own estimator.
++
++Artifact validation statement: `python3 .temp/TASK-261010-273ugt-validate-verdict.py` exited 0 before resource attachment. Attachment and role handoff are synchronous CLI writes only to this panel task; their real exits are recorded by the handoff/resource operations on the board.

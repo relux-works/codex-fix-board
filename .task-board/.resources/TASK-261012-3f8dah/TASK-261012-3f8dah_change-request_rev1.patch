@@ -1,0 +1,126 @@
+diff --git a/.research/261012_continuation-pacing-panel-a.md b/.research/261012_continuation-pacing-panel-a.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..a594ded31a6d6861f66f6dfe2098e9fc3d9b9749
+--- /dev/null
++++ b/.research/261012_continuation-pacing-panel-a.md
+@@ -0,0 +1,120 @@
++# Panel A — continuation-schedule revision 3
++
++accept
++
++Ready for review. Independent opinion for CR-TASK-260929-309h9n-3; no source-task recording action.
++
++Replay check: temporary index read from base `67789e1ee29e766e446c7f33feb61561d51f94db`, CR patch applied cached, and `git write-tree` returned exactly `3c5cbffcc73270bec86364ab42550441c87f933c`. Repeated after seven mutant applicability checks: same tree. Real repository index/branch unchanged. Review scope is the Story delta against that base; upstream P3-1 content is context only.
++
++Evidence sources (all read-only): source-task `surface-table.md` (9 rows), `producer-brief.md`, `TASK-260929-309h9n_results.md`, `TASK-260929-309h9n_mutants.json`, `TASK-260929-309h9n_hosted-precheck-9.md`, task description/scope/AC, and `git show <candidate>:<path>`. Source paths/line numbers below refer to this exact candidate. Hosted reference: [relux-ci 38232681612](https://github.com/ivanopcode/codex/actions/runs/38232681612). Accepted from attached evidence, not personally executed: lint/small/core/app-server 4/4 successful; 7/7 mutants killed. Individual hosted process exit codes are not supplied, so are unknown.
++
++Personally executed command ledger (commands were standalone; no gate piped through tee):
++
++| Command / bounded read | Actual exit | Observation |
++|---|---:|---|
++| `task-board m 'set_status(TASK-261012-3f8dah, status=analysis)'` | 0 | Panel lifecycle only |
++| `python3 -c` creating `.temp` and unlinking only the panel index if present | 0 | Safe index setup |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261012-3f8dah-replay.idx" git read-tree 67789e1ee29e766e446c7f33feb61561d51f94db` | 0 | Base loaded |
++| `task-board resource get TASK-260929-309h9n TASK-260929-309h9n_change-request_rev3.patch --output .temp/TASK-260929-309h9n_change-request_rev3.patch` | 0 | Read-only patch download |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261012-3f8dah-replay.idx" git apply --cached .temp/TASK-260929-309h9n_change-request_rev3.patch` | 0 | Replay applied |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261012-3f8dah-replay.idx" git write-tree` (twice) | 0 each | Exact expected candidate both times |
++| `task-board resource get` for each of the five evidence resources listed above | 0 each | Materialized local text; no source mutation |
++| `task-board q 'get(TASK-260929-309h9n) { description scope ac }'` | 0 | Acceptance criteria read |
++| Successful task projection reads for panel checklist and source notes | 0 each | Context only; note output was truncated and is not validation proof |
++| `git diff 67789e1e 3c5cbffc --stat` and scoped production/schema/test deltas | 0 each | Story delta inspected |
++| Python candidate-file materialization using `git ls-tree` and `git show` | 0 | 2509 text files under ignored panel scratch; all subprocess reads succeeded; process awaited to exit |
++| Candidate `git grep` for host constructors, flag mapping, production callers and provider/admission paths | 0 each | Inventory/call sites read |
++| `git grep -n 'CODEX_GOAL_PACING_DISABLED\|pacing_disabled_by_env\|disable_pacing' 3c5cbffc -- codex-rs` | 1 | Expected no-match absence, not a passing gate |
++| `git diff --check 67789e1ee29e766e446c7f33feb61561d51f94db 3c5cbffcc73270bec86364ab42550441c87f933c` | 0 | Candidate patch whitespace check |
++| Python mutant applicability runner; each child `GIT_INDEX_FILE=<panel index> git apply --cached --check -` | 0 runner; 0 each of 7 children | All seven applicable; no mutant applied or executed locally |
++| Python JSON schema delta / feature registry / module size static assertions | 0 | Exactly 2 boolean insertions, Stable/default-on flag, 135-line module |
++| `git status --short` before writing verdict | 0 | Empty output; no tracked source edits |
++| Python verdict-shape validation (one JSON block, one verdict, source-derived 9/9 unique rows) | 0 | Artifact contract checked |
++| Focused test-name fact check via `rg` | 0 | Completion test citation corrected to exact source name |
++| Python writing the verdict artifact | 0 | Text-only deliverable |
++| Python reading one unrelated older panel artifact solely for JSON field-format precedent | 0 | Current peer panel verdicts not read |
++| Reading installed skill and negative-evidence/reference text | 0 for available reads | Required skill used |
++| Combined `cat` with missing skill reviewer role reference | 1 | Missing reference reported; negative-evidence body readable |
++| Query attempting unknown `resources` field | 1 | Parse refusal; recovered with explicit resource gets |
++| `task-board resource list TASK-260929-309h9n` | 0 | Printed help (no list exists); not claimed to enumerate evidence |
++| Focused `rg --files` skill-reference search | 1 | No matches |
++| `task-board spawn directives "$TASK_BOARD_RUN_ID"` | 0 | No directives; combined reference-search shell ended 1 due no-match search |
++| Config search including absent `core/src/config/types.rs` | 2 | Partial read/error, then recovered using authoritative `config/src/schema.rs` via git show |
++| `command -v logbook; logbook --help` | 127 shell | No executable; command lookup itself was 1 |
++
++Initial literal `rm -f` setup was rejected by the execution wrapper before process launch (no process exit code). A narrowly targeted Python unlink replaced it. No blocked or passing gate is inferred from that rejection.
++
++Seven individual applicability results, each actual exit 0: `pacing_streak_reset_on_non_state_change`, `pacing_missing_cap`, `pacing_stale_ticket_admission_skip_revision`, `pacing_timer_not_cancelled_on_invalidation`, `pacing_blocker_skipped_for_paced_turns`, `pacing_first_continuation_paced_after_human_turn`, `pacing_feature_flag_ignored`.
++
++Key aspects: the ambient policy defect is removed; one production host maps the explicit flag; both feature schema maps match the added boolean shape; thread-start-only policy is documented; P4a fixtures are decoupled; no scheduling context or rollout state is added. All 9/9 rows held within the named attacks. No unresolved reproduction or additional test is required for this panel opinion.
++
++Logbook — 2026-10-12: exact replay confirmed; independently swept 9/9 rows and bounded free hunt; accept opinion based on static attack plus exact-tree hosted 4/4 lanes and 7/7 mutant kills. No local builds/tests. No original-task writes. Historical retry limits preserved. The optional logbook CLI is unavailable; this persistent task-scoped logbook section and panel task note carry the record.
++
++```verdict-findings
++{
++  "findings": [],
++  "notes": [
++    "Independent non-recording panel A, CR-TASK-260929-309h9n-3 revision 3. accept is this panel opinion; only the recording reviewer may accept/reject the source CR. No mutation, note, attachment, status or handoff was performed on TASK-260929-309h9n.",
++    "Exact replay and source identity: base 67789e1ee29e766e446c7f33feb61561d51f94db, candidate 3c5cbffcc73270bec86364ab42550441c87f933c. Upstream P3-1 content is excluded from the reviewed delta. No builds/tests/fmt or code edits by this panel.",
++    "Accepted execution evidence is TASK-260929-309h9n_hosted-precheck-9.md and results, bound to this exact tree; 4/4 successful lanes and 7/7 mutant kills. Reported lane conclusions are not individual process exit codes. No invented mutant/test exit codes or first-try claim. Prior-tree prechecks 6/8 are context only, not validation of this tree.",
++    "Flag policy is read at thread start only, is default on, and can be opted out via [features] goal_continuation_pacing=false. This is documented in the producer outcome. Current source field docs are shorter; they do not promise dynamic reconfiguration.",
++    "P4a fixture decoupling is present (continuation_pacing=false). Historical precheck-6 check-in retry and precheck-8 unrelated retries remain disclosed; precheck 9 gives no retry detail, so reliability beyond that run remains unknown.",
++    "No blocking findings. Local logbook executable is unavailable (exit 127), and no logbook connector is exposed. The task-scoped outcome contains the logbook entry and this panel task receives the same handoff note; no source-task write is used as a substitute.",
++    "Installed project-management skill reviewer reference was absent at its referenced path (cat exit 1); a bundled role copy was readable but lacked a review-round contract. The explicit supplied panel contract governs: all 9 rows swept once, then bounded free hunt, with exact-tree hosted public-entry attacks accepted."
++  ],
++  "surface_results": [
++    {
++      "row": "spacing and streak math",
++      "result": "held",
++      "evidence": "Attacked off-by-one, overflow, missing cap, and false resets. continuation_schedule.rs:49-56 saturates n-1, limits shift, checked-multiplies, and caps at 1800s; background_wait.rs:484-487 uses completed quiet streak + 1. Thus the first continuation after human/set/resume is immediate, a first quiet predecessor produces the next n=2 delay (60s), and observed change yields the 30s floor. This entry exception is documented in candidate module docs and producer results. Hosted pacing_delay_n1_n2_n3_and_cap, pacing_state_change_resets_streak_to_floor, pacing_two_polls_grow_streak; missing-cap and false-reset mutants killed. Core real runtime test goal_pacing_first_immediate_second_at_60s asserts two requests. Held for these bounds; arbitrary polling within one turn remains outside scope."
++    },
++    {
++      "row": "polls grow the streak end to end",
++      "result": "held",
++      "evidence": "Attacked the helper-only proof and treating get_goal success/waiting text as state change. Candidate app-server/tests/suite/v2/goal_continuation_pacing.rs:95-212 drives thread/start and thread/goal/set, then two real get_goal tool turns. It asserts two requests after turn 1, four after turn 2, first start <28s, second >=58s after prior completion, and no early third start in 8s. on_turn_stop reads the committed-observation count before finish_turn; ordinary tool success and agent text are excluded by accounting.rs:286-345. Exact-tree hosted app-server lane green; false-reset mutant killed in small/core. Request ratio is 4/4 scripted requests, two per poll turn."
++    },
++    {
++      "row": "one live timer",
++      "result": "held",
++      "evidence": "Attacked a second timer, replacement leakage, event pre-emption and overriding known-work deadlines. runtime.rs:604-639 and 722-731 arm only the existing CheckInTimer; check_in_clock.rs:127-169 aborts the prior slot and detaches the fired entry before callback. background_wait.rs:227-236 invokes the runtime abort hook on invalidation. Nonempty snapshots use the background gate before pacing; no pacing timer is added alongside it. Exact-tree hosted pacing_new_schedule_replaces_old_without_accumulation, pacing_event_wake_preempts_timer, pacing_invalidation_cancels_armed_timer and pacing_known_work_uses_background_wait_instead support the state machine; core pacing tests exercise the actual timer/runtime/start path; producer reports pacing-enabled app-server exec wake scenarios with 4 and 6 requests. Timer-not-cancelled mutant killed in small. Held for these paths, without a local concurrency stress execution."
++    },
++    {
++      "row": "ticket invalidation and admission",
++      "result": "held",
++      "evidence": "Attacked revision/generation/predecessor/reuse mismatches and the fast intervening human turn. PacingTicket binds goal, revision, predecessor, generation and cause; background_wait.rs:574-588 consumes the attempt under the state lock and refuses read failure/generation mismatch, then :632-663 checks outstanding identity, goal, revision, predecessor, nonempty pending state and reuse. Human, steering, goal mutation, clear/stop/resume invalidate; on_turn_start always invalidates. Production runtime publishes the shared admission checker before start_turn_if_idle; existing core goal_admission.rs consumes it and preserves a revision comparison at the publication linearization point. Those inherited core admission rules are inspected as dependencies, not reviewed as new trunk content. Hosted stale-revision mutant killed by pacing_stale_ticket_rejected_on_revision_change; fast-human, predecessor-change, reused-ticket and wrong-generation tests cover the additional shapes. Core/app-server verticals exercise successful ticket admission. Held for named attacks; no new generation-only public-entry mutant was executed by this panel."
++    },
++    {
++      "row": "blocker order and waiting turns",
++      "result": "held",
++      "evidence": "Attacked pacing that bypasses the empty blocker and conflating nonempty waiting text with emptiness. extension.rs:386-394 executes the existing EmptyResponse stop before accounting/pacing at :425-435; accounting.record_item treats nonblank assistant text as activity while observation classification excludes it. Exact-tree hosted core goal_pacing_empty_blocker_runs_before_rescheduling drives the production idle path with pacing on: 3 requests, persisted Blocked goal, no armed wait, still 3 requests after +241s. pacing_blocker_skipped_for_paced_turns was killed by that test. Small pacing_waiting_turn_is_paced_not_empty and the app-server waiting-message poll test cover the nonempty case. The blocker is tested directly, not inferred from a timing proxy."
++    },
++    {
++      "row": "transient state",
++      "result": "held",
++      "evidence": "Attacked rollout persistence, stale resume state and completion granting a fresh allowance. All added pacing fields are in in-memory WaitState; PacingTicket has no serialization implementation. restore_after_resume reconciles goal then calls note_resume; background_wait.rs:762-780 discards streak, predecessor, outstanding handle and deadline. First post-resume continuation is immediate, then quiet turns restart from the schedule floor. Existing background_wait completion evaluation clears deadlines without renewing check_ins_used; test completion_after_cap_wakes_without_counting_as_human_input (background_wait.rs:564-621) explicitly retains 3 consumed check-ins. Subscription/work completion is the completion meant here; explicit goal mutation has its separately defined reset. Hosted small pacing_resume_restarts_at_floor_and_resets_quotas and existing completion tests support these semantics. Producer results explicitly disclose restart resetting transient quotas and losing live observations; no stale subscription restoration is introduced."
++    },
++    {
++      "row": "no model-visible change",
++      "result": "held",
++      "evidence": "Attacked scheduling text injection, history items and context cache changes. All scheduling additions are host-only fields/timers; pacing Wait uses emit_warning=false, and no context/steering template or rollout shape changes appear in the delta. Existing continuation steering is unchanged. Candidate app-server poll vertical scans all 4 outbound request bodies for pacing/PacingTicket/continuation_schedule/streak and completion-fragment markers; hosted app-server lane green. Small pacing_emits_no_warnings_or_prompt_text covers warning-free schedule evaluation. Held for the scheduling leaf and named markers plus static full-delta context inspection; this is not a general claim of byte identity between all model requests."
++    },
++    {
++      "row": "mutants and measurement",
++      "result": "held",
++      "evidence": "Attacked patch drift, missing killers and counting unit tests as model requests. Personally checked each of 7 patches with git apply --cached --check against the replayed candidate index: 7/7 exit 0, tree unchanged afterwards. Accepted exact-tree hosted precheck 9 reports 7/7 killed, 0 survivors, with named killers: pacing_two_polls_grow_streak (false reset); pacing_delay_n1_n2_n3_and_cap (cap); pacing_stale_ticket_rejected_on_revision_change (revision); pacing_invalidation_cancels_armed_timer (cancel); goal_pacing_empty_blocker_runs_before_rescheduling (blocker); pacing_first_continuation_after_human_turn_proceeds_immediately (entry); background_wait_inactive_on_unavailable_host_auto_continues (ignored config). The final killer is in the full goal_background_wait path selected by test(goal). Reported model requests: core quiet 2, core blocker 3 and silence, app-server polls 4 and silence, wake cases 4/6, goal units 0. Coverage ratio describes these seven submitted mutants, not all possible refusal clauses or races."
++    },
++    {
++      "row": "placement and size",
++      "result": "held",
++      "evidence": "Attacked leftover ambient policy, incomplete host mapping, schema drift and silently claimed mid-thread toggles. Dedicated continuation_schedule.rs is 135 lines. Scheduler stays in ext/goal and reuses the existing background-wait implementation; core production delta is thin committed-observation hooks and delivery-status fixes, with no core-to-goal production dependency. Candidate-wide grep locates exactly one production GoalExtensionConfig constructor (app-server/src/extensions.rs:84-90), which maps the Stable default-on Feature::GoalContinuationPacing. Seven other struct constructions are explicit test fixtures (pacing true in its core vertical; false in P4a/activity/backend fixtures). No old CODEX_GOAL_PACING_DISABLED/pacing_disabled_by_env/disable_pacing symbol remains (grep exit 1). Static schema diff finds only 2/2 boolean-key insertions, matching config::schema::features_schema generation for this registry entry. on_thread_start alone enables pacing; resume/config-update do not re-read it, and producer results Production policy and bounds/Disclosed bounds say so explicitly. Ignored-feature mutant is killed on exact tree. Prior ambient-switch mechanism A2-F1/B2-N2/D-N2 is closed; no new placement defect found. Full Rust schema regeneration was not run locally."
++    }
++  ],
++  "free_hunt": [
++    "After the 9-row sweep, bounded static hunt covered three additional paths: (1) committed plan/spawn/file observations versus model text and wrapper success; (2) unavailable notification host plus default pacing and pending-provider installation; (3) external integration surfaces and raw delivery status. No additional blocking mechanism identified.",
++    "Observation path: PlanHandler publishes parsed args then notify_plan_committed; extension records actual step transitions, excluding explanation-only/identical plans. Applied FileChange requires Completed; accepted collab deliveries require Completed or Started/Interacted. V1 spawn/send changes distinguish accepted delivery from subsequent child liveness, keeping agents_states. Model text, ordinary exec/tool success, polling and wrapper success cannot reset the streak. Candidate tests state_change_observations and code_mode supply production-oriented evidence; no new local execution claimed.",
++    "Host availability path: Core session.rs:1816-1831 publishes PendingWorkProvider unconditionally, independently of AsyncNotificationSupport. Thus pacing on an unavailable-notification host does not treat absence of the notification capability as absence/failure of the provider. Read failure remains WaitOnReadFailure/Wait, not empty. Only app-server production installs goal extension; standalone exec/tui have no alternate GoalExtensionConfig constructor in this tree. This is a bounded source inventory, not a claim about future external embedders.",
++    "Integration surface path: feature is an additive config key in both maps; no new CLI parameter, app-server RPC shape or pacing rollout field. Collab raw item status semantics intentionally change from child liveness to delivery outcome; wire enum/shape and agents_states remain unchanged, with accepted/refused status tests. No extra external-schema change found. Inherited core publication locking is unchanged by this CR delta.",
++    "Remaining limits: no local runtime/race/mutant execution; no fresh generated Rust schema run; exact-tree hosted report is summarized and does not expose individual process exits/retries. Held results apply to the named attacks and static paths, not exhaustive timing or platform coverage."
++  ]
++}
++```

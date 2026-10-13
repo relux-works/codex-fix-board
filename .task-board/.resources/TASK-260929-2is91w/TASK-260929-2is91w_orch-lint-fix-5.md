@@ -1,0 +1,3 @@
+# TASK-260929-2is91w orchestrator lint fix after precheck 5
+
+Precheck 5 (run 38090222940) failed lint: E0599 `no method named tool_exposure` for ToolRegistry at core/src/tools/router.rs:222. `ToolRegistry::tool_exposure` was `#[cfg(test)]`, and the rework calls it from production (router.rs, waiting_capabilities.rs). Fix: removed the `#[cfg(test)]` attribute on `ToolRegistry::tool_exposure` (registry.rs), nothing else. The unused `ToolCallSource` import warning is pre-existing on trunk. fmt --check exit 0, all 12 mutants still apply. New tree f23a2c79e83f5d8c3eb4c7191c83ce56ec9b129e; precheck 6 runs on it.

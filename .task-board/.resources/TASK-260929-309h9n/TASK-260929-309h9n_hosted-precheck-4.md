@@ -1,0 +1,14 @@
+# TASK-260929-309h9n hosted precheck 4
+
+CI ivanopcode/codex, slim relux-ci run 38160194813: snapshot = worktree tree 181cc48fbd0b927f134ba39d268882a52551e776. Lanes: {'lint': 'success', 'app-server': 'success', 'small': 'success', 'core': 'success'}. All green.
+
+Mutants: 6 total, 6 killed, 0 survivors.
+
+| mutant | failing lanes | killing tests |
+|---|---|---|
+| pacing_blocker_order_swapped | small | pacing_inactive_goal_never_paced |
+| pacing_first_continuation_paced_after_human_turn | small,core | pacing_claim_rejects_early_superseded_and_wrong_generation, pacing_emits_no_warnings_or_prompt_text, pacing_event_wake_preempts_timer, pacing_fast_intervening_human_turn_invalidates, pacing_first_continuation_after_human_turn_proceeds_immediately, pacing_first_continuation_without_predecessor_proceeds_immediately, pacing_goal_change_resets_streak_and_proceeds_immediately, pacing_human_input_resets_streak_and_proceeds_immediately, pacing_inactive_goal_never_paced, pacing_invalidation_cancels_armed_timer, pacing_new_schedule_replaces_old_without_accumulation, pacing_non_continuation_turn_does_not_touch_streak, pacing_resume_restarts_at_floor_and_resets_quotas, pacing_stale_ticket_rejected_on_revision_change, pacing_state_change_resets_streak_to_floor, pacing_ticket_reused_is_rejected, pacing_two_polls_grow_streak, goal_pacing_first_immediate_second_at_60s |
+| pacing_missing_cap | small | pacing_delay_n1_n2_n3_and_cap |
+| pacing_stale_ticket_admission_skip_revision | small,core | pacing_stale_ticket_rejected_on_revision_change, goal_pacing_first_immediate_second_at_60s |
+| pacing_streak_reset_on_non_state_change | small,core | pacing_claim_rejects_early_superseded_and_wrong_generation, pacing_emits_no_warnings_or_prompt_text, pacing_event_wake_preempts_timer, pacing_fast_intervening_human_turn_invalidates, pacing_first_continuation_after_human_turn_proceeds_immediately, pacing_goal_change_resets_streak_and_proceeds_immediately, pacing_human_input_resets_streak_and_proceeds_immediately, pacing_inactive_goal_never_paced, pacing_invalidation_cancels_armed_timer, pacing_new_schedule_replaces_old_without_accumulation, pacing_non_continuation_turn_does_not_touch_streak, pacing_resume_restarts_at_floor_and_resets_quotas, pacing_stale_ticket_rejected_on_predecessor_change, pacing_stale_ticket_rejected_on_revision_change, pacing_state_change_resets_streak_to_floor, pacing_ticket_binds_goal_revision_predecessor_generation, pacing_ticket_reused_is_rejected, pacing_two_polls_grow_streak, pacing_waiting_turn_is_paced_not_empty, goal_pacing_first_immediate_second_at_60s |
+| pacing_timer_not_cancelled_on_invalidation | small | pacing_event_wake_preempts_timer, pacing_invalidation_cancels_armed_timer |

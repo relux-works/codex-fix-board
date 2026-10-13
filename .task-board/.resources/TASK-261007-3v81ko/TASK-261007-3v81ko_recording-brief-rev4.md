@@ -1,0 +1,3 @@
+# Recording reviewer — TASK-261007-3v81ko CR revision 4 (tb-R141)
+
+One non-recording delta panel reviewed this landed-tree rework revision: TASK-261010-3cmjct_panel-verdict.md (accept). The orchestrator wrote `TASK-261007-3v81ko_review-verdict-rev4.md` (attached). rev4 differs from the accepted rev3 only by the CI-only relux-ci.yml hunk (see its merge note). You are the ONE recording reviewer: confirm that the rev4 candidate tree is bde782b85ddbc8536536d0747b3917d0f24e1951, that its diff against the rev3 tree 2f7ec5e30babb9dff4f00132ad9fd384663930b0 is only .github/workflows/relux-ci.yml, and that the delta verdict is accept. Then record accept with `TASK-261007-3v81ko_review-verdict-rev4.md` attached as the verdict. If any check fails, refuse and say exactly what.

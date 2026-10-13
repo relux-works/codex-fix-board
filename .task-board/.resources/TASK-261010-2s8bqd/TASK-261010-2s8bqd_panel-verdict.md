@@ -1,0 +1,234 @@
+# R141 panel A — TASK-261007-3v81ko rev2, fix-exec-tmpdir-cleanup
+
+changes_requested
+
+Read-only, non-recording review of CR-TASK-261007-3v81ko-2. No source edits,
+builds, tests, or board writes on TASK-261007-3v81ko. This panel's evidence is
+ready for review on TASK-261010-2s8bqd.
+
+Replay: base `07c018be3507b8d4a5558a85a117b94ed2a23872` plus the attached
+rev2 patch, applied through a temporary index, produces
+`ca07d336e99eb0ddcb15a180bbaaaf2a45388835`, exactly the expected candidate tree.
+The worktree's normal index was not used or changed. All source citations below
+refer to that candidate tree unless explicitly identified as base or Rust source.
+
+Predecessor command ledger (RUN-261010-d021db), retained as prior evidence;
+these are not all commands rerun by the successor:
+
+| Command | Exit / evidence |
+|---|---|
+| `task-board m 'set_status(TASK-261010-2s8bqd, status=analysis)'` | 0 |
+| `python3 -c 'from pathlib import Path; Path(".temp").mkdir(exist_ok=True); Path(".temp/TASK-261010-2s8bqd-replay.idx").unlink(missing_ok=True)'` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-2s8bqd-replay.idx" git read-tree 07c018be3507b8d4a5558a85a117b94ed2a23872` | 0 |
+| `task-board resource get TASK-261007-3v81ko TASK-261007-3v81ko_change-request_rev2.patch --output .temp/TASK-261007-3v81ko_change-request_rev2.patch` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-2s8bqd-replay.idx" git apply --cached .temp/TASK-261007-3v81ko_change-request_rev2.patch` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-2s8bqd-replay.idx" git write-tree` | 0; exact expected tree above |
+| `git diff --check 07c018be3507b8d4a5558a85a117b94ed2a23872 ca07d336e99eb0ddcb15a180bbaaaf2a45388835` | 0 |
+| `task-board q 'get(TASK-261007-3v81ko) { description scope ac notes }'` | 0; read-only AC/context |
+| `task-board q 'get(TASK-261010-2s8bqd) { checklist }'` | 0 |
+| `task-board spawn directives "$TASK_BOARD_RUN_ID"` | 0; no directives |
+| `gh run view 38021154057 --repo ivanopcode/codex --json headSha,conclusion,url,jobs` | 0; output too large, narrowed query below used for conclusions |
+| `gh run view 38021154057 --repo ivanopcode/codex --json conclusion,url,jobs --jq '{conclusion,url,jobs:[.jobs[]\|{name,conclusion,databaseId}]}'` | 0; snapshot lanes success, mutant small lanes failure |
+| `gh run view 38021154057 --repo ivanopcode/codex --job 114123649089 --log > .temp/TASK-261010-2s8bqd-snapshot-small.log` | 0, including terminal wait; 930/930 executed tests passed, 1 skipped; all 12 new tests PASS |
+| `gh api repos/ivanopcode/codex/git/commits/98ae625bdd680caf632828105d807d8723e163e8 --jq '{sha,tree:.tree.sha}'` | 0; snapshot commit tree equals candidate tree |
+| `gh run view 38021154057 --repo ivanopcode/codex --job 114123649003 --log > .temp/TASK-261010-2s8bqd-mutant-114123649003.log` | 0, including terminal wait; underlying mutant test gate exited **100** |
+| `gh run view 38021154057 --repo ivanopcode/codex --job 114123649027 --log > .temp/TASK-261010-2s8bqd-mutant-114123649027.log` | 0, including terminal wait; underlying mutant test gate exited **100** |
+| `gh run view 38021154057 --repo ivanopcode/codex --job 114123649031 --log > .temp/TASK-261010-2s8bqd-mutant-114123649031.log` | 0, including terminal wait; underlying mutant test gate exited **100** |
+| `gh run view 38021154057 --repo ivanopcode/codex --job 114123649084 --log > .temp/TASK-261010-2s8bqd-mutant-114123649084.log` | 0; underlying mutant test gate exited **100** |
+
+Other reads: `git diff --stat`, source diffs, `git show`, `git grep`, source/log
+extraction with Python, resource `cat`, scoped CLI schema reads and `git status
+--short` returned 0 except the diagnostics explicitly recorded below. These are
+inspection commands, not executed Rust gates. No locally executed Rust validation
+is claimed. `python3 .temp/TASK-261010-2s8bqd-validate-verdict.py` returned 1 on
+its first two invocations because ANSI escape sequences interrupted the hosted
+summary and mutant-diff strings; after stripping ANSI from both, it returned 0.
+It verifies exactly one JSON
+block, all five unique rows, the replay tree, 12/12 hosted PASS markers and all
+four mutant gate exit codes.
+
+Recoverable inspection diagnostics: the initial `rm -f` replay setup was rejected
+before execution (no process exit code); replaced with the Python setup above.
+The first query including unsupported `resources` returned 1, followed by the
+valid projection above. The skill-relative reviewer role `cat` returned 1
+(missing file); the installed `/Users/administrator/.roles/reviewer/role.md`
+read returned 0. A hidden reviewer-role search returned 1 (no matching file).
+`task-board resource list` returned 0 with help, not an inventory; resources were
+then read from their authorized read-only directory. One combined source-read
+shell returned 0 despite a `git show` of nonexistent
+`codex-rs/utils/cli/src/exec_options.rs` emitting a fatal error (that subcommand
+failed; its exit was not captured independently). The actual definition was
+located and read in `utils/cli/src/shared_options.rs`. No gate relied on this
+failed read. `command -v logbook` found no executable; `schema(operation=logbook)`
+returned 1 (unsupported). The logbook entry below travels in this task-scoped
+outcome; no control-root logbook file was edited.
+
+Execution evidence reused, not rerun: [hosted precheck 2](https://github.com/ivanopcode/codex/actions/runs/38021154057)
+and board resource `TASK-261007-3v81ko_hosted-precheck-2.md`. The aggregate workflow
+conclusion is **failure**, expected because mutant jobs deliberately fail; the
+unmodified lint, snapshot small, snapshot core and snapshot app-server lanes
+are **success**. The four mutant small test commands exited **100**, never 0:
+they run `INSTA_WORKSPACE_ROOT="$PWD" just test -p codex-tools -p
+codex-goal-extension -p codex-extension-api -p codex-rollout-trace -p
+codex-queue-extension -p codex-exec -p codex-arg0 -p codex-cli "${filter[@]}"`,
+with filter `test(tmpdir_cleanup) | test(tmpdir) | test(stderr) | test(exit_code)`.
+Snapshot small runs the same package list without narrowing the filter.
+
+| Hosted attack | Job | Observed failure reason |
+|---|---|---|
+| `empty_stdin_error_prefix` | [mutant-1 small](https://github.com/ivanopcode/codex/actions/runs/38021154057/job/114123649003) | full-stderr equality differs by the extra `Error:` prefix |
+| `empty_stdin_process_exit` | [mutant-2 small](https://github.com/ivanopcode/codex/actions/runs/38021154057/job/114123649027) | named stdin tests report leaked `codex-arg0*` directories |
+| `error_seen_process_exit` | [mutant-3 small](https://github.com/ivanopcode/codex/actions/runs/38021154057/job/114123649031) | named server-error tests report leaked `codex-arg0*` directories |
+| `exec_parse_exit` | [mutant-4 small](https://github.com/ivanopcode/codex/actions/runs/38021154057/job/114123649084) | help and invalid-argument tests report leaked `codex-arg0*` directories |
+
+Key finding: `arg0/src/silent_exit.rs:63` changes ordinary error termination from
+best-effort stderr reporting to a panicking write. The helper reaches both public
+binaries after guard cleanup (`exec/src/main.rs:51`, `cli/src/main.rs:1023`). An
+ordinary `anyhow` error from `exec/src/lib.rs:303` (`--worktree --ephemeral`) reaches
+this branch before prompt/network startup. This changes failure behavior when
+stderr is unwritable. Static proof uses the pinned toolchain, Rust 1.95.0:
+[Result Termination](https://raw.githubusercontent.com/rust-lang/rust/1.95.0/library/std/src/process.rs)
+calls the best-effort routine;
+[stdio implementation](https://raw.githubusercontent.com/rust-lang/rust/1.95.0/library/std/src/io/stdio.rs)
+ignores its write error, while `_eprint` panics on write failure. The public-entry
+reproductions in the JSON are requested hosted attacks, **not executed here or
+present in the candidate's 12 tests**. Panic status instead of 1 is inferred from
+these implementations, not measured on the candidate.
+
+Fix recommendation: retain `SilentExit` handling, but delegate the ordinary
+`Err(err)` branch to `std::process::Termination::report` on `Result::<(), _>::Err(err)`.
+Add a binary-level failing-stderr test, e.g. Linux `/dev/full` with an isolated,
+writable CODEX_HOME and TMPDIR, so the ordinary error reaches the reporter without
+an earlier alias-setup warning. No product decision or external blocker is needed.
+
+AC assessment: AC1/AC2 normal exits and AC3 are supported within the measured
+classes below; the original macOS eight `.tmp*` directories on successful runs
+remain unreproduced, so that exact incident's cause/resolution is unknown.
+AC2's permitted signal bound is now truthful. AC4 is held for persistent path and
+deletion invariance. AC5's unmodified lanes are green on the exact candidate.
+The observable-behavior surface fails the new static attack despite those greens.
+
+Logbook — 2026-10-10, TASK-261010-2s8bqd (R141 panel A, rev2): exact replay and
+hosted commit/tree match verified; 5/5 rows swept; 12/12 added tests pass and 4/4
+mutants die for relevant assertions. New A2-F1: manual ordinary-error reporting
+panics on stderr I/O failure whereas the replaced Termination path ignores it.
+The signal and original-success-incident limits remain explicit. Panel verdict
+is changes_requested, to be merged by the orchestrator; nothing recorded on the
+underlying implementation task.
+
+Successor verification — RUN-261010-2827d7, 2026-10-10:
+
+Replayed the patch myself before candidate inspection, independently checked the
+five surface rows and the shared-reporter finding, reread both public parser
+routes and the leak oracles, and retrieved the hosted logs again. The surface
+verdicts below are retained after this verification. Pinned Rust sources were
+opened and checked again; stderr failure remains a static finding, with no
+candidate runtime reproduction claimed.
+
+| Command rerun by successor | Real exit |
+|---|---|
+| `task-board m 'set_status(TASK-261010-2s8bqd, status=analysis)'` | 0 |
+| `task-board resource get TASK-261007-3v81ko TASK-261007-3v81ko_change-request_rev2.patch --output .temp/TASK-261007-3v81ko_change-request_rev2.patch` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-2s8bqd-replay-successor-2827d7.idx" git read-tree 07c018be3507b8d4a5558a85a117b94ed2a23872` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-2s8bqd-replay-successor-2827d7.idx" git apply --cached .temp/TASK-261007-3v81ko_change-request_rev2.patch` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-2s8bqd-replay-successor-2827d7.idx" git write-tree` | 0; ca07d336e99eb0ddcb15a180bbaaaf2a45388835 |
+| `git diff --check 07c018be3507b8d4a5558a85a117b94ed2a23872 ca07d336e99eb0ddcb15a180bbaaaf2a45388835` | 0 |
+| `gh run view 38021154057 --repo ivanopcode/codex --json conclusion,url,jobs --jq '{conclusion,url,jobs:[.jobs[]\|{name,conclusion,databaseId}]}'` | 0 |
+| `gh api repos/ivanopcode/codex/git/commits/98ae625bdd680caf632828105d807d8723e163e8 --jq '{sha,tree:.tree.sha}'` | 0; exact candidate tree |
+| `gh run view 38021154057 --repo ivanopcode/codex --job 114123649089 --log > .temp/TASK-261010-2s8bqd-snapshot-small.log` | 0 |
+| `gh run view 38021154057 --repo ivanopcode/codex --job 114123649003 --log > .temp/TASK-261010-2s8bqd-mutant-114123649003.log` | 0; hosted gate 100 |
+| `gh run view 38021154057 --repo ivanopcode/codex --job 114123649027 --log > .temp/TASK-261010-2s8bqd-mutant-114123649027.log` | 0; hosted gate 100 |
+| `gh run view 38021154057 --repo ivanopcode/codex --job 114123649031 --log > .temp/TASK-261010-2s8bqd-mutant-114123649031.log` | 0; hosted gate 100 |
+| `gh run view 38021154057 --repo ivanopcode/codex --job 114123649084 --log > .temp/TASK-261010-2s8bqd-mutant-114123649084.log` | 0; hosted gate 100 |
+| `python3 .temp/TASK-261010-2s8bqd-validate-verdict.py` | 0; prior index tree and retrieved logs validated |
+
+All hosted tests and mutants are **reused execution evidence**, not rerun by
+this successor. Fresh retrieval is exit 0; the four negative gates are expected
+failures with actual exit 100, proving their respective assertions reject the
+narrowing mutations. Other successful reads include the task AC/checklist/notes,
+source patch and candidate files, surface table, producer brief, results,
+precheck resource, project config and gate script (exit 0).
+
+Successor recoverable diagnostics: two initial board queries including
+`resources` and one including `attachments` returned 1; valid compact queries
+returned 0. The skill-relative role file read returned 1; the installed role read
+returned 0. A source-location search returned 1 (no match). The first replay
+setup using `rm -f` was rejected before execution, with no process exit code;
+a fresh index path avoided deletion and every replay step returned 0.
+
+Handoff recovery logbook: predecessor research-only handoff validation exited
+**1**, refusing tree `e0a2c3c8c3743a1c02858885607d4f99fc012a93` because it had no
+recorded green hosted run. This is a real failing gate, not an expected-red test
+or a pass. Its candidate included the untracked `.research` report, which was
+outside the reviewed source tree. Keep this panel's report in the board outcome
+and in ignored `.temp/artifacts/`, preserving a read-only repository review
+without submitting a research document as a product-code Change Request.
+No gate evidence or configuration was changed to force admission.
+
+```verdict-findings
+{
+  "findings": [
+    {
+      "id": "A2-F1",
+      "row": "exit status and observable behavior",
+      "invariant": "Ordinary errors must retain the previous failure exit status even when their terminal stderr write fails.",
+      "mechanism": "Candidate codex-rs/arg0/src/silent_exit.rs:63 uses eprintln! for non-SilentExit errors. Both public mains now call this helper. Base mains returned anyhow::Result, whose Rust 1.95 Result Termination uses attempt_print_to_stderr and ignores write failures. eprintln! instead panics on failing stderr. Public codex-exec --worktree --ephemeral returns an ordinary anyhow error at exec/src/lib.rs:303 before any normal stderr output, exposing the new panic path with stderr attached to /dev/full. Static source proof; candidate runtime status is not measured. Delegate ordinary errors to the existing Termination implementation and request a public-binary regression test.",
+      "reproductions": [
+        {
+          "test_file": "codex-rs/exec/tests/suite/tmpdir_cleanup.rs",
+          "command": "env CODEX_HOME=\"$FIXTURE_HOME\" TMPDIR=\"$FIXTURE_TMP\" TEMP=\"$FIXTURE_TMP\" TMP=\"$FIXTURE_TMP\" RUST_LOG=off \"$CODEX_EXEC_BIN\" --worktree --ephemeral 2>/dev/full",
+          "expected_failure": "Requested Linux hosted attack, NOT executed: use the exact candidate binary, fresh writable sibling home/temp directories, and assert exit 1 plus no leaked arg0 directories. The candidate reporter is inferred to panic on ENOSPC instead of returning 1; a new exec_ordinary_error_with_failing_stderr_preserves_exit_code test should fail that status assertion. The base Termination reporter ignores ENOSPC and returns failure."
+        },
+        {
+          "test_file": "codex-rs/cli/tests/exec_tmpdir_cleanup.rs",
+          "command": "env CODEX_HOME=\"$FIXTURE_HOME\" TMPDIR=\"$FIXTURE_TMP\" TEMP=\"$FIXTURE_TMP\" TMP=\"$FIXTURE_TMP\" RUST_LOG=off \"$CODEX_BIN\" --remote ws://127.0.0.1:1 exec 2>/dev/full",
+          "expected_failure": "Requested Linux hosted attack, NOT executed: the remote/exec incompatibility returns an ordinary anyhow error from cli/src/main.rs:2158 through cli_main and the shared reporter. A new cli_exec_ordinary_error_with_failing_stderr_preserves_exit_code test should require exit 1 and cleaned arg0 state; candidate reporting is inferred to panic on the failing stderr sink."
+        }
+      ],
+      "severity": "regression",
+      "repeat-of": "none"
+    }
+  ],
+  "notes": [
+    "Replay and GitHub snapshot commit 98ae625bdd680caf632828105d807d8723e163e8 both identify tree ca07d336e99eb0ddcb15a180bbaaaf2a45388835. Review is source plus exact-tree hosted evidence, with no locally executed Rust gates.",
+    "Rev1 A-F1/F1 parser leaks, A-F2 normal stderr-prefix regression, A-F3 fail-open/vacuous oracles, and A-F4 false SIGTERM claim are addressed. A2-F1 is a newly introduced write-failure class, not a repeat of the previously corrected normal-output prefix defect.",
+    "Coverage: 5/5 surface rows swept; 12/12 new tests pass; 4/4 submitted mutants killed; 2/13 original explicit exec exit sites mutated plus 1/2 parser dispatchers mutated; 0/4 mutants prove the original eight-per-success .tmp* incident; 0 OS-signal delivery tests. Multitool parser has 2 passing public-entry tests but no dedicated mutant. These fractions are bounds, not universal exit-site or platform claims.",
+    "The hosted log's exit 100 is an expected failing gate on each mutant; gh retrieval exit 0 only proves successful evidence retrieval. Aggregate CI failure is expected from the mutant matrix, not a failure of the unmodified candidate lanes.",
+    "No logbook executable or board logbook operation was available. The dated logbook entry is preserved above in this panel outcome; no control-root file or source task was written."
+  ],
+  "surface_results": [
+    {
+      "row": "tmpdir cleanup on every exit",
+      "result": "held",
+      "reason": "Public-entry hosted success/server-error/empty-stdin and both binaries' parser tests pass; three one-site leak mutants fail specifically on leaked arg0 directories. Static attack traces all 13 converted explicit exits through ? to arg0/src/lib.rs:281-285, which drops the owner before returning. Both try_parse branches return instead of exiting. Residual arg0 helper exits precede guard allocation and residual CLI exits belong to other subcommands. Held within normal-exit, successful-removal and stated signal bounds; original macOS eight .tmp* incident remains unknown, not claimed reproduced."
+    },
+    {
+      "row": "exit status and observable behavior",
+      "result": "broken",
+      "reason": "A2-F1: ordinary-error reporting introduces panic on failing stderr. Exact normal-stderr tests and parser status/stream tests pass, and the prefix mutant fails as intended, but none exercises terminal stderr I/O failure. The static Rust 1.95 implementation comparison establishes the changed failure mechanism; the named new public-entry attacks remain unexecuted."
+    },
+    {
+      "row": "signal and abort bound",
+      "result": "held",
+      "reason": "Results explicitly say Ctrl-C routing exists but OS delivery is unverified; SIGTERM is unhandled and leaks; SIGKILL/abort skip destructors. Source confirms only tokio::signal::ctrl_c at exec/src/lib.rs:1129 and no SIGTERM subscription in in-process startup. AC2 permits an explicit bound; no signal coverage is claimed."
+    },
+    {
+      "row": "persistent state unchanged",
+      "result": "held",
+      "reason": "Diff attack finds no persistent path, store initialization, schema or deletion changes. The existing arg0 guard owns only CODEX_HOME/tmp/arg0/codex-arg0*; rollout writer locks remain CODEX_HOME/thread-writer-locks (rollout/src/writer_lock.rs:35-39). Added test homes are sibling fixtures, not production relocation. Held for location/deletion invariance, not byte-identical incidental destructor flushing."
+    },
+    {
+      "row": "regression test and mutants",
+      "result": "held",
+      "reason": "Snapshot-small log directly shows 12/12 new tests PASS. Mutant logs show relevant full-stderr diff or actual leaked codex-arg0 directories, with gate exit 100 on all four. Oracles now panic on root/entry read failure; setup requires an existing fresh arg0 root and no setup warning, with homes outside isolated TMPDIR. Two oracle attack tests pass. Coverage limitations and the unexecuted new stderr-write-failure attack are stated, not silently counted green."
+    }
+  ],
+  "free_hunt": [
+    "Bounded hunt: inspected shared exit helper semantics, both CLI routes and remaining process exits; A2-F1 arose from comparing ordinary-error reporting with pinned Rust Termination, beyond the producer's normal-stderr tests.",
+    "Inspected arg0 guard lifetime/thread/runtime return order, keep/forget/static ownership candidates in exec, in-process server/client, core/state/MCP and rollout code. Matching temporary homes in sampled core/MCP/server sources are test-only. No additional production leak mechanism established; this scoped search is not a whole dependency graph proof.",
+    "Inspected output-schema absence/read/decode and prompt resolution changes: None maps to Ok(None); read/decode errors still refuse with original diagnostics and silent failure; resume/fork/review propagation uses ?. No new await or post-return cleanup loop added at converted sites. No additional regression established.",
+    "Inspected Bazel source/test discovery: defs.bzl globs src/**/*.rs and tests/*.rs/tests/**, so new Rust source and CLI integration tests are included without BUILD changes. No dependencies, generated schemas, protocol wire types or model-visible context changed.",
+    "Stopped after these bounded areas and all five rows. Original success-incident root cause, signal delivery, repeated-run stress and Windows/macOS candidate execution remain unknown; Linux hosted evidence was reused, not presented as cross-platform execution."
+  ]
+}
+```

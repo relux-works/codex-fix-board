@@ -1,0 +1,30 @@
+[
+ {
+  "name": "pacing_streak_reset_on_non_state_change",
+  "patch": "--- a/codex-rs/ext/goal/src/background_wait.rs\n+++ b/codex-rs/ext/goal/src/background_wait.rs\n@@ -804,6 +804,6 @@\n         if had_state_change {\n             state.pacing_streak = 0;\n         } else {\n-            state.pacing_streak = state.pacing_streak.saturating_add(1);\n+            state.pacing_streak = 0;\n         }\n     }\n"
+ },
+ {
+  "name": "pacing_missing_cap",
+  "patch": "--- a/codex-rs/ext/goal/src/continuation_schedule.rs\n+++ b/codex-rs/ext/goal/src/continuation_schedule.rs\n@@ -62,8 +62,7 @@\n pub fn pacing_delay(low_streak_n: u32) -> Duration {\n     let shift = low_streak_n.saturating_sub(1).min(31);\n     let multiplier = 1u32 << shift;\n     PACING_BASE_DELAY\n         .checked_mul(multiplier)\n         .unwrap_or(PACING_CAP_DELAY)\n-        .min(PACING_CAP_DELAY)\n }\n"
+ },
+ {
+  "name": "pacing_stale_ticket_admission_skip_revision",
+  "patch": "--- a/codex-rs/ext/goal/src/background_wait.rs\n+++ b/codex-rs/ext/goal/src/background_wait.rs\n@@ -645,12 +645,6 @@\n             state.pacing_outstanding = None;\n             return GoalAdmissionDecision::Wait;\n         }\n-        if snapshot.revision() != attempt.expected_revision\n-            || snapshot.revision() != ticket.expected_revision()\n-        {\n-            state.pacing_outstanding = None;\n-            return GoalAdmissionDecision::Wait;\n-        }\n         if state.pacing_predecessor.as_deref() != ticket.predecessor_turn() {\n             state.pacing_outstanding = None;\n             return GoalAdmissionDecision::Wait;\n"
+ },
+ {
+  "name": "pacing_timer_not_cancelled_on_invalidation",
+  "patch": "--- a/codex-rs/ext/goal/src/background_wait.rs\n+++ b/codex-rs/ext/goal/src/background_wait.rs\n@@ -233,7 +233,6 @@\n         self.admission_attempt = None;\n         self.pending_deadline = None;\n         self.pacing_wait_started_at = None;\n-        self.fire_invalidation_hook();\n     }\n \n     fn fire_invalidation_hook(&self) {\n"
+ },
+ {
+  "name": "pacing_blocker_skipped_for_paced_turns",
+  "patch": "--- a/codex-rs/ext/goal/src/extension.rs\n+++ b/codex-rs/ext/goal/src/extension.rs\n@@ -379,8 +379,11 @@\n             }\n-            if let Err(err) = runtime\n-                .stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::EmptyResponse)\n-                .await\n+            let pacing_reschedules = runtime.background_wait_state().is_pacing_enabled()\n+                && runtime.accounting_state().is_goal_continuation(turn_id);\n+            if !pacing_reschedules\n+                && let Err(err) = runtime\n+                    .stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::EmptyResponse)\n+                    .await\n             {\n                 runtime.revoke_activity_on_read_failure(input.thread_store, &err);\n                 input.thread_store.remove::<TurnStartOptions>();\n                 tracing::warn!(\"failed to stop goal after empty responses for {turn_id}: {err}\");\n"
+ },
+ {
+  "name": "pacing_first_continuation_paced_after_human_turn",
+  "patch": "--- a/codex-rs/ext/goal/src/background_wait.rs\n+++ b/codex-rs/ext/goal/src/background_wait.rs\n@@ -461,25 +461,6 @@\n             }\n             state.pacing_goal_id = Some(goal_id.to_string());\n         }\n-        if !state.pacing_predecessor_is_continuation {\n-            // Entry rule (AC1): the first automatic continuation after a\n-            // human turn, a goal set/mutation, or a resume has no automatic\n-            // predecessor, so it proceeds without a pacing delay. The\n-            // revision is still recorded so admission rechecks pending-mail\n-            // state before the turn starts.\n-            state.pacing_wait_started_at = None;\n-            state.pending_deadline = None;\n-            state.admission_attempt = Some(AdmissionAttempt {\n-                goal_id: goal_id.to_string(),\n-                expected_revision: snapshot.revision(),\n-                expected_generation: state.generation,\n-                ticket: None,\n-                pacing_ticket: None,\n-            });\n-            return BackgroundWaitEvaluation::ProceedNormal {\n-                expected_revision: snapshot.revision(),\n-            };\n-        }\n         let streak_n = state.pacing_streak.saturating_add(1);\n         let delay = pacing_delay(streak_n);\n         let wait_started_at = *state.pacing_wait_started_at.get_or_insert(now);\n"
+ },
+ {
+  "name": "pacing_feature_flag_ignored",
+  "patch": "--- a/codex-rs/ext/goal/src/extension.rs\n+++ b/codex-rs/ext/goal/src/extension.rs\n@@ -186,7 +186,7 @@\n             }\n             // Low-activity pacing is enabled by the goal_continuation_pacing\n             // feature flag (on by default).\n-            if continuation_pacing {\n+            if continuation_pacing || true {\n                 runtime.background_wait_state().enable_pacing();\n             }\n             self.goal_service.register_runtime(&runtime);\n"
+ }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "name": "error_seen_process_exit",
+    "patch": "diff --git a/codex-rs/exec/src/lib.rs b/codex-rs/exec/src/lib.rs\nindex a404705fe..a459f8625 100644\n--- a/codex-rs/exec/src/lib.rs\n+++ b/codex-rs/exec/src/lib.rs\n@@ -1321,10 +1321,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {\n     }\n     event_processor.print_final_output();\n     if error_seen {\n-        // Return a silent exit instead of exiting so the arg0\n-        // temporary-directory guard and other destructors run before the\n-        // process terminates, without printing an extra diagnostic.\n-        return Err(SilentExit::failure().into());\n+        std::process::exit(1);\n     }\n \n     Ok(())\n"
+  },
+  {
+    "name": "empty_stdin_process_exit",
+    "patch": "diff --git a/codex-rs/exec/src/lib.rs b/codex-rs/exec/src/lib.rs\nindex a404705fe..1477e5517 100644\n--- a/codex-rs/exec/src/lib.rs\n+++ b/codex-rs/exec/src/lib.rs\n@@ -2274,7 +2274,7 @@ fn read_prompt_from_stdin(behavior: StdinPromptBehavior) -> anyhow::Result<Optio\n             StdinPromptBehavior::OptionalAppend => Ok(None),\n             StdinPromptBehavior::RequiredIfPiped | StdinPromptBehavior::Forced => {\n                 eprintln!(\"No prompt provided via stdin.\");\n-                return Err(SilentExit::failure().into());\n+                std::process::exit(1);\n             }\n         }\n     } else {\n"
+  },
+  {
+    "name": "empty_stdin_error_prefix",
+    "patch": "diff --git a/codex-rs/exec/src/lib.rs b/codex-rs/exec/src/lib.rs\nindex a404705fe..b9957b0f0 100644\n--- a/codex-rs/exec/src/lib.rs\n+++ b/codex-rs/exec/src/lib.rs\n@@ -2273,8 +2273,7 @@ fn read_prompt_from_stdin(behavior: StdinPromptBehavior) -> anyhow::Result<Optio\n         match behavior {\n             StdinPromptBehavior::OptionalAppend => Ok(None),\n             StdinPromptBehavior::RequiredIfPiped | StdinPromptBehavior::Forced => {\n-                eprintln!(\"No prompt provided via stdin.\");\n-                return Err(SilentExit::failure().into());\n+                anyhow::bail!(\"No prompt provided via stdin.\");\n             }\n         }\n     } else {\n"
+  },
+  {
+    "name": "exec_parse_exit",
+    "patch": "diff --git a/codex-rs/exec/src/main.rs b/codex-rs/exec/src/main.rs\nindex 15ebc4f7e..a4a920370 100644\n--- a/codex-rs/exec/src/main.rs\n+++ b/codex-rs/exec/src/main.rs\n@@ -29,17 +29,7 @@\n \n fn main() -> Result<std::process::ExitCode, anyhow::Error> {\n     let result = arg0_dispatch_or_else(|arg0_paths: Arg0DispatchPaths| async move {\n-        let top_cli = match TopCli::try_parse() {\n-            Ok(top_cli) => top_cli,\n-            Err(err) => {\n-                // Render clap's message exactly as `parse()` would, then return\n-                // the same exit code through the silent path so the arg0 guard\n-                // is dropped instead of leaked.\n-                let code = u8::try_from(err.exit_code()).unwrap_or(1);\n-                let _ = err.print();\n-                return Err(SilentExit::new(code).into());\n-            }\n-        };\n+        let top_cli = TopCli::parse();\n         // Merge root-level overrides into inner CLI struct so downstream logic remains unchanged.\n         let mut inner = top_cli.inner;\n         inner\n"
+  },
+  {
+    "name": "stderr_failure_eprintln",
+    "patch": "diff --git a/codex-rs/arg0/src/silent_exit.rs b/codex-rs/arg0/src/silent_exit.rs\nindex f9c59d652..a7b518d3e 100644\n--- a/codex-rs/arg0/src/silent_exit.rs\n+++ b/codex-rs/arg0/src/silent_exit.rs\n@@ -69,7 +69,8 @@\n             if let Some(code) = err.downcast_ref::<SilentExit>().map(SilentExit::code) {\n                 Ok(std::process::ExitCode::from(code))\n             } else {\n-                Err(err)\n+                eprintln!(\"Error: {err:?}\");\n+                Ok(std::process::ExitCode::FAILURE)\n             }\n         }\n     }\n"
+  }
+]

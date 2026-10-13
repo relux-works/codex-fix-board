@@ -1,0 +1,2788 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index 14fbb710c897d1fea4489f97475ba495ad18d79e..5630f114e057a28c962346747b5e2a5b18211714 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -3492,6 +3492,7 @@ dependencies = [
+  "codex-analytics",
+  "codex-core",
+  "codex-extension-api",
++ "codex-extension-items",
+  "codex-otel",
+  "codex-prompts",
+  "codex-protocol",
+diff --git a/codex-rs/core/src/agent/control/completion.rs b/codex-rs/core/src/agent/control/completion.rs
+index 0f09257a978c94f0bdd90e91fe3e4c28d0303afc..3a1b6ad7a7257c61f5355c260c3323b5b026c859 100644
+--- a/codex-rs/core/src/agent/control/completion.rs
++++ b/codex-rs/core/src/agent/control/completion.rs
+@@ -9,7 +9,11 @@ use crate::agent::api::AgentTurnOutcome;
+ use crate::agent_communication::AgentCommunicationContext;
+ use crate::agent_communication::AgentCommunicationKind;
+ use crate::session_prefix::format_inter_agent_completion_message;
++use crate::session_prefix::format_inter_agent_interrupted_message;
++use codex_extension_items::sleep::SleepItem;
++use codex_extension_items::sleep::is_goal_wait_sleep_id;
+ use codex_protocol::AgentPath;
++use codex_protocol::ThreadId;
+ use codex_protocol::items::SubAgentActivityItem;
+ use codex_protocol::protocol::AgentStatus;
+ use codex_protocol::protocol::InterAgentCommunication;
+@@ -85,12 +89,23 @@ impl LocalAgentControl {
+             }
+         }
+ 
+-        let Some(message) = format_inter_agent_completion_message(
+-            parent_agent_path.clone(),
+-            child_agent_path.clone(),
+-            &status,
+-        ) else {
+-            return;
++        // `Interrupted` is non-final (`is_final` unchanged): notify only when
++        // the direct parent holds a registered goal wait, once per transition,
++        // without claiming success. Ordinary parents stay quiet.
++        let message = if matches!(status, AgentStatus::Interrupted) {
++            if !self.parent_holds_goal_wait_marker(parent_thread_id).await {
++                return;
++            }
++            format_inter_agent_interrupted_message(&parent_agent_path, child_agent_path)
++        } else {
++            let Some(message) = format_inter_agent_completion_message(
++                parent_agent_path.clone(),
++                child_agent_path.clone(),
++                &status,
++            ) else {
++                return;
++            };
++            message
+         };
+         // `communication` owns the message. Keep a second copy only when the
+         // recorder will actually need it after parent delivery succeeds.
+@@ -128,4 +143,21 @@ impl LocalAgentControl {
+             );
+         }
+     }
++
++    /// Reports whether the direct parent holds a goal-owned wait marker.
++    ///
++    /// Missing manager or parent is quiet (`false`): interrupted notices are
++    /// best effort for registered waits only.
++    async fn parent_holds_goal_wait_marker(&self, parent_thread_id: ThreadId) -> bool {
++        let Ok(manager) = self.runtime.upgrade() else {
++            return false;
++        };
++        let Ok(parent) = manager.get_thread(parent_thread_id).await else {
++            return false;
++        };
++        parent
++            .thread_extension_data()
++            .get::<SleepItem>()
++            .is_some_and(|item| is_goal_wait_sleep_id(item.id.as_str()))
++    }
+ }
+diff --git a/codex-rs/core/src/agent/control/runtime_context.rs b/codex-rs/core/src/agent/control/runtime_context.rs
+index 2034d03fbd7ab1baf723a137f1bb9fe3148a90e5..d2cbdfa68b036a5efd0f84e6af3b5abf4304f26a 100644
+--- a/codex-rs/core/src/agent/control/runtime_context.rs
++++ b/codex-rs/core/src/agent/control/runtime_context.rs
+@@ -2,11 +2,14 @@
+ //! These use the same local registry and thread manager as lifecycle operations.
+ 
+ use super::LocalAgentRuntime;
++use crate::agent::owned_children::OwnedChildInspection;
++use crate::agent::owned_children::OwnedChildrenReadError;
+ use crate::agent::types::AgentMetadata;
+ use crate::session_prefix::format_subagent_context_line;
+ use crate::thread_manager::ThreadManagerState;
+ use codex_protocol::ThreadId;
+ use codex_protocol::error::CodexErr;
++use codex_protocol::error::CodexErrorDetails;
+ use codex_protocol::error::Result as CodexResult;
+ use std::collections::HashMap;
+ use std::sync::Arc;
+@@ -134,4 +137,75 @@ impl LocalAgentRuntime {
+             .upgrade()
+             .ok_or_else(|| CodexErr::UnsupportedOperation("thread manager dropped".to_string()))
+     }
++
++    /// Inspects directly owned native children without restoring runtimes.
++    ///
++    /// Lists live `ThreadSpawn` edges owned by `parent_thread_id`, then
++    /// inspects each child: loaded runtimes report their current status,
++    /// known-but-unloaded children report [`OwnedChildInspection::Unloaded`],
++    /// and unknown identities or backend failures return
++    /// [`OwnedChildrenReadError`]. Errors propagate; failed lookups are never
++    /// silently skipped like `list_agents`.
++    pub(crate) async fn inspect_directly_owned_native_children(
++        &self,
++        parent_thread_id: ThreadId,
++    ) -> Result<Vec<OwnedChildInspection>, OwnedChildrenReadError> {
++        let manager = self
++            .upgrade()
++            .map_err(|_| OwnedChildrenReadError::SessionUnavailable)?;
++        let children = self
++            .open_thread_spawn_children(parent_thread_id)
++            .await
++            .map_err(|err| OwnedChildrenReadError::InspectionFailed {
++                thread_id: parent_thread_id,
++                reason: err.to_string(),
++            })?;
++        let child_ids = children
++            .into_iter()
++            .map(|(child_thread_id, _)| child_thread_id)
++            .collect::<Vec<_>>();
++        self.inspect_owned_child_ids(&manager, &child_ids).await
++    }
++
++    /// Inspects explicit child identities, propagating the first failure.
++    ///
++    /// Production lists ids via
++    /// [`Self::inspect_directly_owned_native_children`]; tests pass explicit
++    /// ids (including unknown ones) to prove failed lookups propagate instead
++    /// of being skipped.
++    pub(crate) async fn inspect_owned_child_ids(
++        &self,
++        manager: &Arc<ThreadManagerState>,
++        child_ids: &[ThreadId],
++    ) -> Result<Vec<OwnedChildInspection>, OwnedChildrenReadError> {
++        let mut inspections = Vec::with_capacity(child_ids.len());
++        for child_thread_id in child_ids {
++            let child_thread_id = *child_thread_id;
++            match manager.get_thread(child_thread_id).await {
++                Ok(thread) => {
++                    inspections.push(OwnedChildInspection::Loaded {
++                        thread_id: child_thread_id,
++                        status: thread.agent_status().await,
++                    });
++                }
++                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
++                    self.ensure_agent_known(child_thread_id).map_err(|_| {
++                        OwnedChildrenReadError::UnknownChild {
++                            thread_id: child_thread_id,
++                        }
++                    })?;
++                    inspections.push(OwnedChildInspection::Unloaded {
++                        thread_id: child_thread_id,
++                    });
++                }
++                Err(err) => {
++                    return Err(OwnedChildrenReadError::InspectionFailed {
++                        thread_id: child_thread_id,
++                        reason: err.to_string(),
++                    });
++                }
++            }
++        }
++        Ok(inspections)
++    }
+ }
+diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
+index dbd89a5ccfe2603d45d3698cafd47b32b2679153..8523ee2d84963e08302f2df40ee8508b67c399ac 100644
+--- a/codex-rs/core/src/agent/control_tests.rs
++++ b/codex-rs/core/src/agent/control_tests.rs
+@@ -5640,3 +5640,66 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails()
+         .await
+         .expect("tree shutdown after partial subtree resume should succeed");
+ }
++
++#[tokio::test]
++async fn owned_children_inspection_propagates_failed_lookups() {
++    use crate::agent::owned_children::OwnedChildInspection;
++    use crate::agent::owned_children::OwnedChildrenReadError;
++
++    let harness = AgentControlHarness::new().await;
++    let (parent_thread_id, _) = harness.start_thread().await;
++    let child_thread_id = harness
++        .spawn_anonymous_child(parent_thread_id, SpawnAgentOptions::default())
++        .await;
++    let unknown_thread_id = ThreadId::new();
++
++    let manager = harness
++        .control
++        .runtime
++        .upgrade()
++        .expect("manager should be available");
++    let inspections = harness
++        .control
++        .runtime
++        .inspect_owned_child_ids(&manager, &[child_thread_id])
++        .await
++        .expect("loaded child should inspect");
++    assert_eq!(inspections.len(), 1);
++    assert_matches!(
++        &inspections[0],
++        OwnedChildInspection::Loaded { thread_id, .. } if *thread_id == child_thread_id
++    );
++
++    let err = harness
++        .control
++        .runtime
++        .inspect_owned_child_ids(&manager, &[child_thread_id, unknown_thread_id])
++        .await
++        .expect_err("unknown child must propagate, not skip");
++    assert_eq!(
++        err,
++        OwnedChildrenReadError::UnknownChild {
++            thread_id: unknown_thread_id,
++        }
++    );
++
++    assert!(
++        harness
++            .manager
++            .remove_thread(&child_thread_id)
++            .await
++            .is_some()
++    );
++    let inspections = harness
++        .control
++        .runtime
++        .inspect_owned_child_ids(&manager, &[child_thread_id])
++        .await
++        .expect("known unloaded child should report unloaded");
++    assert_eq!(
++        inspections,
++        vec![OwnedChildInspection::Unloaded {
++            thread_id: child_thread_id,
++        }]
++    );
++}
+diff --git a/codex-rs/core/src/agent/mod.rs b/codex-rs/core/src/agent/mod.rs
+index c9a1547990772eb64a83bfeb75e2cb8f30e20d76..0faeba2bfed5970bed2ac536f17c7f1bfefc5f93 100644
+--- a/codex-rs/core/src/agent/mod.rs
++++ b/codex-rs/core/src/agent/mod.rs
+@@ -2,6 +2,7 @@ pub(crate) mod agent_resolver;
+ pub(crate) mod api;
+ pub(crate) mod child_config;
+ pub(crate) mod control;
++pub(crate) mod owned_children;
+ mod registry;
+ pub(crate) mod role;
+ pub(crate) mod status;
+diff --git a/codex-rs/core/src/agent/owned_children.rs b/codex-rs/core/src/agent/owned_children.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..914110dce77b014e4fa304c56dd4ec35f5c71b54
+--- /dev/null
++++ b/codex-rs/core/src/agent/owned_children.rs
+@@ -0,0 +1,116 @@
++//! Typed inspection of directly owned native subagent children.
++//!
++//! Goal waiting queries the goal thread's directly owned native children
++//! through [`LocalAgentRuntime::inspect_directly_owned_native_children`]
++//! (defined in `control/runtime_context.rs`). Each owned child reports as
++//! [`OwnedChildInspection::Loaded`] (with its current [`AgentStatus`]) or
++//! [`OwnedChildInspection::Unloaded`] (known but not currently loaded).
++//! Unknown identities and backend failures return
++//! [`OwnedChildrenReadError`], never an empty list: callers distinguish "no
++//! work" from "unknown", and errors propagate instead of being silently
++//! skipped like `list_agents`.
++//!
++//! [`LocalAgentRuntime::inspect_directly_owned_native_children`]: crate::agent::control::LocalAgentRuntime
++//! [`AgentStatus`]: codex_protocol::protocol::AgentStatus
++
++use std::fmt::Display;
++use std::fmt::Formatter;
++
++use codex_protocol::ThreadId;
++use codex_protocol::protocol::AgentStatus;
++
++/// Inspection of one directly owned native child.
++///
++/// Reused children report their current status; `Completed` means the child's
++/// turn ended, not that the parent's goal is achieved.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum OwnedChildInspection {
++    /// The child runtime is loaded; `status` is its current agent status.
++    Loaded {
++        /// Directly owned child thread identity.
++        thread_id: ThreadId,
++        /// Current status observed from the loaded runtime.
++        status: AgentStatus,
++    },
++    /// Membership is known, but no runtime is currently loaded.
++    Unloaded {
++        /// Directly owned child thread identity.
++        thread_id: ThreadId,
++    },
++}
++
++impl OwnedChildInspection {
++    /// Directly owned child thread identity.
++    pub fn thread_id(&self) -> ThreadId {
++        match self {
++            Self::Loaded { thread_id, .. } | Self::Unloaded { thread_id } => *thread_id,
++        }
++    }
++
++    /// Current status when loaded, `None` when unloaded.
++    pub fn status(&self) -> Option<&AgentStatus> {
++        match self {
++            Self::Loaded { status, .. } => Some(status),
++            Self::Unloaded { .. } => None,
++        }
++    }
++
++    /// Reports whether this loaded child is pending native work.
++    ///
++    /// Only loaded `PendingInit`/`Running` permits goal-wait registration.
++    /// `Completed` means the child's turn ended; `Interrupted` is observed via
++    /// queue-only notices for an already-registered wait, not via new
++    /// registration; all other statuses are terminal or unknown work.
++    pub fn is_pending_native_work(&self) -> bool {
++        matches!(
++            self.status(),
++            Some(AgentStatus::PendingInit | AgentStatus::Running)
++        )
++    }
++}
++
++/// Explicit failure inspecting directly owned native children.
++///
++/// Callers must treat `Err` as unknown, never as "no work".
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum OwnedChildrenReadError {
++    /// The owning thread runtime is gone.
++    SessionUnavailable,
++    /// The owned child identity is no longer known.
++    UnknownChild {
++        /// Child thread identity that is no longer registered.
++        thread_id: ThreadId,
++    },
++    /// The child runtime could not be inspected.
++    InspectionFailed {
++        /// Child thread identity that failed inspection.
++        thread_id: ThreadId,
++        /// Backend failure reason.
++        reason: String,
++    },
++}
++
++impl Display for OwnedChildrenReadError {
++    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::SessionUnavailable => {
++                write!(formatter, "owned-children session is unavailable")
++            }
++            Self::UnknownChild { thread_id } => {
++                write!(formatter, "owned child {thread_id} is unknown")
++            }
++            Self::InspectionFailed { thread_id, reason } => {
++                write!(
++                    formatter,
++                    "owned child {thread_id} inspection failed: {reason}"
++                )
++            }
++        }
++    }
++}
++
++impl std::error::Error for OwnedChildrenReadError {}
++
++#[cfg(test)]
++#[path = "owned_children_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/agent/owned_children_tests.rs b/codex-rs/core/src/agent/owned_children_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d776d38468d59a3d370e0542b89aed493efcbf86
+--- /dev/null
++++ b/codex-rs/core/src/agent/owned_children_tests.rs
+@@ -0,0 +1,37 @@
++use super::OwnedChildInspection;
++use codex_protocol::ThreadId;
++use codex_protocol::protocol::AgentStatus;
++use pretty_assertions::assert_eq;
++
++fn loaded(status: AgentStatus) -> OwnedChildInspection {
++    OwnedChildInspection::Loaded {
++        thread_id: ThreadId::new(),
++        status,
++    }
++}
++
++#[test]
++fn pending_native_work_is_only_pending_init_and_running() {
++    assert!(loaded(AgentStatus::PendingInit).is_pending_native_work());
++    assert!(loaded(AgentStatus::Running).is_pending_native_work());
++
++    for status in [
++        AgentStatus::Interrupted,
++        AgentStatus::Completed(None),
++        AgentStatus::Completed(Some("done".to_string())),
++        AgentStatus::Errored("boom".to_string()),
++        AgentStatus::Shutdown,
++        AgentStatus::NotFound,
++    ] {
++        assert!(
++            !loaded(status.clone()).is_pending_native_work(),
++            "status {status:?} must not permit registration"
++        );
++    }
++
++    let unloaded = OwnedChildInspection::Unloaded {
++        thread_id: ThreadId::new(),
++    };
++    assert!(!unloaded.is_pending_native_work());
++    assert_eq!(unloaded.status(), None);
++}
+diff --git a/codex-rs/core/src/agent/status.rs b/codex-rs/core/src/agent/status.rs
+index 0ec7e96d4be9ab89bc4068451044be40318c2f0a..2acf2d3f9f24dcfe42a6f7d44fff7de5817259f4 100644
+--- a/codex-rs/core/src/agent/status.rs
++++ b/codex-rs/core/src/agent/status.rs
+@@ -29,3 +29,7 @@ pub(crate) fn is_final(status: &AgentStatus) -> bool {
+         AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted
+     )
+ }
++
++#[cfg(test)]
++#[path = "status_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/agent/status_tests.rs b/codex-rs/core/src/agent/status_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3def1c9b6cc9782824d18eb0474114e2ad26e481
+--- /dev/null
++++ b/codex-rs/core/src/agent/status_tests.rs
+@@ -0,0 +1,15 @@
++use super::is_final;
++use codex_protocol::protocol::AgentStatus;
++
++#[test]
++fn interrupted_stays_non_final() {
++    assert!(!is_final(&AgentStatus::PendingInit));
++    assert!(!is_final(&AgentStatus::Running));
++    assert!(!is_final(&AgentStatus::Interrupted));
++
++    assert!(is_final(&AgentStatus::Completed(None)));
++    assert!(is_final(&AgentStatus::Completed(Some("done".to_string()))));
++    assert!(is_final(&AgentStatus::Errored("boom".to_string())));
++    assert!(is_final(&AgentStatus::Shutdown));
++    assert!(is_final(&AgentStatus::NotFound));
++}
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index 8f63fbbd3ba1f730b54d309131705d4f16ac1227..494f4fc97dc610b4f8abf04123a595ef5d924e8c 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -1,5 +1,7 @@
+ use crate::agent::AgentStatus;
+ use crate::agent::api::AgentControl;
++use crate::agent::owned_children::OwnedChildInspection;
++use crate::agent::owned_children::OwnedChildrenReadError;
+ use crate::config::ConstraintResult;
+ use crate::context::ContextualUserFragment;
+ use crate::context::GuardianReviewEvidence;
+@@ -491,6 +493,43 @@ impl CodexThread {
+         &self.session.services.thread_extension_data
+     }
+ 
++    /// Inspects this thread's directly owned native children.
++    ///
++    /// Narrow goal-wait query: each live `ThreadSpawn` edge owned by this
++    /// thread reports its current status without restoring runtimes. Unknown
++    /// identities and backend failures return [`OwnedChildrenReadError`];
++    /// failed lookups are never silently skipped.
++    pub async fn inspect_directly_owned_native_children(
++        &self,
++    ) -> Result<Vec<OwnedChildInspection>, OwnedChildrenReadError> {
++        self.session
++            .services
++            .local_agent_runtime
++            .inspect_directly_owned_native_children(self.session.thread_id)
++            .await
++    }
++
++    /// Rechecks pending mailbox work after registering a goal wait marker.
++    ///
++    /// Closes completion-before-registration: a native child finishing between
++    /// the idle inspection and the marker insert already enqueued queue-only
++    /// mail without waking (no marker existed yet); this re-runs the existing
++    /// pending-work scheduler, which now sees the marker and starts the wake.
++    /// A child finishing after the insert wakes via its own enqueue path.
++    pub async fn recheck_pending_work_for_goal_wait(&self) {
++        self.session.maybe_start_turn_for_pending_work().await;
++    }
++
++    /// Test-only: reports whether mailbox mail is currently pending.
++    ///
++    /// Latch suites release the goal-wait registration gate only after the
++    /// raced child-completion mail is confirmed enqueued, so the post-insert
++    /// recheck deterministically observes it.
++    #[doc(hidden)]
++    pub async fn test_has_pending_mailbox_mail(&self) -> bool {
++        self.session.input_queue.has_pending_mailbox_items().await
++    }
++
+     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
+         self.io.shutdown_and_wait().await
+     }
+diff --git a/codex-rs/core/src/context/inter_agent_interrupted_message.rs b/codex-rs/core/src/context/inter_agent_interrupted_message.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..45cf2317d4a7805b04225f2876bba8160c25e93f
+--- /dev/null
++++ b/codex-rs/core/src/context/inter_agent_interrupted_message.rs
+@@ -0,0 +1,85 @@
++use codex_protocol::AgentPath;
++use codex_utils_string::take_bytes_at_char_boundary;
++
++use super::ContextualUserFragment;
++use codex_protocol::models::ContentItemKind;
++
++/// Maximum rendered bytes kept from each agent path before truncation.
++///
++/// `AgentPath` bounds segment and total length where paths are created; this
++/// truncation stays as defense in depth, so the rendered notice keeps its
++/// fixed upper bound in [`INTERRUPTED_MESSAGE_MAX_BYTES`] however the input
++/// paths were produced.
++const INTERRUPTED_PATH_MAX_BYTES: usize = 256;
++
++/// Marker appended when a path exceeds [`INTERRUPTED_PATH_MAX_BYTES`].
++const TRUNCATED_PATH_MARKER: &str = "…[truncated]";
++
++/// Fixed notice prose around the two interpolated paths.
++const BODY_PREFIX: &str = "Message Type: INTERRUPTED\nTask name: ";
++const BODY_MIDDLE: &str = "\nSender: ";
++const BODY_SUFFIX: &str = "\nPayload:\nAgent interrupted. Its turn ended without a final answer; resend work if still needed.";
++
++/// Hard upper bound on the rendered notice body in bytes: fixed prose plus
++/// two truncated paths of at most [`INTERRUPTED_PATH_MAX_BYTES`] bytes each,
++/// with the truncation marker appended when truncated.
++const INTERRUPTED_MESSAGE_MAX_BYTES: usize = BODY_PREFIX.len()
++    + BODY_MIDDLE.len()
++    + BODY_SUFFIX.len()
++    + 2 * (INTERRUPTED_PATH_MAX_BYTES + TRUNCATED_PATH_MARKER.len());
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct InterAgentInterruptedMessage {
++    task_name: AgentPath,
++    sender: AgentPath,
++}
++
++impl InterAgentInterruptedMessage {
++    pub(crate) fn new(task_name: AgentPath, sender: AgentPath) -> Self {
++        Self { task_name, sender }
++    }
++}
++
++/// Renders an agent path for model-visible text, truncating it to
++/// [`INTERRUPTED_PATH_MAX_BYTES`] bytes with a marker when over the cap.
++/// Paths at or under the cap render byte-identical.
++fn truncate_path(path: &AgentPath) -> String {
++    let rendered = path.as_str();
++    if rendered.len() <= INTERRUPTED_PATH_MAX_BYTES {
++        return rendered.to_string();
++    }
++    format!(
++        "{}{TRUNCATED_PATH_MARKER}",
++        take_bytes_at_char_boundary(rendered, INTERRUPTED_PATH_MAX_BYTES)
++    )
++}
++
++impl ContextualUserFragment for InterAgentInterruptedMessage {
++    fn content_kind(&self) -> ContentItemKind {
++        ContentItemKind("multi_agent.inter_agent_interrupted_message".to_string())
++    }
++
++    fn role(&self) -> &'static str {
++        "assistant"
++    }
++
++    fn markers(&self) -> (&'static str, &'static str) {
++        Self::type_markers()
++    }
++
++    fn type_markers() -> (&'static str, &'static str) {
++        ("", "")
++    }
++
++    fn body(&self) -> String {
++        let task_name = truncate_path(&self.task_name);
++        let sender = truncate_path(&self.sender);
++        let body = format!("{BODY_PREFIX}{task_name}{BODY_MIDDLE}{sender}{BODY_SUFFIX}");
++        debug_assert!(body.len() <= INTERRUPTED_MESSAGE_MAX_BYTES);
++        body
++    }
++}
++
++#[cfg(test)]
++#[path = "inter_agent_interrupted_message_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/context/inter_agent_interrupted_message_tests.rs b/codex-rs/core/src/context/inter_agent_interrupted_message_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4b6f1adc6826d67a86cc5aa04c2a8e89d327a6f0
+--- /dev/null
++++ b/codex-rs/core/src/context/inter_agent_interrupted_message_tests.rs
+@@ -0,0 +1,43 @@
++use codex_protocol::AgentPath;
++use pretty_assertions::assert_eq;
++
++use super::INTERRUPTED_MESSAGE_MAX_BYTES;
++use super::INTERRUPTED_PATH_MAX_BYTES;
++use super::InterAgentInterruptedMessage;
++use crate::context::ContextualUserFragment;
++
++#[test]
++fn interrupted_fragment_renders_exact_notice_body() {
++    let fragment = InterAgentInterruptedMessage::new(
++        AgentPath::root(),
++        AgentPath::try_from("/root/worker").expect("valid agent path"),
++    );
++    assert_eq!(
++        fragment.render(),
++        "Message Type: INTERRUPTED\nTask name: /root\nSender: /root/worker\nPayload:\nAgent interrupted. Its turn ended without a final answer; resend work if still needed."
++    );
++}
++
++#[test]
++fn interrupted_fragment_truncates_overlong_paths_to_hard_cap() {
++    // Valid at the source (segments <= 128 bytes, path <= 1024 bytes),
++    // yet longer than the fragment's per-path cap.
++    let task_rendered = format!("/root/{}", vec!["t".repeat(100); 9].join("/"));
++    let sender_rendered = format!("/root/{}", vec!["s".repeat(100); 9].join("/"));
++    let fragment = InterAgentInterruptedMessage::new(
++        AgentPath::try_from(task_rendered.as_str()).expect("valid agent path"),
++        AgentPath::try_from(sender_rendered.as_str()).expect("valid agent path"),
++    );
++    let rendered = fragment.render();
++    let expected = format!(
++        "Message Type: INTERRUPTED\nTask name: {}…[truncated]\nSender: {}…[truncated]\nPayload:\nAgent interrupted. Its turn ended without a final answer; resend work if still needed.",
++        &task_rendered[..INTERRUPTED_PATH_MAX_BYTES],
++        &sender_rendered[..INTERRUPTED_PATH_MAX_BYTES],
++    );
++    assert_eq!(rendered, expected);
++    assert!(
++        rendered.len() <= INTERRUPTED_MESSAGE_MAX_BYTES,
++        "rendered notice exceeds hard cap: {} > {INTERRUPTED_MESSAGE_MAX_BYTES}",
++        rendered.len()
++    );
++}
+diff --git a/codex-rs/core/src/context/mod.rs b/codex-rs/core/src/context/mod.rs
+index 5ebef28491a81034859185f7c94f69b21521855e..a174de307fc1cf47e8333909ebab30e19a6940a0 100644
+--- a/codex-rs/core/src/context/mod.rs
++++ b/codex-rs/core/src/context/mod.rs
+@@ -30,6 +30,7 @@ mod guardian_tool_descriptions;
+ mod hook_additional_context;
+ mod image_resize_notice;
+ mod inter_agent_completion_message;
++mod inter_agent_interrupted_message;
+ mod inter_agent_message;
+ mod internal_model_context;
+ mod legacy_apply_patch_exec_command_warning;
+@@ -103,6 +104,7 @@ pub(crate) use image_resize_notice::ImageResizeNotice;
+ pub(crate) use image_resize_notice::ImageResizeNoticeSource;
+ pub(crate) use image_resize_notice::ResizedImage;
+ pub(crate) use inter_agent_completion_message::InterAgentCompletionMessage;
++pub(crate) use inter_agent_interrupted_message::InterAgentInterruptedMessage;
+ pub(crate) use inter_agent_message::InterAgentMessage;
+ pub(crate) use inter_agent_message::InterAgentMessageType;
+ pub use internal_model_context::InternalContextSource;
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index 757830de8c1b35c0bd6719c0d472eff1e902114a..b01b7660f5f9adac3d9121faf9754bcdc4866db1 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -67,6 +67,8 @@ pub use agent::api::AgentTurnOutcome;
+ pub use agent::api::DeliveryReceipt;
+ pub use agent::api::SendRequest;
+ pub use agent::api::SpawnRequest;
++pub use agent::owned_children::OwnedChildInspection;
++pub use agent::owned_children::OwnedChildrenReadError;
+ pub use agent::types::AgentExecutionGuard;
+ pub use agent::types::AgentMessage;
+ pub use agent::types::AgentMetadata;
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index d3fecd3ab4ac94f696408478d9951166f21c5465..0564666046501cec000ec71eb8a7c54570614b99 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -2441,7 +2441,11 @@ impl Session {
+                 status
+             }
+         };
+-        if !is_final(&status) {
++        // `Interrupted` is non-final by design (`is_final` unchanged): it still
++        // reaches `turn_finished` so a registered goal wait can emit one
++        // queue-only notice per transition. Ordinary parents stay quiet there.
++        let is_interrupted = matches!(status, AgentStatus::Interrupted);
++        if !is_final(&status) && !is_interrupted {
+             return;
+         }
+ 
+diff --git a/codex-rs/core/src/session_prefix.rs b/codex-rs/core/src/session_prefix.rs
+index 315ef1cabfb12c76f6ed5ae14f7f250015befa91..eab87364f0e90f82d5c6357ef69f07bcf9035d60 100644
+--- a/codex-rs/core/src/session_prefix.rs
++++ b/codex-rs/core/src/session_prefix.rs
+@@ -5,6 +5,7 @@ use codex_utils_output_truncation::truncate_text;
+ 
+ use crate::context::ContextualUserFragment;
+ use crate::context::InterAgentCompletionMessage;
++use crate::context::InterAgentInterruptedMessage;
+ 
+ const COMPLETION_MESSAGE_MAX_TOKENS: usize = 1_000;
+ const COMPLETION_MESSAGE_ENVELOPE_TOKEN_RESERVE: usize = 100;
+@@ -35,6 +36,19 @@ pub(crate) fn format_inter_agent_completion_message(
+     Some(InterAgentCompletionMessage::new(task_name, sender, payload).render())
+ }
+ 
++/// Formats a queue-only interrupted notice for a registered goal wait.
++///
++/// Unlike completion messages, this never uses `FINAL_ANSWER` and never
++/// claims success: the child's turn ended without an answer. Callers send it
++/// only when the direct parent holds a goal-owned durable-sleep marker, once
++/// per `Interrupted` transition; ordinary parents stay quiet.
++pub(crate) fn format_inter_agent_interrupted_message(
++    task_name: &AgentPath,
++    sender: &AgentPath,
++) -> String {
++    InterAgentInterruptedMessage::new(task_name.clone(), sender.clone()).render()
++}
++
+ #[cfg(test)]
+ #[path = "session_prefix_tests.rs"]
+ mod tests;
+diff --git a/codex-rs/core/src/session_prefix_tests.rs b/codex-rs/core/src/session_prefix_tests.rs
+index 6a658ce8526c096aecac8fa1787d9a504b6f186f..ccb9ac2e6397cf6a4ae8d4032380cd468fc00a53 100644
+--- a/codex-rs/core/src/session_prefix_tests.rs
++++ b/codex-rs/core/src/session_prefix_tests.rs
+@@ -1,10 +1,12 @@
+ use codex_protocol::AgentPath;
+ use codex_protocol::protocol::AgentStatus;
+ use codex_utils_output_truncation::approx_token_count;
++use pretty_assertions::assert_eq;
+ 
+ use super::COMPLETION_MESSAGE_MAX_TOKENS;
+ use super::ERROR_NEXT_ACTION;
+ use super::format_inter_agent_completion_message;
++use super::format_inter_agent_interrupted_message;
+ 
+ #[test]
+ fn error_completion_message_stays_below_manual_review_threshold() {
+@@ -18,3 +20,26 @@ fn error_completion_message_stays_below_manual_review_threshold() {
+     assert!(approx_token_count(&message) < COMPLETION_MESSAGE_MAX_TOKENS);
+     assert!(message.contains(ERROR_NEXT_ACTION));
+ }
++
++#[test]
++fn interrupted_notice_is_queue_only_without_claiming_success() {
++    assert_eq!(
++        format_inter_agent_completion_message(
++            AgentPath::root(),
++            AgentPath::try_from("/root/worker").expect("valid agent path"),
++            &AgentStatus::Interrupted,
++        ),
++        None,
++    );
++
++    let message = format_inter_agent_interrupted_message(
++        &AgentPath::root(),
++        &AgentPath::try_from("/root/worker").expect("valid agent path"),
++    );
++    assert!(message.contains("INTERRUPTED"));
++    assert!(message.contains("without a final answer"));
++    assert!(!message.contains("FINAL_ANSWER"));
++    assert!(!message.to_lowercase().contains("completed"));
++    assert!(!message.to_lowercase().contains("success"));
++    assert!(approx_token_count(&message) < COMPLETION_MESSAGE_MAX_TOKENS);
++}
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+index fc611f530aba005e73583bfd7559b7e62f3029d5..3b2db98c29dfbe06037b08d24fe21275a3112db3 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+@@ -496,6 +496,94 @@ async fn multi_agent_v2_spawn_fork_turns_all_applies_agent_type_override() {
+         .expect("fork_turns=all should apply agent_type overrides");
+ }
+ 
++#[tokio::test]
++async fn spawn_agent_v2_rejects_overlong_task_name() {
++    let (mut session, turn) = make_session_and_context().await;
++    let manager = thread_manager();
++    let root = manager
++        .start_thread(StartThreadOptions::new((*turn.config).clone()))
++        .await
++        .expect("root thread should start");
++    set_agent_control(&mut session, manager.agent_control());
++    session.thread_id = root.thread_id;
++    let mut config = (*turn.config).clone();
++    config
++        .features
++        .enable(Feature::MultiAgentV2)
++        .expect("test config should allow feature update");
++    let mut turn = turn;
++    turn.config = Arc::new(config);
++    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
++
++    let overlong = "a".repeat(AgentPath::MAX_SEGMENT_BYTES + 1);
++    let overlong_len = overlong.len();
++    let threads_before = manager.list_thread_ids().await;
++    let err = SpawnAgentHandlerV2::default()
++        .handle(invocation(
++            Arc::new(session),
++            Arc::new(turn),
++            "spawn_agent",
++            function_payload(json!({
++                "message": "do slow work",
++                "task_name": overlong,
++                "fork_turns": "none"
++            })),
++        ))
++        .await
++        .err()
++        .expect("over-long task_name should be refused");
++
++    assert_eq!(
++        err,
++        FunctionCallError::RespondToModel(format!(
++            "agent_name must be at most {} bytes, got {overlong_len}",
++            AgentPath::MAX_SEGMENT_BYTES
++        ))
++    );
++    // Refusal happens before any spawn: no child thread exists.
++    assert_eq!(manager.list_thread_ids().await, threads_before);
++}
++
++#[tokio::test]
++async fn spawn_agent_v2_accepts_task_name_at_cap() {
++    let (mut session, turn) = make_session_and_context().await;
++    let manager = thread_manager();
++    let root = manager
++        .start_thread(StartThreadOptions::new((*turn.config).clone()))
++        .await
++        .expect("root thread should start");
++    set_agent_control(&mut session, manager.agent_control());
++    session.thread_id = root.thread_id;
++    let mut config = (*turn.config).clone();
++    config
++        .features
++        .enable(Feature::MultiAgentV2)
++        .expect("test config should allow feature update");
++    let mut turn = turn;
++    turn.config = Arc::new(config);
++    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
++
++    let at_cap = "a".repeat(AgentPath::MAX_SEGMENT_BYTES);
++    let threads_before = manager.list_thread_ids().await;
++    SpawnAgentHandlerV2::default()
++        .handle(invocation(
++            Arc::new(session),
++            Arc::new(turn),
++            "spawn_agent",
++            function_payload(json!({
++                "message": "do slow work",
++                "task_name": at_cap,
++                "fork_turns": "none"
++            })),
++        ))
++        .await
++        .expect("task_name at cap should spawn");
++    assert_eq!(
++        manager.list_thread_ids().await.len(),
++        threads_before.len() + 1
++    );
++}
++
+ fn service_tier_test_catalog() -> codex_protocol::openai_models::ModelsResponse {
+     let mut catalog = codex_models_manager::bundled_models_response().expect("bundled models");
+     let mut model = catalog
+diff --git a/codex-rs/core/tests/suite/goal_native_wait.rs b/codex-rs/core/tests/suite/goal_native_wait.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..11ed4281494d6ce642f96b424a53de621111e364
+--- /dev/null
++++ b/codex-rs/core/tests/suite/goal_native_wait.rs
+@@ -0,0 +1,1082 @@
++//! Goal-owned durable-sleep lease for native subagent waits.
++//!
++//! Production entry points: `GoalExtension::on_thread_idle` ->
++//! `GoalRuntimeHandle::continue_if_idle` (owned-children inspection via
++//! `CodexThread::inspect_directly_owned_native_children`, marker insert BEFORE
++//! mail check via `try_register_goal_wait_sleep`, recheck via
++//! `CodexThread::recheck_pending_work_for_goal_wait`) -> V2 queue-only
++//! completion mail wakes via the marker (`has_outstanding_durable_sleep`).
++//! Removal is conditional (`remove_goal_wait_sleep`) on turn start, clear,
++//! disable, stop, and release. `Interrupted` notices are queue-only, once per
++//! transition, without redefining `is_final`. Real interruption is driven via
++//! `Op::Interrupt` on the child thread (the app-server/TUI entry point),
++//! which emits `TurnAborted(Interrupted)` through `turn_finished`.
++//!
++//! The goal is set after the parent spawns its child (not before the user
++//! turn): an external set on an idle thread without pending work would start
++//! a spurious goal continuation before the scripted work begins. Setting it
++//! after `TurnComplete` still drives the production idle path (the set itself
++//! calls `continue_if_idle`, and the suite then emits idle explicitly).
++//!
++//! Hosted only: these tests need model-scripted native spawns and real turns.
++
++use std::sync::Arc;
++use std::sync::Weak;
++use std::time::Duration;
++
++use anyhow::Result;
++use codex_analytics::AnalyticsEventsClient;
++use codex_core::OwnedChildInspection;
++use codex_core::ThreadManager;
++use codex_core::TurnInputRequest;
++use codex_core::config::Config;
++use codex_extension_api::AsyncNotificationSupport;
++use codex_extension_api::ExtensionData;
++use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::ThreadStartInput;
++use codex_extension_items::sleep::SleepItem;
++use codex_features::Feature;
++use codex_features::SleepToolMode;
++use codex_goal_extension::GoalObjectiveUpdate;
++use codex_goal_extension::GoalRuntimeHandle;
++use codex_goal_extension::GoalService;
++use codex_goal_extension::GoalSetRequest;
++use codex_goal_extension::GoalTokenBudgetUpdate;
++use codex_goal_extension::SystemCheckInClock;
++use codex_goal_extension::has_goal_wait_sleep;
++use codex_goal_extension::install_with_backend_and_clock;
++use codex_protocol::AgentPath;
++use codex_protocol::ThreadId;
++use codex_protocol::protocol::AgentStatus;
++use codex_protocol::protocol::EventMsg;
++use codex_protocol::protocol::Op;
++use codex_protocol::protocol::SessionSource;
++use codex_protocol::user_input::UserInput;
++use core_test_support::responses;
++use core_test_support::test_codex::TestCodex;
++use core_test_support::test_codex::test_codex;
++use core_test_support::wait_for_event;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++use tempfile::TempDir;
++
++const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
++
++fn body_contains(request: &wiremock::Request, text: &str) -> bool {
++    String::from_utf8_lossy(&request.body).contains(text)
++}
++
++fn has_function_call_output(request: &wiremock::Request, call_id: &str) -> bool {
++    serde_json::from_slice::<serde_json::Value>(&request.body).is_ok_and(|body| {
++        body.get("input")
++            .and_then(serde_json::Value::as_array)
++            .is_some_and(|items| {
++                items.iter().any(|item| {
++                    item.get("type").and_then(serde_json::Value::as_str)
++                        == Some("function_call_output")
++                        && item.get("call_id").and_then(serde_json::Value::as_str) == Some(call_id)
++                })
++            })
++    })
++}
++
++fn install_goal(
++    registry: &mut ExtensionRegistryBuilder<Config>,
++    db: &Arc<codex_state::StateRuntime>,
++    service: &Arc<GoalService>,
++    manager: Weak<ThreadManager>,
++) {
++    install_with_backend_and_clock(
++        registry,
++        db.clone(),
++        AnalyticsEventsClient::disabled(),
++        /*metrics_client*/ None,
++        manager,
++        service.clone(),
++        |c: &Config| codex_goal_extension::GoalExtensionConfig {
++            enabled: c.features.enabled(Feature::Goals),
++            max_goal_token_budget: c.max_goal_token_budget,
++        },
++        Arc::new(SystemCheckInClock),
++    );
++}
++
++async fn submit_user_input(codex: &codex_core::CodexThread, text: &str) {
++    codex
++        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
++            text: text.to_string(),
++            text_elements: Vec::new(),
++        }]))
++        .await
++        .expect("submit user input");
++}
++
++async fn fixture(
++    server: &wiremock::MockServer,
++) -> Result<(TestCodex, Arc<codex_state::StateRuntime>, Arc<GoalService>)> {
++    let home = Arc::new(TempDir::new()?);
++    let mut config = core_test_support::load_default_config_for_test(&home).await;
++    config.features.disable(Feature::CurrentTimeReminder)?;
++    let db = codex_core::init_state_db(&config)
++        .await
++        .expect("state database");
++    let service = Arc::new(GoalService::new());
++    let mut registry = ExtensionRegistryBuilder::<Config>::new();
++    install_goal(&mut registry, &db, &service, Weak::new());
++    let test = test_codex()
++        .with_home(home)
++        .with_extensions(Arc::new(registry.build()))
++        .with_config(|c| {
++            c.features
++                .disable(Feature::CurrentTimeReminder)
++                .expect("feature");
++            c.features.enable(Feature::Collab).expect("feature");
++            c.features.enable(Feature::MultiAgentV2).expect("feature");
++            c.sleep_tool_mode = SleepToolMode::AlwaysOn;
++        })
++        .build_with_auto_env(server)
++        .await?;
++    test.codex
++        .thread_extension_data()
++        .remove::<GoalRuntimeHandle>();
++    test.codex
++        .thread_extension_data()
++        .insert(AsyncNotificationSupport::Available);
++    let mut bound = ExtensionRegistryBuilder::<Config>::new();
++    install_goal(
++        &mut bound,
++        &db,
++        &service,
++        Arc::downgrade(&test.thread_manager),
++    );
++    for contributor in bound.build().thread_lifecycle_contributors() {
++        contributor
++            .on_thread_start(ThreadStartInput {
++                config: &test.config,
++                session_source: &SessionSource::Cli,
++                persistent_thread_state_available: true,
++                environments: &[],
++                mcp_resource_client: None,
++                extension_metrics: None,
++                session_store: &ExtensionData::new(test.session_configured.session_id.to_string()),
++                thread_store: test.codex.thread_extension_data(),
++            })
++            .await;
++    }
++    Ok((test, db, service))
++}
++
++async fn set_goal(
++    service: &GoalService,
++    db: &Arc<codex_state::StateRuntime>,
++    thread_id: ThreadId,
++) -> Result<()> {
++    let outcome = service
++        .set_thread_goal(
++            db,
++            GoalSetRequest {
++                thread_id,
++                objective: GoalObjectiveUpdate::Set("wait for native worker"),
++                status: None,
++                token_budget: GoalTokenBudgetUpdate::Keep,
++                max_goal_token_budget: None,
++            },
++        )
++        .await?;
++    outcome.apply_runtime_effects(service).await;
++    Ok(())
++}
++
++fn spawn_call(call_id: &str) -> serde_json::Value {
++    spawn_call_with_message(call_id, "do slow work", "worker")
++}
++
++fn spawn_call_with_message(call_id: &str, message: &str, task_name: &str) -> serde_json::Value {
++    responses::ev_function_call_with_namespace(
++        call_id,
++        MULTI_AGENT_V2_NAMESPACE,
++        "spawn_agent",
++        &serde_json::to_string(&json!({
++            "message": message,
++            "task_name": task_name,
++            "fork_turns": "none",
++        }))
++        .expect("spawn args"),
++    )
++}
++
++fn sleep_call(call_id: &str, duration_ms: u64) -> serde_json::Value {
++    responses::ev_function_call_with_namespace(
++        call_id,
++        "clock",
++        "sleep",
++        &serde_json::to_string(&json!({ "duration_ms": duration_ms })).expect("sleep args"),
++    )
++}
++
++/// Returns the directly owned native child once it is observably `Running`.
++///
++/// Interrupting before the child's turn starts emits no `TurnAborted` and no
++/// notice, so both interruption tests synchronize on `Running` first. Bounded
++/// with a clear failure message: nothing here may hang the harness.
++async fn running_owned_child_id(test: &TestCodex) -> ThreadId {
++    tokio::time::timeout(Duration::from_secs(10), async {
++        loop {
++            let inspections = test
++                .codex
++                .inspect_directly_owned_native_children()
++                .await
++                .expect("owned-children inspection should succeed");
++            let running = inspections
++                .iter()
++                .find(|inspection| matches!(inspection.status(), Some(AgentStatus::Running)));
++            if let Some(running) = running {
++                break running.thread_id();
++            }
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await
++    .expect("timed out waiting for the native child to reach Running")
++}
++
++/// AC1 (+AC6, +AC8 inherited settings): a Running native child registers the
++/// owned marker at idle; its queue-only completion wakes with a real model
++/// request. Storing the marker emits no sleep UI, no history item, and no
++/// reminder change; the wake preserves inherited turn settings.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn goal_wait_registers_marker_and_wakes_on_child_completion() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let parent_initial = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "wait for native worker")
++                && !has_function_call_output(request, "call-spawn-1")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-parent-spawn"),
++            spawn_call("call-spawn-1"),
++            responses::ev_completed("resp-parent-spawn"),
++        ]),
++    )
++    .await;
++    let parent_after_spawn = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            has_function_call_output(request, "call-spawn-1")
++                && !body_contains(request, "worker completed")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-parent-idle"),
++            responses::ev_assistant_message("resp-parent-idle", "parent ending turn"),
++            responses::ev_completed("resp-parent-idle"),
++        ]),
++    )
++    .await;
++    let child_sleep = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "do slow work")
++                && !body_contains(request, "wait for native worker")
++                && !has_function_call_output(request, "call-sleep-1")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-child-sleep"),
++            sleep_call("call-sleep-1", 2_000),
++            responses::ev_completed("resp-child-sleep"),
++        ]),
++    )
++    .await;
++    let child_final = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| has_function_call_output(request, "call-sleep-1"),
++        responses::sse(vec![
++            responses::ev_response_created("resp-child-done"),
++            responses::ev_assistant_message("resp-child-done", "worker completed"),
++            responses::ev_completed("resp-child-done"),
++        ]),
++    )
++    .await;
++    let parent_wake = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| body_contains(request, "worker completed"),
++        responses::sse(vec![
++            responses::ev_response_created("resp-parent-wake"),
++            responses::ev_assistant_message("resp-parent-wake", "parent saw completion"),
++            responses::ev_completed("resp-parent-wake"),
++        ]),
++    )
++    .await;
++
++    let (test, db, service) = fixture(&server).await?;
++    let thread_id = test.session_configured.thread_id;
++
++    submit_user_input(&test.codex, "wait for native worker").await;
++
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++    // Goal set after the spawn so no pre-work continuation starts; the set
++    // itself runs `continue_if_idle`, and the explicit idle below re-enters it.
++    set_goal(&service, &db, thread_id).await?;
++    test.codex
++        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
++        .await;
++
++    assert!(has_goal_wait_sleep(test.codex.thread_extension_data()));
++    // Storing the marker emits no UI events: the idle parent stays silent
++    // until the child completes (no turn, no item events from the insert).
++    assert!(
++        tokio::time::timeout(Duration::from_millis(500), test.codex.next_event())
++            .await
++            .is_err(),
++        "marker insert must emit no parent events"
++    );
++    assert_eq!(parent_initial.requests().len(), 1);
++    assert_eq!(parent_after_spawn.requests().len(), 1);
++    assert_eq!(child_sleep.requests().len(), 1);
++
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnStarted(_)) && parent_wake.requests().len() == 1
++    })
++    .await;
++    assert_eq!(child_final.requests().len(), 1);
++    assert_eq!(parent_wake.requests().len(), 1);
++    let wake = parent_wake.single_request();
++    let wake_body = wake.body_json().to_string();
++    assert!(wake_body.contains("worker completed"));
++    assert!(!wake_body.contains("goal-wait:"));
++    assert!(!wake_body.contains("current_time"));
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++    Ok(())
++}
++
++/// AC3: completion between the idle inspection and the insert still wakes.
++///
++/// Two children: the fast one finishes while registration is paused at the
++/// gate (or just before arrival — either way its mail is confirmed enqueued
++/// before release); the slow one stays Running so the post-release
++/// evaluation waits instead of starting a goal turn. Correct order (insert
++/// BEFORE mail check + recheck) starts a mail-wake turn for the fast
++/// child's mail; the mutant (recheck before insert, no post-insert recheck)
++/// sees no marker, then waits on the slow child, and stays silent. Every
++/// wait is bounded with a clear failure message: nothing here may hang the
++/// harness.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn goal_wait_latch_closes_completion_before_registration() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let _parent_initial = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "latch worker")
++                && !has_function_call_output(request, "call-latch-spawn-fast")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-latch-spawn"),
++            spawn_call_with_message("call-latch-spawn-fast", "do fast latch work", "fast"),
++            spawn_call_with_message("call-latch-spawn-slow", "do slow latch work", "slow"),
++            responses::ev_completed("resp-latch-spawn"),
++        ]),
++    )
++    .await;
++    let _parent_after_spawn = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            has_function_call_output(request, "call-latch-spawn-fast")
++                && has_function_call_output(request, "call-latch-spawn-slow")
++                && !body_contains(request, "child one completed")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-latch-idle"),
++            responses::ev_assistant_message("resp-latch-idle", "parent ending turn"),
++            responses::ev_completed("resp-latch-idle"),
++        ]),
++    )
++    .await;
++    let _child_fast_sleep = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "do fast latch work")
++                && !body_contains(request, "latch worker")
++                && !has_function_call_output(request, "call-latch-fast-sleep")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-latch-fast-sleep"),
++            sleep_call("call-latch-fast-sleep", 3_000),
++            responses::ev_completed("resp-latch-fast-sleep"),
++        ]),
++    )
++    .await;
++    // Mounts follow causal request order: wiremock evaluates oldest-first
++    // and `ResponseMock` records every evaluated request (even when the
++    // custom matcher then rejects it), so an earlier-mounted still-active
++    // mock phantom-records requests meant for a later one. The slow
++    // child's prompt request arrives before the fast final; mounting the
++    // fast-final mock first would inflate its recorded count by one.
++    let _child_slow_sleep = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "do slow latch work")
++                && !body_contains(request, "latch worker")
++                && !has_function_call_output(request, "call-latch-slow-sleep")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-latch-slow-sleep"),
++            sleep_call("call-latch-slow-sleep", 60_000),
++            responses::ev_completed("resp-latch-slow-sleep"),
++        ]),
++    )
++    .await;
++    let child_fast_final = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| has_function_call_output(request, "call-latch-fast-sleep"),
++        responses::sse(vec![
++            responses::ev_response_created("resp-latch-fast-done"),
++            responses::ev_assistant_message("resp-latch-fast-done", "child one completed"),
++            responses::ev_completed("resp-latch-fast-done"),
++        ]),
++    )
++    .await;
++    // No final mock for the slow child: its 60 s sleep outlives the test, so
++    // it stays Running from the idle inspection through the wake assertions.
++    let parent_wake = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| body_contains(request, "child one completed"),
++        responses::sse(vec![
++            responses::ev_response_created("resp-latch-wake"),
++            responses::ev_assistant_message("resp-latch-wake", "parent saw fast completion"),
++            responses::ev_completed("resp-latch-wake"),
++        ]),
++    )
++    .await;
++
++    let (test, db, service) = fixture(&server).await?;
++    let thread_id = test.session_configured.thread_id;
++
++    let gate = test
++        .codex
++        .thread_extension_data()
++        .get_or_init(codex_goal_extension::TestNativeWaitRegistrationGate::new);
++    submit_user_input(&test.codex, "latch worker").await;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++
++    // The set itself runs `continue_if_idle`, which pauses at the gate after
++    // observing Running work. Bounded: a missed gate, or a set that sails
++    // through without pausing, fails here instead of hanging the harness.
++    let set_goal_fut = set_goal(&service, &db, thread_id);
++    tokio::pin!(set_goal_fut);
++    let mut set_goal_fut = set_goal_fut.as_mut();
++    tokio::time::timeout(Duration::from_secs(10), async {
++        tokio::select! {
++            _ = &mut set_goal_fut => {
++                panic!(
++                    "goal set should pause at the registration gate while the slow child is Running"
++                )
++            }
++            _ = gate.wait_arrived() => {}
++        }
++    })
++    .await
++    .expect("timed out waiting for the idle path to pause at the registration gate");
++
++    // Release only after the fast child's completion mail is confirmed
++    // enqueued in the parent mailbox: the candidate's post-insert recheck
++    // then deterministically observes it, while the mutant's pre-insert
++    // recheck (no marker yet) deterministically misses it. Bounded poll,
++    // not a fixed sleep.
++    tokio::time::timeout(Duration::from_secs(15), async {
++        while !test.codex.test_has_pending_mailbox_mail().await {
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await
++    .expect(
++        "timed out waiting for the fast child's completion mail before releasing the registration gate",
++    );
++    gate.release();
++    // Keep the gate installed through the wake-turn assertions below. The
++    // post-wake idle would otherwise reinsert the marker (the slow child is
++    // still Running) before the test observes the queued `TurnStarted`,
++    // flaking the removal assert. A retained gate pauses that idle at
++    // registration instead, so the absence below proves turn-start removal.
++    // It is removed right after the assert.
++    tokio::time::timeout(Duration::from_secs(10), set_goal_fut)
++        .await
++        .expect("goal set hung after the registration gate was released")?;
++
++    // No explicit idle emit here: the set's own `continue_if_idle` is the
++    // single registration attempt under test. A second idle pass would
++    // re-run registration with mail already pending and mask the mutant.
++    //
++    // The post-insert recheck must start a mail-wake turn promptly. The
++    // mutant (recheck before insert, then waiting on the slow child) stays
++    // silent and fails here with a clear message instead of hanging. Events
++    // queue, so a turn that started during the set above is still observed.
++    // A custom loop (not `wait_for_event`, whose inner per-event timeout
++    // would preempt this message) keeps the failure latch-specific.
++    tokio::time::timeout(Duration::from_secs(15), async {
++        loop {
++            let event = test
++                .codex
++                .next_event()
++                .await
++                .expect("event stream ended while waiting for the parent wake turn");
++            if matches!(event.msg, EventMsg::TurnStarted(_)) {
++                break;
++            }
++        }
++    })
++    .await
++    .expect(
++        "timed out waiting for the parent wake turn: the post-insert recheck \
++         should start a mail-wake turn for the fast child's completion mail",
++    );
++    // Admitted turn start removes the owned marker. Removal runs in the
++    // `BeforeTaskRegistration` lifecycle, strictly before `TurnStarted` is
++    // emitted, and the retained gate blocks post-wake idle reinsertion, so
++    // this absence is deterministic rather than a race with the reinsert.
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++    // The gate served its latch purpose: remove first so no later idle can
++    // pause, then release to wake the waiter (if any) holding its clone.
++    test.codex
++        .thread_extension_data()
++        .remove::<codex_goal_extension::TestNativeWaitRegistrationGate>();
++    gate.release();
++    tokio::time::timeout(Duration::from_secs(15), async {
++        while parent_wake.requests().len() != 1 {
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await
++    .expect("timed out waiting for the parent wake request after its turn started");
++    // Full-match counts, not raw recorded counts: `ResponseMock` also
++    // records requests it only partially evaluated (see the mount-order
++    // comment), so count only the requests that actually carry the sleep
++    // output / completion text. The recorded requests print on failure to
++    // identify any unexpected extra sampling request.
++    let fast_final_count = child_fast_final
++        .requests()
++        .into_iter()
++        .filter(|request| {
++            request
++                .function_call_output_text("call-latch-fast-sleep")
++                .is_some()
++        })
++        .count();
++    assert_eq!(
++        fast_final_count,
++        1,
++        "expected exactly one fast-child final request, got {:?}",
++        child_fast_final.requests()
++    );
++    let wakes: Vec<_> = parent_wake
++        .requests()
++        .into_iter()
++        .filter(|request| request.body_contains_text("child one completed"))
++        .collect();
++    assert_eq!(
++        wakes.len(),
++        1,
++        "expected exactly one parent wake request, got {:?}",
++        parent_wake.requests()
++    );
++    let wake_body = wakes[0].body_json().to_string();
++    assert!(wake_body.contains("child one completed"));
++    assert!(!wake_body.contains("goal-wait:"));
++    // The wake turn is a mail wake, not a goal continuation: no steering
++    // item (which would render the goal objective) is attached. A goal turn
++    // draining the mail instead fails here.
++    assert!(!wake_body.contains("wait for native worker"));
++    // No goal continuation turn ran: the evaluation waited on the slow
++    // child, so the wake came only from the post-insert recheck.
++    let runtime = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalRuntimeHandle>()
++        .expect("goal runtime should exist");
++    assert!(
++        runtime.test_marked_goal_continuations().is_empty(),
++        "no goal continuation turn should run while the latch wake is pending"
++    );
++    // The slow child stays Running: the wait branch, not Proceed, applied.
++    let inspections = test
++        .codex
++        .inspect_directly_owned_native_children()
++        .await
++        .expect("owned-children inspection should succeed");
++    assert!(
++        inspections
++            .iter()
++            .any(OwnedChildInspection::is_pending_native_work),
++        "slow child should still be pending native work, got {inspections:?}"
++    );
++    Ok(())
++}
++
++/// AC4: a foreign SleepItem blocks registration without being clobbered, and
++/// turn-start removal preserves it. The unconditional-remove mutant deletes the
++/// foreign marker and fails the preservation assertions.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn goal_wait_preserves_foreign_sleep_across_register_and_turn_start() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let _parent_initial = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "foreign worker")
++                && !has_function_call_output(request, "call-foreign-spawn")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-foreign-spawn"),
++            spawn_call("call-foreign-spawn"),
++            responses::ev_completed("resp-foreign-spawn"),
++        ]),
++    )
++    .await;
++    let _parent_after_spawn = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            has_function_call_output(request, "call-foreign-spawn")
++                && !body_contains(request, "foreign worker completed")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-foreign-idle"),
++            responses::ev_assistant_message("resp-foreign-idle", "parent ending turn"),
++            responses::ev_completed("resp-foreign-idle"),
++        ]),
++    )
++    .await;
++    let _child_sleep = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "do slow work")
++                && !body_contains(request, "foreign worker")
++                && !has_function_call_output(request, "call-foreign-sleep")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-foreign-child-sleep"),
++            sleep_call("call-foreign-sleep", 2_000),
++            responses::ev_completed("resp-foreign-child-sleep"),
++        ]),
++    )
++    .await;
++    let _child_final = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| has_function_call_output(request, "call-foreign-sleep"),
++        responses::sse(vec![
++            responses::ev_response_created("resp-foreign-child-done"),
++            responses::ev_assistant_message("resp-foreign-child-done", "foreign worker completed"),
++            responses::ev_completed("resp-foreign-child-done"),
++        ]),
++    )
++    .await;
++    let parent_wake = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| body_contains(request, "foreign worker completed"),
++        responses::sse(vec![
++            responses::ev_response_created("resp-foreign-wake"),
++            responses::ev_assistant_message("resp-foreign-wake", "parent saw foreign completion"),
++            responses::ev_completed("resp-foreign-wake"),
++        ]),
++    )
++    .await;
++
++    let (test, db, service) = fixture(&server).await?;
++    let thread_id = test.session_configured.thread_id;
++
++    let foreign = SleepItem {
++        id: "clock-wait-1".to_string(),
++        duration_ms: 60_000,
++    };
++    test.codex.thread_extension_data().insert(foreign.clone());
++    submit_user_input(&test.codex, "foreign worker").await;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++    set_goal(&service, &db, thread_id).await?;
++    test.codex
++        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
++        .await;
++
++    assert_eq!(
++        test.codex
++            .thread_extension_data()
++            .get::<SleepItem>()
++            .as_deref(),
++        Some(&foreign)
++    );
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnStarted(_)) && parent_wake.requests().len() == 1
++    })
++    .await;
++    assert_eq!(parent_wake.requests().len(), 1);
++    assert_eq!(
++        test.codex
++            .thread_extension_data()
++            .get::<SleepItem>()
++            .as_deref(),
++        Some(&foreign)
++    );
++    Ok(())
++}
++
++/// AC5 (clear/release) + AC9 (resume never revives): explicit lifecycle paths
++/// remove only the owned marker, and resume starts without one.
++#[tokio::test(flavor = "current_thread")]
++async fn goal_wait_removed_on_clear_release_and_resume() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let (test, db, service) = fixture(&server).await?;
++    let thread_id = test.session_configured.thread_id;
++    set_goal(&service, &db, thread_id).await?;
++
++    let runtime = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalRuntimeHandle>()
++        .expect("goal runtime should exist");
++    assert!(codex_goal_extension::try_register_goal_wait_sleep(
++        test.codex.thread_extension_data(),
++        runtime.background_wait_state().generation(),
++    ));
++    assert!(has_goal_wait_sleep(test.codex.thread_extension_data()));
++
++    runtime.release_native_wait().await;
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++
++    assert!(codex_goal_extension::try_register_goal_wait_sleep(
++        test.codex.thread_extension_data(),
++        runtime.background_wait_state().generation(),
++    ));
++    assert!(service.clear_thread_goal(&db, thread_id).await?);
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++
++    assert!(codex_goal_extension::try_register_goal_wait_sleep(
++        test.codex.thread_extension_data(),
++        runtime.background_wait_state().generation(),
++    ));
++    service
++        .restore_thread_runtime_after_resume(thread_id)
++        .await?;
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++    Ok(())
++}
++
++/// AC7: interrupting a real Running native child of a goal parent that holds
++/// the marker delivers exactly one queue-only INTERRUPTED notice and one wake
++/// model request for that transition, without claiming success. The child's
++/// global `is_final` is unchanged (`Interrupted` stays non-final).
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn goal_wait_registered_parent_gets_single_interrupted_notice() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let parent_initial = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "supervise native worker")
++                && !has_function_call_output(request, "call-int-spawn")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-int-spawn"),
++            spawn_call("call-int-spawn"),
++            responses::ev_completed("resp-int-spawn"),
++        ]),
++    )
++    .await;
++    let parent_after_spawn = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            has_function_call_output(request, "call-int-spawn")
++                && !body_contains(request, "Message Type: INTERRUPTED")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-int-idle"),
++            responses::ev_assistant_message("resp-int-idle", "parent ending turn"),
++            responses::ev_completed("resp-int-idle"),
++        ]),
++    )
++    .await;
++    let child_sleep = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "do slow work")
++                && !body_contains(request, "supervise native worker")
++                && !has_function_call_output(request, "call-int-sleep")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-int-child-sleep"),
++            sleep_call("call-int-sleep", 60_000),
++            responses::ev_completed("resp-int-child-sleep"),
++        ]),
++    )
++    .await;
++    let parent_wake = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| body_contains(request, "Message Type: INTERRUPTED"),
++        responses::sse(vec![
++            responses::ev_response_created("resp-int-wake"),
++            responses::ev_assistant_message("resp-int-wake", "parent saw interruption"),
++            responses::ev_completed("resp-int-wake"),
++        ]),
++    )
++    .await;
++
++    let (test, db, service) = fixture(&server).await?;
++    let thread_id = test.session_configured.thread_id;
++
++    submit_user_input(&test.codex, "supervise native worker").await;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++    set_goal(&service, &db, thread_id).await?;
++    test.codex
++        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
++        .await;
++
++    assert!(has_goal_wait_sleep(test.codex.thread_extension_data()));
++
++    let child_thread_id = running_owned_child_id(&test).await;
++    // `Running` (TurnStarted) precedes sampling: wait for the child's sleep
++    // prompt request to reach the mock before asserting counts and
++    // interrupting. Bounded: a missing request fails here, not in a hang.
++    tokio::time::timeout(Duration::from_secs(10), async {
++        while child_sleep.requests().len() != 1 {
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await
++    .expect("timed out waiting for the child's sleep request before interrupting");
++    assert_eq!(parent_initial.requests().len(), 1);
++    assert_eq!(parent_after_spawn.requests().len(), 1);
++    assert_eq!(child_sleep.requests().len(), 1);
++    let child = test
++        .thread_manager
++        .get_thread(child_thread_id)
++        .await
++        .expect("child thread should be loaded");
++
++    // Real production interrupt entry point: the same `Op` the app-server and
++    // the TUI submit. It aborts the child's sleep turn with `TurnAborted` for
++    // `Interrupted`, which reaches `turn_finished` as a gated queue-only mail.
++    child.submit(Op::Interrupt).await.expect("interrupt child");
++    wait_for_event(&child, |event| matches!(event, EventMsg::TurnAborted(_))).await;
++
++    // The child's `TurnAborted` is emitted after parent delivery completes
++    // (`send_event` awaits the terminal-turn notify), so the notice mail is
++    // already enqueued here; the wake turn follows via the marker.
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnStarted(_)) && parent_wake.requests().len() == 1
++    })
++    .await;
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++    let wakes: Vec<_> = parent_wake
++        .requests()
++        .into_iter()
++        .filter(|request| request.body_contains_text("Message Type: INTERRUPTED"))
++        .collect();
++    assert_eq!(
++        wakes.len(),
++        1,
++        "expected exactly one parent wake request, got {:?}",
++        parent_wake.requests()
++    );
++    // Scope notice assertions to inter-agent message items, not the whole
++    // serialized body: the request instructions always mention `FINAL_ANSWER`
++    // as a message type (`prompts/src/model_messages/multi_agent.rs`), so a
++    // whole-body check cannot prove this child's notice claims no success.
++    let agent_texts: Vec<String> = wakes[0]
++        .inputs_of_type("agent_message")
++        .iter()
++        .filter_map(|item| {
++            item.get("content").and_then(|content| {
++                content.as_array().map(|spans| {
++                    spans
++                        .iter()
++                        .filter_map(|span| span.get("text").and_then(|text| text.as_str()))
++                        .collect::<Vec<_>>()
++                        .join("\n")
++                })
++            })
++        })
++        .collect();
++    assert_eq!(
++        agent_texts
++            .iter()
++            .filter(|text| text.contains("Message Type: INTERRUPTED"))
++            .count(),
++        1,
++        "expected exactly one interrupted notice in the wake request: {agent_texts:?}"
++    );
++    assert!(
++        agent_texts
++            .iter()
++            .any(|text| text.contains("without a final answer")),
++        "interrupted notice must not claim a final answer: {agent_texts:?}"
++    );
++    assert!(
++        !agent_texts
++            .iter()
++            .any(|text| text.contains("Message Type: FINAL_ANSWER")),
++        "interrupted notice must not be a success completion: {agent_texts:?}"
++    );
++    assert!(
++        !agent_texts
++            .iter()
++            .any(|text| text.contains("completed successfully")),
++        "interrupted notice must not claim success: {agent_texts:?}"
++    );
++
++    // The envelope identities are the bounded spawn-created paths: `AgentPath`
++    // rejects over-long segments and paths at creation, so `author`/`recipient`
++    // cannot smuggle unbounded model-visible bytes past the notice body cap.
++    let interrupted_envelopes: Vec<_> = wakes[0]
++        .inputs_of_type("agent_message")
++        .into_iter()
++        .filter(|item| {
++            item.get("content")
++                .and_then(|content| content.as_array())
++                .is_some_and(|spans| {
++                    spans.iter().any(|span| {
++                        span.get("text")
++                            .and_then(|text| text.as_str())
++                            .is_some_and(|text| text.contains("Message Type: INTERRUPTED"))
++                    })
++                })
++        })
++        .collect();
++    assert_eq!(
++        interrupted_envelopes.len(),
++        1,
++        "expected exactly one interrupted envelope: {agent_texts:?}"
++    );
++    let author = interrupted_envelopes[0]
++        .get("author")
++        .and_then(|author| author.as_str())
++        .expect("interrupted envelope carries an author");
++    let recipient = interrupted_envelopes[0]
++        .get("recipient")
++        .and_then(|recipient| recipient.as_str())
++        .expect("interrupted envelope carries a recipient");
++    assert_eq!(author, "/root/worker");
++    assert_eq!(recipient, "/root");
++    assert!(
++        author.len() <= AgentPath::MAX_PATH_BYTES,
++        "author must fit the path cap: {author}"
++    );
++    assert!(
++        recipient.len() <= AgentPath::MAX_PATH_BYTES,
++        "recipient must fit the path cap: {recipient}"
++    );
++
++    // The child's runtime status is `Interrupted`; the global `is_final`
++    // stays unchanged (`Interrupted` non-final), pinned by the in-crate
++    // unit test `agent::status_tests::interrupted_stays_non_final`.
++    let child_status = child.agent_status().await;
++    assert_eq!(child_status, AgentStatus::Interrupted);
++    Ok(())
++}
++
++/// AC7 negative: interrupting a Running native child of an ordinary parent
++/// (no goal, no marker) enqueues no notice and starts no wake turn. The
++/// child's global `is_final` is unchanged.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn goal_wait_ordinary_parent_stays_quiet_on_child_interrupt() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let parent_initial = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "ordinary worker")
++                && !has_function_call_output(request, "call-quiet-spawn")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-quiet-spawn"),
++            spawn_call("call-quiet-spawn"),
++            responses::ev_completed("resp-quiet-spawn"),
++        ]),
++    )
++    .await;
++    let parent_after_spawn = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            has_function_call_output(request, "call-quiet-spawn")
++                && !body_contains(request, "Message Type: INTERRUPTED")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-quiet-idle"),
++            responses::ev_assistant_message("resp-quiet-idle", "parent ending turn"),
++            responses::ev_completed("resp-quiet-idle"),
++        ]),
++    )
++    .await;
++    let child_sleep = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "do slow work")
++                && !body_contains(request, "ordinary worker")
++                && !has_function_call_output(request, "call-quiet-sleep")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-quiet-child-sleep"),
++            sleep_call("call-quiet-sleep", 60_000),
++            responses::ev_completed("resp-quiet-child-sleep"),
++        ]),
++    )
++    .await;
++    // No wake mock: any parent wake request would have no responder.
++
++    let (test, _db, _service) = fixture(&server).await?;
++
++    // No goal is set: this parent is ordinary and registers no marker.
++    submit_user_input(&test.codex, "ordinary worker").await;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++    test.codex
++        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
++        .await;
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++
++    let child_thread_id = running_owned_child_id(&test).await;
++    // `Running` precedes sampling: wait for the child's sleep prompt request
++    // before interrupting, or the abort lands before any request exists.
++    // Bounded with a clear failure message.
++    tokio::time::timeout(Duration::from_secs(10), async {
++        while child_sleep.requests().len() != 1 {
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await
++    .expect("timed out waiting for the child's sleep request before interrupting");
++    let child = test
++        .thread_manager
++        .get_thread(child_thread_id)
++        .await
++        .expect("child thread should be loaded");
++    child.submit(Op::Interrupt).await.expect("interrupt child");
++    wait_for_event(&child, |event| matches!(event, EventMsg::TurnAborted(_))).await;
++
++    // The gated delivery returns before sending, so no notice mail is
++    // enqueued, and no wake turn starts within the silence window.
++    assert!(!test.codex.test_has_pending_mailbox_mail().await);
++    assert!(
++        tokio::time::timeout(Duration::from_secs(1), test.codex.next_event())
++            .await
++            .is_err(),
++        "ordinary parent must stay quiet after a child interrupt"
++    );
++    assert_eq!(parent_initial.requests().len(), 1);
++    assert_eq!(parent_after_spawn.requests().len(), 1);
++    assert_eq!(child_sleep.requests().len(), 1);
++
++    // `Interrupted` here too; `is_final` non-finality is pinned by
++    // `agent::status_tests::interrupted_stays_non_final`.
++    let child_status = child.agent_status().await;
++    assert_eq!(child_status, AgentStatus::Interrupted);
++    Ok(())
++}
+diff --git a/codex-rs/core/tests/suite/mod.rs b/codex-rs/core/tests/suite/mod.rs
+index 4eb6e4994e94c111e935732530a8e1b142e8ae67..f041de49518db0094c516f0422bc7d2003248cbe 100644
+--- a/codex-rs/core/tests/suite/mod.rs
++++ b/codex-rs/core/tests/suite/mod.rs
+@@ -87,6 +87,7 @@ mod git_enrichment;
+ #[path = "goal_activity_tests.rs"]
+ mod goal_activity;
+ mod goal_background_wait;
++mod goal_native_wait;
+ mod guardian_authorization;
+ mod guardian_authorization_refresh;
+ #[path = "guardian_cached_score_tests.rs"]
+diff --git a/codex-rs/ext/extension-api/src/state.rs b/codex-rs/ext/extension-api/src/state.rs
+index 7d6e79dc5872968147c1aba00b4aa08d1efdae4c..eb3f9321116d1f8e830e23c9cad31484beed0583 100644
+--- a/codex-rs/ext/extension-api/src/state.rs
++++ b/codex-rs/ext/extension-api/src/state.rs
+@@ -131,6 +131,26 @@ impl ExtensionData {
+         self.entries().remove(&TypeId::of::<T>()).map(downcast_data)
+     }
+ 
++    /// Removes the attached value of type `T` only when `should_remove`
++    /// accepts the current attachment.
++    ///
++    /// The predicate and removal happen while this map is locked, so concurrent
++    /// callers cannot remove a value after checking a stale attachment. Returns
++    /// `true` when a value was removed, `false` when absent or rejected.
++    pub fn remove_if<T>(&self, should_remove: impl FnOnce(Option<&T>) -> bool) -> bool
++    where
++        T: Any + Send + Sync,
++    {
++        let mut entries = self.entries();
++        let existing = entries
++            .get(&TypeId::of::<T>())
++            .map(|value| downcast_data::<T>(Arc::clone(value)));
++        if !should_remove(existing.as_deref()) {
++            return false;
++        }
++        entries.remove(&TypeId::of::<T>()).is_some()
++    }
++
+     fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<TypeId, ErasedData>> {
+         self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+     }
+diff --git a/codex-rs/ext/extension-api/tests/state.rs b/codex-rs/ext/extension-api/tests/state.rs
+index 4180ad128b33e42a4be20e5d25e0ba9870679eb6..a77408e8867d6bb231eded844af844b19dac561d 100644
+--- a/codex-rs/ext/extension-api/tests/state.rs
++++ b/codex-rs/ext/extension-api/tests/state.rs
+@@ -75,6 +75,18 @@ fn conditional_insert_keeps_the_newest_concurrent_value() {
+     assert_eq!(data.get::<u64>().as_deref(), Some(&(CALLER_COUNT - 1)));
+ }
+ 
++#[test]
++fn conditional_remove_only_removes_when_predicate_accepts() {
++    let data = ExtensionData::new("thread-1");
++
++    assert!(!data.remove_if(|existing: Option<&u64>| existing.is_some()));
++    data.insert(/*value*/ 7_u64);
++    assert!(!data.remove_if(|existing: Option<&u64>| existing.is_none()));
++    assert_eq!(data.get::<u64>().as_deref(), Some(&7));
++    assert!(data.remove_if(|existing: Option<&u64>| existing == Some(&7)));
++    assert_eq!(data.get::<u64>(), None);
++}
++
+ #[test]
+ fn get_or_init_initializes_once_and_returns_shared_value() {
+     const CALLER_COUNT: usize = 8;
+diff --git a/codex-rs/ext/goal/Cargo.toml b/codex-rs/ext/goal/Cargo.toml
+index d1d5f75074581c92a587eed75cb3bf1d21637934..912710ddf1611dfc3fdf98e516f914733cf6b838 100644
+--- a/codex-rs/ext/goal/Cargo.toml
++++ b/codex-rs/ext/goal/Cargo.toml
+@@ -17,6 +17,7 @@ workspace = true
+ codex-analytics = { workspace = true }
+ codex-core = { workspace = true }
+ codex-extension-api = { workspace = true }
++codex-extension-items = { workspace = true }
+ codex-otel = { workspace = true }
+ codex-prompts = { workspace = true }
+ codex-protocol = { workspace = true }
+diff --git a/codex-rs/ext/goal/src/background_wait.rs b/codex-rs/ext/goal/src/background_wait.rs
+index 8647c6005bf6131884dc395aa59914d1be4a2182..e958ac8303ae5c621abc2a90805b405e82f663db 100644
+--- a/codex-rs/ext/goal/src/background_wait.rs
++++ b/codex-rs/ext/goal/src/background_wait.rs
+@@ -276,9 +276,30 @@ impl BackgroundWaitState {
+         status: GoalWaitStatus,
+         snapshot: Result<PendingWorkSnapshot, PendingWorkReadError>,
+         now: Duration,
++    ) -> BackgroundWaitEvaluation {
++        self.evaluate_continuation_with_native_pending(
++            goal_id, status, snapshot, /*native_pending*/ false, now,
++        )
++    }
++
++    /// Evaluates one goal continuation attempt with native subagent work.
++    ///
++    /// Same as [`BackgroundWaitState::evaluate_continuation`], but an empty
++    /// exec snapshot still waits (with the same check-in schedule) when
++    /// `native_pending` is true (loaded `PendingInit`/`Running` native
++    /// children). Admission still compares only the exec work revision; native
++    /// completion wakes via the durable-sleep marker and mailbox mail, not via
++    /// revision changes.
++    pub fn evaluate_continuation_with_native_pending(
++        &self,
++        goal_id: &str,
++        status: GoalWaitStatus,
++        snapshot: Result<PendingWorkSnapshot, PendingWorkReadError>,
++        native_pending: bool,
++        now: Duration,
+     ) -> BackgroundWaitEvaluation {
+         let mut state = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+-        self.evaluate_locked(&mut state, goal_id, status, snapshot, now)
++        self.evaluate_locked(&mut state, goal_id, status, snapshot, native_pending, now)
+     }
+ 
+     fn evaluate_locked(
+@@ -287,6 +308,7 @@ impl BackgroundWaitState {
+         goal_id: &str,
+         status: GoalWaitStatus,
+         snapshot: Result<PendingWorkSnapshot, PendingWorkReadError>,
++        native_pending: bool,
+         now: Duration,
+     ) -> BackgroundWaitEvaluation {
+         if !state.enabled || status == GoalWaitStatus::InactiveOrBudgetLimited {
+@@ -311,7 +333,7 @@ impl BackgroundWaitState {
+                 return BackgroundWaitEvaluation::WaitOnReadFailure { error };
+             }
+         };
+-        if snapshot.is_empty() {
++        if snapshot.is_empty() && !native_pending {
+             state.wait_started_at = None;
+             state.pending_deadline = None;
+             state.admission_attempt = Some(AdmissionAttempt {
+diff --git a/codex-rs/ext/goal/src/extension.rs b/codex-rs/ext/goal/src/extension.rs
+index dfb73b6661cde2813b1aaad581fd2b529c4ee6ac..b0dc76e9dee4d2c9c164d5b73f3fd08b1f9f7724 100644
+--- a/codex-rs/ext/goal/src/extension.rs
++++ b/codex-rs/ext/goal/src/extension.rs
+@@ -262,6 +262,10 @@ where
+             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+                 return;
+             };
++            // Admitted turn start ends the idle wait: remove the owned marker
++            // (check-ins reinsert at the next idle if still waiting). Only the
++            // owned id is removed; foreign sleep is preserved.
++            crate::native_wait::remove_goal_wait_sleep(input.thread_store);
+             runtime.background_wait_state().note_turn_start();
+             if !runtime.is_enabled() {
+                 return;
+diff --git a/codex-rs/ext/goal/src/lib.rs b/codex-rs/ext/goal/src/lib.rs
+index 3960e21be83116283908ea9e9add2231221430dc..4449e14a8a9b72e21b2d61ee0c7b3a8a40edd558 100644
+--- a/codex-rs/ext/goal/src/lib.rs
++++ b/codex-rs/ext/goal/src/lib.rs
+@@ -9,6 +9,7 @@ mod check_in_clock;
+ mod events;
+ mod extension;
+ mod metrics;
++mod native_wait;
+ mod runtime;
+ mod spec;
+ mod steering;
+@@ -34,6 +35,11 @@ pub use extension::GoalExtension;
+ pub use extension::GoalExtensionConfig;
+ pub use extension::install_with_backend;
+ pub use extension::install_with_backend_and_clock;
++pub use native_wait::GOAL_WAIT_SLEEP_DURATION_MS;
++pub use native_wait::TestNativeWaitRegistrationGate;
++pub use native_wait::has_goal_wait_sleep;
++pub use native_wait::remove_goal_wait_sleep;
++pub use native_wait::try_register_goal_wait_sleep;
+ pub use runtime::GoalRuntimeHandle;
+ pub use runtime::PreviousGoalSnapshot;
+ pub use spec::CREATE_GOAL_TOOL_NAME;
+diff --git a/codex-rs/ext/goal/src/native_wait.rs b/codex-rs/ext/goal/src/native_wait.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..306dc678cadb1e9b311867e4e08f9a44cbbb9b81
+--- /dev/null
++++ b/codex-rs/ext/goal/src/native_wait.rs
+@@ -0,0 +1,115 @@
++//! Goal-owned durable-sleep lease for native subagent waits.
++//!
++//! A goal parent with loaded `PendingInit`/`Running` native children registers
++//! one [`SleepItem`] in thread extension data with id
++//! `goal-wait:<generation>`. The marker grants queue-only mailbox mail
++//! permission to wake an idle thread (core `has_outstanding_durable_sleep`);
++//! storing it emits no tool events, schedules nothing, records no history
++//! item, and does not change current-time reminders. The goal scheduler owns
++//! the timer and warning.
++//!
++//! Registration uses [`ExtensionData::insert_if`] only when absent or already
++//! goal-owned, so it never clobbers another contributor's sleep. Removal uses
++//! [`ExtensionData::remove_if`] only when goal-owned, so a foreign marker is
++//! preserved. Both are atomic under the extension-data lock.
++//!
++//! Insert the marker BEFORE checking pending mail, then recheck via the
++//! existing pending-work scheduler; this closes completion-before-registration
++//! (a child finishing between the idle check and the insert already enqueued
++//! mail, and the recheck wakes it).
++//!
++//! [`SleepItem`]: codex_extension_items::sleep::SleepItem
++//! [`ExtensionData::insert_if`]: codex_extension_api::ExtensionData::insert_if
++//! [`ExtensionData::remove_if`]: codex_extension_api::ExtensionData::remove_if
++
++use codex_extension_api::ExtensionData;
++use codex_extension_items::sleep::SleepItem;
++use codex_extension_items::sleep::goal_wait_sleep_id;
++use codex_extension_items::sleep::is_goal_wait_sleep_id;
++
++/// Duration stored in the goal wait marker.
++///
++/// Unused for timing: the marker is durable until explicitly removed, and the
++/// goal scheduler owns check-in timers and warnings. Zero avoids implying a
++/// real `clock.sleep` duration.
++pub const GOAL_WAIT_SLEEP_DURATION_MS: u64 = 0;
++
++/// Registers the goal-owned wait marker for one invalidation `generation`.
++///
++/// Inserts only when absent or already goal-owned (refreshing a stale own
++/// generation); never clobbers a foreign `SleepItem`. Returns `true` when the
++/// owned marker is present afterwards, `false` when a foreign marker blocked it.
++pub fn try_register_goal_wait_sleep(store: &ExtensionData, generation: u64) -> bool {
++    store.insert_if(
++        SleepItem {
++            id: goal_wait_sleep_id(generation),
++            duration_ms: GOAL_WAIT_SLEEP_DURATION_MS,
++        },
++        |existing| existing.is_none_or(|item| is_goal_wait_sleep_id(item.id.as_str())),
++    )
++}
++
++/// Removes the goal-owned wait marker only when it is goal-owned.
++///
++/// Returns `true` when a goal-owned marker was removed, `false` when absent
++/// or foreign (foreign markers are preserved).
++pub fn remove_goal_wait_sleep(store: &ExtensionData) -> bool {
++    store.remove_if(|existing: Option<&SleepItem>| {
++        existing.is_some_and(|item| is_goal_wait_sleep_id(item.id.as_str()))
++    })
++}
++
++/// Reports whether a goal-owned wait marker is currently stored.
++pub fn has_goal_wait_sleep(store: &ExtensionData) -> bool {
++    store
++        .get::<SleepItem>()
++        .is_some_and(|item| is_goal_wait_sleep_id(item.id.as_str()))
++}
++
++/// Test-only gate pausing goal wait registration between inspection and insert.
++///
++/// A suite arms one gate to deterministically interleave a child completion
++/// with registration: the production path signals arrival after observing a
++/// Running child and before inserting the marker, then waits for release while
++/// the suite completes the child (mail enqueued without wake, since no marker
++/// exists yet). Production inserts no gate; both hooks are no-ops when none is
++/// present. The latch test then releases and asserts the post-insert recheck
++/// wakes; a mutant inserting after the mail check misses the wake.
++#[doc(hidden)]
++pub struct TestNativeWaitRegistrationGate {
++    arrived: tokio::sync::Notify,
++    release: tokio::sync::Notify,
++}
++
++impl TestNativeWaitRegistrationGate {
++    /// Creates a registration gate for latch tests.
++    #[doc(hidden)]
++    pub fn new() -> Self {
++        Self {
++            arrived: tokio::sync::Notify::new(),
++            release: tokio::sync::Notify::new(),
++        }
++    }
++
++    /// Signals that registration reached the pre-insert pause.
++    pub(crate) fn signal_arrived(&self) {
++        self.arrived.notify_one();
++    }
++
++    /// Waits for the suite to release registration.
++    pub(crate) async fn wait_release(&self) {
++        self.release.notified().await;
++    }
++
++    /// Waits for registration to reach the pre-insert pause.
++    #[doc(hidden)]
++    pub async fn wait_arrived(&self) {
++        self.arrived.notified().await;
++    }
++
++    /// Releases paused registration.
++    #[doc(hidden)]
++    pub fn release(&self) {
++        self.release.notify_one();
++    }
++}
+diff --git a/codex-rs/ext/goal/src/runtime.rs b/codex-rs/ext/goal/src/runtime.rs
+index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e87109f1f87a 100644
+--- a/codex-rs/ext/goal/src/runtime.rs
++++ b/codex-rs/ext/goal/src/runtime.rs
+@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::Ordering;
+ use std::time::Duration;
+ 
++use codex_core::OwnedChildInspection;
+ use codex_core::StartIfIdleSubmission;
+ use codex_core::ThreadManager;
+ use codex_core::TurnInput;
+@@ -142,6 +143,7 @@ impl GoalRuntimeHandle {
+         self.inner.activity.set_enabled(enabled, store);
+         if !enabled {
+             self.inner.accounting_state.clear_active_goal();
++            crate::native_wait::remove_goal_wait_sleep(store);
+             store.remove::<TurnStartOptions>();
+             store.remove::<GoalTurnStartPermit>();
+         }
+@@ -152,10 +154,32 @@ impl GoalRuntimeHandle {
+         self.inner.activity.stop(store);
+         self.inner.accounting_state.clear_active_goal();
+         self.inner.background_wait.note_stop();
++        crate::native_wait::remove_goal_wait_sleep(store);
+         store.remove::<TurnStartOptions>();
+         store.remove::<GoalTurnStartPermit>();
+     }
+ 
++    /// Removes the goal-owned native-wait marker from the live thread, if present.
++    ///
++    /// Only the owned `goal-wait:*` id is removed; foreign sleep markers are
++    /// preserved. Missing manager or thread is a no-op (nothing to clean).
++    pub(crate) async fn remove_native_wait_marker(&self) {
++        let Some(manager) = self.inner.thread_manager.upgrade() else {
++            return;
++        };
++        let Ok(thread) = manager.get_thread(self.inner.thread_id).await else {
++            return;
++        };
++        crate::native_wait::remove_goal_wait_sleep(thread.thread_extension_data());
++    }
++
++    /// Releases an explicitly released wait: resets the check-in epoch and
++    /// removes the owned marker without killing any child work.
++    pub async fn release_native_wait(&self) {
++        self.inner.background_wait.note_release();
++        self.remove_native_wait_marker().await;
++    }
++
+     /// Goal-owned background waiting policy for this thread.
+     pub fn background_wait_state(&self) -> Arc<BackgroundWaitState> {
+         Arc::clone(&self.inner.background_wait)
+@@ -396,12 +420,16 @@ impl GoalRuntimeHandle {
+                 if self.inner.accounting_state.current_turn_id().is_none() {
+                     self.inner.accounting_state.clear_active_goal();
+                 }
++                drop(permit);
++                self.remove_native_wait_marker().await;
+             }
+             codex_state::ThreadGoalStatus::Paused
+             | codex_state::ThreadGoalStatus::Blocked
+             | codex_state::ThreadGoalStatus::UsageLimited
+             | codex_state::ThreadGoalStatus::Complete => {
+                 self.inner.accounting_state.clear_active_goal();
++                drop(permit);
++                self.remove_native_wait_marker().await;
+             }
+         }
+         Ok(())
+@@ -418,6 +446,8 @@ impl GoalRuntimeHandle {
+         if committed.is_none() {
+             self.inner.accounting_state.clear_active_goal();
+         }
++        drop(permit);
++        self.remove_native_wait_marker().await;
+         Ok(())
+     }
+ 
+@@ -551,6 +581,8 @@ impl GoalRuntimeHandle {
+             Some(turn_id.to_string()),
+             goal,
+         );
++        drop(goal_state_permit);
++        self.remove_native_wait_marker().await;
+         Ok(())
+     }
+ 
+@@ -558,6 +590,11 @@ impl GoalRuntimeHandle {
+         let permit = self.goal_state_permit().await?;
+         let goal = self.reconcile_live_activity(&permit).await?;
+         self.inner.background_wait.note_resume();
++        // Live-generation-only lease: resume never revives a marker from a
++        // rendered old SleepItem or for a now-unloaded child. A fresh wait, if
++        // still needed, registers at the next idle via `continue_if_idle`.
++        drop(permit);
++        self.remove_native_wait_marker().await;
+         if !self.is_enabled() {
+             return Ok(());
+         }
+@@ -616,6 +653,7 @@ impl GoalRuntimeHandle {
+     pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
+         if !self.tools_available() {
+             self.inner.accounting_state.clear_active_goal();
++            self.remove_native_wait_marker().await;
+             return Ok(());
+         }
+         // Hold this through the read/start window so external set/clear cannot
+@@ -645,21 +683,84 @@ impl GoalRuntimeHandle {
+ 
+         let Some(goal) = goal else {
+             self.inner.accounting_state.clear_active_goal();
++            crate::native_wait::remove_goal_wait_sleep(thread.thread_extension_data());
+             return Ok(());
+         };
+         if goal.status != codex_state::ThreadGoalStatus::Active {
+             self.inner.accounting_state.clear_active_goal();
++            crate::native_wait::remove_goal_wait_sleep(thread.thread_extension_data());
+             return Ok(());
+         }
+-        if self.inner.background_wait.is_enabled() {
++        // Native subagent wait: only on a persistent host (background-wait
++        // enabled). Non-goal, unloaded, and unknown work gets no marker;
++        // failed inspection propagates instead of looking empty.
++        let wait_enabled = self.inner.background_wait.is_enabled();
++        let native_pending = if wait_enabled {
++            let inspections = thread
++                .inspect_directly_owned_native_children()
++                .await
++                .map_err(|err| {
++                    format!(
++                        "goal native-wait inspection failed for {}: {err}",
++                        self.thread_id()
++                    )
++                })?;
++            let pending = inspections
++                .iter()
++                .any(OwnedChildInspection::is_pending_native_work);
++            if pending {
++                // Test-only latch: pause between observing Running work and
++                // inserting the marker so the suite can complete the child in
++                // the window. Production inserts no gate.
++                if let Some(gate) = thread
++                    .thread_extension_data()
++                    .get::<crate::native_wait::TestNativeWaitRegistrationGate>()
++                {
++                    gate.signal_arrived();
++                    gate.wait_release().await;
++                }
++                // Insert BEFORE checking pending mail, then recheck via the
++                // existing scheduler; this closes completion-before-registration.
++                crate::native_wait::try_register_goal_wait_sleep(
++                    thread.thread_extension_data(),
++                    self.inner.background_wait.generation(),
++                );
++                // The recheck can synchronously start a wake turn, whose
++                // `on_turn_start` needs this same goal-state permit: share
++                // ownership with that callback rather than letting it
++                // reacquire the semaphore this task holds (self-deadlock).
++                // The lease removes the entry when the block ends without a
++                // turn consuming it, so no stale permit outlives this
++                // critical section; the goal-continuation insert below
++                // installs a fresh entry for its own start attempt.
++                {
++                    thread
++                        .thread_extension_data()
++                        .insert(GoalTurnStartPermit(Arc::clone(&goal_state_permit)));
++                    let _recheck_start_lease = GoalTurnStartLease(thread.thread_extension_data());
++                    thread.recheck_pending_work_for_goal_wait().await;
++                }
++            } else {
++                crate::native_wait::remove_goal_wait_sleep(thread.thread_extension_data());
++            }
++            pending
++        } else {
++            crate::native_wait::remove_goal_wait_sleep(thread.thread_extension_data());
++            false
++        };
++        if wait_enabled {
+             let snapshot = codex_extension_api::read_pending_work(thread.thread_extension_data());
+             let now = self.inner.check_in_timer.clock().now();
+-            match self.inner.background_wait.evaluate_continuation(
+-                goal.goal_id.as_str(),
+-                GoalWaitStatus::Active,
+-                snapshot,
+-                now,
+-            ) {
++            match self
++                .inner
++                .background_wait
++                .evaluate_continuation_with_native_pending(
++                    goal.goal_id.as_str(),
++                    GoalWaitStatus::Active,
++                    snapshot,
++                    native_pending,
++                    now,
++                ) {
+                 BackgroundWaitEvaluation::ProceedWithoutGate
+                 | BackgroundWaitEvaluation::ProceedNormal { .. }
+                 | BackgroundWaitEvaluation::ProceedWithTicket { .. } => {
+diff --git a/codex-rs/ext/goal/tests/native_wait.rs b/codex-rs/ext/goal/tests/native_wait.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..58a56d74e4f6735185c2a79d9ce0db09ca9d866d
+--- /dev/null
++++ b/codex-rs/ext/goal/tests/native_wait.rs
+@@ -0,0 +1,192 @@
++//! Goal-owned durable-sleep lease tests.
++//!
++//! Drives the production lease helpers (`try_register_goal_wait_sleep`,
++//! `remove_goal_wait_sleep`) and the check-in reuse
++//! (`evaluate_continuation_with_native_pending`) without model requests.
++//! Registration never clobbers foreign sleep, removal only removes the owned
++//! id, and empty exec work still waits when native work is pending.
++
++use std::time::Duration;
++
++use codex_extension_api::ExtensionData;
++use codex_extension_api::PendingWorkSnapshot;
++use codex_extension_items::sleep::SleepItem;
++use codex_extension_items::sleep::goal_wait_sleep_id;
++use codex_goal_extension::BackgroundWaitEvaluation;
++use codex_goal_extension::BackgroundWaitState;
++use codex_goal_extension::GoalWaitStatus;
++use codex_goal_extension::has_goal_wait_sleep;
++use codex_goal_extension::remove_goal_wait_sleep;
++use codex_goal_extension::try_register_goal_wait_sleep;
++use pretty_assertions::assert_eq;
++
++fn minutes(value: u64) -> Duration {
++    Duration::from_secs(value * 60)
++}
++
++#[test]
++fn register_never_clobbers_foreign_sleep() {
++    let store = ExtensionData::new("thread-1");
++    let foreign = SleepItem {
++        id: "clock-wait-1".to_string(),
++        duration_ms: 60_000,
++    };
++    store.insert(foreign.clone());
++
++    assert!(!try_register_goal_wait_sleep(&store, /*generation*/ 3));
++    assert_eq!(store.get::<SleepItem>().as_deref(), Some(&foreign));
++    assert!(!has_goal_wait_sleep(&store));
++}
++
++#[test]
++fn register_refreshes_stale_own_generation() {
++    let store = ExtensionData::new("thread-1");
++
++    assert!(try_register_goal_wait_sleep(&store, /*generation*/ 1));
++    assert_eq!(
++        store.get::<SleepItem>().as_deref(),
++        Some(&SleepItem {
++            id: goal_wait_sleep_id(1),
++            duration_ms: 0,
++        })
++    );
++    assert!(has_goal_wait_sleep(&store));
++
++    assert!(try_register_goal_wait_sleep(&store, /*generation*/ 2));
++    assert_eq!(
++        store.get::<SleepItem>().as_deref(),
++        Some(&SleepItem {
++            id: goal_wait_sleep_id(2),
++            duration_ms: 0,
++        })
++    );
++}
++
++#[test]
++fn conditional_remove_only_removes_owned_id() {
++    let store = ExtensionData::new("thread-1");
++    assert!(!remove_goal_wait_sleep(&store));
++
++    let foreign = SleepItem {
++        id: "clock-wait-1".to_string(),
++        duration_ms: 60_000,
++    };
++    store.insert(foreign.clone());
++    assert!(!remove_goal_wait_sleep(&store));
++    assert_eq!(store.get::<SleepItem>().as_deref(), Some(&foreign));
++
++    store.insert(SleepItem {
++        id: goal_wait_sleep_id(7),
++        duration_ms: 0,
++    });
++    assert!(has_goal_wait_sleep(&store));
++    assert!(remove_goal_wait_sleep(&store));
++    assert_eq!(store.get::<SleepItem>(), None);
++    assert!(!has_goal_wait_sleep(&store));
++}
++
++#[test]
++fn empty_exec_with_native_pending_waits_and_uses_checkins() {
++    let state = BackgroundWaitState::new();
++    state.enable();
++    let start = minutes(1000);
++
++    let evaluation = state.evaluate_continuation_with_native_pending(
++        "goal-1",
++        GoalWaitStatus::Active,
++        Ok(PendingWorkSnapshot::empty(1)),
++        /*native_pending*/ true,
++        start,
++    );
++    assert_eq!(
++        evaluation,
++        BackgroundWaitEvaluation::Wait {
++            next_check_in: Some(start + minutes(30)),
++            emit_warning: false,
++        }
++    );
++
++    let evaluation = state.evaluate_continuation_with_native_pending(
++        "goal-1",
++        GoalWaitStatus::Active,
++        Ok(PendingWorkSnapshot::empty(1)),
++        /*native_pending*/ true,
++        start + minutes(30),
++    );
++    assert!(matches!(
++        evaluation,
++        BackgroundWaitEvaluation::ProceedWithTicket { .. }
++    ));
++    assert_eq!(
++        state.check_admission(Ok(PendingWorkSnapshot::empty(1))),
++        codex_extension_api::GoalAdmissionDecision::Allow
++    );
++    assert_eq!(state.check_ins_used(), 1);
++}
++
++#[test]
++fn empty_exec_without_native_pending_proceeds_normally() {
++    let state = BackgroundWaitState::new();
++    state.enable();
++
++    let evaluation = state.evaluate_continuation_with_native_pending(
++        "goal-1",
++        GoalWaitStatus::Active,
++        Ok(PendingWorkSnapshot::empty(7)),
++        /*native_pending*/ false,
++        minutes(0),
++    );
++    assert_eq!(
++        evaluation,
++        BackgroundWaitEvaluation::ProceedNormal {
++            expected_revision: 7
++        }
++    );
++}
++
++#[test]
++fn native_pending_exhausts_checkins_then_waits_without_deadline() {
++    let state = BackgroundWaitState::new();
++    state.enable();
++    let start = minutes(0);
++    let _ = state.evaluate_continuation_with_native_pending(
++        "goal-1",
++        GoalWaitStatus::Active,
++        Ok(PendingWorkSnapshot::empty(1)),
++        /*native_pending*/ true,
++        start,
++    );
++    for at in [30, 60, 120] {
++        let evaluation = state.evaluate_continuation_with_native_pending(
++            "goal-1",
++            GoalWaitStatus::Active,
++            Ok(PendingWorkSnapshot::empty(1)),
++            /*native_pending*/ true,
++            start + minutes(at),
++        );
++        assert!(matches!(
++            evaluation,
++            BackgroundWaitEvaluation::ProceedWithTicket { .. }
++        ));
++        assert_eq!(
++            state.check_admission(Ok(PendingWorkSnapshot::empty(1))),
++            codex_extension_api::GoalAdmissionDecision::Allow
++        );
++    }
++    assert_eq!(state.check_ins_used(), 3);
++
++    let evaluation = state.evaluate_continuation_with_native_pending(
++        "goal-1",
++        GoalWaitStatus::Active,
++        Ok(PendingWorkSnapshot::empty(1)),
++        /*native_pending*/ true,
++        start + minutes(240),
++    );
++    assert_eq!(
++        evaluation,
++        BackgroundWaitEvaluation::Wait {
++            next_check_in: None,
++            emit_warning: true,
++        }
++    );
++}
+diff --git a/codex-rs/ext/items/src/sleep.rs b/codex-rs/ext/items/src/sleep.rs
+index 4cca51e16e27619ceb459e4b85e6519f480ea069..d169d96ceb60243d8a60a4f6814fa2816cf0e3e0 100644
+--- a/codex-rs/ext/items/src/sleep.rs
++++ b/codex-rs/ext/items/src/sleep.rs
+@@ -12,3 +12,22 @@ pub struct SleepItem {
+     #[ts(type = "number")]
+     pub duration_ms: u64,
+ }
++
++/// Prefix for goal-owned durable-sleep wait markers.
++///
++/// A `SleepItem` stored in thread extension data with an id starting with this
++/// prefix grants queue-only mailbox mail permission to wake an idle thread
++/// (see core `has_outstanding_durable_sleep`). Storing it emits no tool
++/// events, schedules nothing, records no history item, and does not change
++/// current-time reminders; the goal scheduler owns the timer and warning.
++pub const GOAL_WAIT_SLEEP_ID_PREFIX: &str = "goal-wait:";
++
++/// Builds the goal-owned wait marker id for one invalidation generation.
++pub fn goal_wait_sleep_id(generation: u64) -> String {
++    format!("{GOAL_WAIT_SLEEP_ID_PREFIX}{generation}")
++}
++
++/// Reports whether a `SleepItem` id is owned by the goal wait lease.
++pub fn is_goal_wait_sleep_id(id: &str) -> bool {
++    id.starts_with(GOAL_WAIT_SLEEP_ID_PREFIX)
++}
+diff --git a/codex-rs/protocol/src/agent_path.rs b/codex-rs/protocol/src/agent_path.rs
+index c0ad8b734a94baedc96e93186ce6d8cc3d588ce3..5c5f3ba91a9ec5a7f945d6a89a57e8e1d970e9fd 100644
+--- a/codex-rs/protocol/src/agent_path.rs
++++ b/codex-rs/protocol/src/agent_path.rs
+@@ -19,6 +19,21 @@ impl AgentPath {
+     pub const MORPHEUS: &str = "/morpheus";
+     const ROOT_SEGMENT: &str = "root";
+ 
++    /// Maximum length of a single path segment in bytes.
++    ///
++    /// Segments are created from model-supplied spawn names and copied verbatim
++    /// into model-visible envelope fields (`author`/`recipient`), so longer
++    /// names are rejected instead of silently truncated: the path is an
++    /// identity used for routing.
++    pub const MAX_SEGMENT_BYTES: usize = 128;
++
++    /// Maximum length of a full absolute agent path in bytes.
++    ///
++    /// Bounds nested spawn-created paths however deep the configured spawn
++    /// depth allows, so every `author`/`recipient` pair keeps a fixed upper
++    /// bound in model-visible items.
++    pub const MAX_PATH_BYTES: usize = 1024;
++
+     pub fn root() -> Self {
+         Self(Self::ROOT.to_string())
+     }
+@@ -126,6 +141,13 @@ fn validate_agent_name(agent_name: &str) -> Result<(), String> {
+     if agent_name.is_empty() {
+         return Err("agent_name must not be empty".to_string());
+     }
++    let name_len = agent_name.len();
++    if name_len > AgentPath::MAX_SEGMENT_BYTES {
++        return Err(format!(
++            "agent_name must be at most {} bytes, got {name_len}",
++            AgentPath::MAX_SEGMENT_BYTES
++        ));
++    }
+     if agent_name == AgentPath::ROOT_SEGMENT {
+         return Err("agent_name `root` is reserved".to_string());
+     }
+@@ -147,6 +169,13 @@ fn validate_agent_name(agent_name: &str) -> Result<(), String> {
+ }
+ 
+ fn validate_absolute_path(path: &str) -> Result<(), String> {
++    let path_len = path.len();
++    if path_len > AgentPath::MAX_PATH_BYTES {
++        return Err(format!(
++            "absolute agent path must be at most {} bytes, got {path_len}",
++            AgentPath::MAX_PATH_BYTES
++        ));
++    }
+     if path == AgentPath::MORPHEUS {
+         return Ok(());
+     }
+@@ -237,4 +266,52 @@ mod tests {
+             Err("agent_name `..` is reserved".to_string())
+         );
+     }
++
++    #[test]
++    fn agent_path_rejects_overlong_segment() {
++        let overlong = "a".repeat(AgentPath::MAX_SEGMENT_BYTES + 1);
++        assert_eq!(
++            AgentPath::root().join(&overlong),
++            Err(format!(
++                "agent_name must be at most {} bytes, got {}",
++                AgentPath::MAX_SEGMENT_BYTES,
++                overlong.len()
++            ))
++        );
++    }
++
++    #[test]
++    fn agent_path_accepts_segment_at_cap() {
++        let at_cap = "a".repeat(AgentPath::MAX_SEGMENT_BYTES);
++        let child = AgentPath::root()
++            .join(&at_cap)
++            .expect("segment at cap should be accepted");
++        assert_eq!(child.as_str(), format!("/root/{at_cap}"));
++    }
++
++    #[test]
++    fn agent_path_rejects_absolute_path_over_total_cap() {
++        let path = format!("/root/{}", vec!["a"; 600].join("/"));
++        assert!(path.len() > AgentPath::MAX_PATH_BYTES);
++        assert_eq!(
++            AgentPath::try_from(path.as_str()),
++            Err(format!(
++                "absolute agent path must be at most {} bytes, got {}",
++                AgentPath::MAX_PATH_BYTES,
++                path.len()
++            ))
++        );
++    }
++
++    #[test]
++    fn agent_path_accepts_absolute_path_at_total_cap() {
++        // "/root" (5) + 7 segments of 128 (7 * 129) + one segment of 115
++        // (116) == 1024.
++        let mut segments = vec!["a".repeat(AgentPath::MAX_SEGMENT_BYTES); 7];
++        segments.push("b".repeat(115));
++        let path = format!("/root/{}", segments.join("/"));
++        assert_eq!(path.len(), AgentPath::MAX_PATH_BYTES);
++        let parsed = AgentPath::try_from(path.as_str()).expect("path at total cap");
++        assert_eq!(parsed.as_str(), path);
++    }
+ }

@@ -1,0 +1,255 @@
+diff --git a/.research/261011_r141-panel-a-task-260929-csyzcj-rev4.md b/.research/261011_r141-panel-a-task-260929-csyzcj-rev4.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..b03f62756cd9d57509882772aa352ed3645f18b2
+--- /dev/null
++++ b/.research/261011_r141-panel-a-task-260929-csyzcj-rev4.md
+@@ -0,0 +1,249 @@
++# TASK-261011-3l5dnu — R141 panel A, TASK-260929-csyzcj rev4
++
++changes_requested
++
++CR-TASK-260929-csyzcj-4; independent non-recording panel. Replay of base `39c264c34e61b5171ae13b0f756746c24ea5f51a` produced exactly expected candidate `5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8`. The ordinary index was untouched. Every surface row has one result: 6 held, 1 broken, 0 not-attacked.
++
++Key finding: the new AgentPath allocation cap also tightens historical deserialization. A saved child named with 129 lowercase characters, valid at the base, now fails restoration/resume. Retain the new-spawn bound while addressing historical identity compatibility. Sources and the requested public-entry tests are in the structured finding. No runtime resume failure is claimed as executed.
++
++## Commands and observed exit codes
++
++Commands below were run locally as standalone gates, without tee or a pipe chain:
++
++| Command | Exit / observation |
++|---|---|
++| `task-board m 'set_status(TASK-261011-3l5dnu, status=analysis)'` | 0 |
++| `git rev-parse --show-toplevel` | 0; assigned Story workspace |
++| `python3 -c 'from pathlib import Path; p=Path(".temp/TASK-261011-3l5dnu-replay.idx"); p.parent.mkdir(exist_ok=True); p.unlink(missing_ok=True)'` | 0 |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-3l5dnu-replay.idx" git read-tree 39c264c34e61b5171ae13b0f756746c24ea5f51a` | 0 |
++| `task-board resource get TASK-260929-csyzcj TASK-260929-csyzcj_change-request_rev4.patch --output .temp/TASK-260929-csyzcj_change-request_rev4.patch` | 0 |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-3l5dnu-replay.idx" git apply --cached .temp/TASK-260929-csyzcj_change-request_rev4.patch` | 0 |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-3l5dnu-replay.idx" git write-tree` | 0; exact `5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8`; repeated after all checks, same value |
++| `git diff --check 39c264c34e61b5171ae13b0f756746c24ea5f51a 5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8` | 0; run directly twice |
++| `git diff --stat 39c264c34e61b5171ae13b0f756746c24ea5f51a 5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8` | 0; 31 paths, +2313/-16 |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-3l5dnu-replay.idx" git apply --cached --check .temp/TASK-261011-3l5dnu-NAME.patch` | 0 for each of 9 named patches below; checks only, no mutations |
++| `python3 .temp/TASK-261011-3l5dnu-legacy-path-assay.py` | **1, expected red**; compatibility assertion fails for segment 129 > new cap 128; static witness only |
++| `python3 .temp/TASK-261011-3l5dnu-verdict-validate.py` | 0; exactly one valid JSON block, 7/7 distinct source-derived surface rows, required finding fields and one verdict; ordinary worktree has only research artifact changes |
++| `git status --short` | 0; only untracked .research/ |
++| Inline Python artifact assembly / validator-file generation | 0 each; file written and CR validation log measured at 385 bytes |
++| Inline Python independent notice arithmetic | 0; prose 142 + 2×(256+14) = 682 body bytes; conservative identities+body <=2730 bytes |
++| `task-board spawn directives "$TASK_BOARD_RUN_ID"` | 0 at checkpoints; no directives |
++
++Nine apply-checked names (each its own invocation, each exit 0): skip_failed_lookups, insert_after_mail_check, unconditional_remove, insert_clobbers_one_foreign, interrupted_claims_success, ignore_native_pending, interrupted_notice_delivered_twice, interrupted_sender_path_uncapped, spawn_task_name_length_unchecked. These local apply checks do not prove mutant kills. The kill evidence is **reused** from [hosted precheck 12](board-resource://TASK-260929-csyzcj/TASK-260929-csyzcj_hosted-precheck-12.md), snapshot `5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8`, run 38077935582. [CR validation log](board-resource://TASK-260929-csyzcj/TASK-260929-csyzcj_change-request_rev4-validation.log) records mini-hosted-gate `[exit 0]`; that gate was not rerun by this panel. Individual hosted test/mutant numeric codes are unknown.
++
++Read-only source/board inspection: pinned `git show`, `git diff`, successful `git grep`/`rg`, file reads, compact queries for source description/scope/ac, panel checklist, outcomeResources and schema recovery ran with shell exit 0 except the discovery failures listed here. These reads are not suite validation.
++
++Discovery failures (no false green): initial resources projection and later changeRequest projection each exit 1; corrected to schema()/outcomeResources. `task-board resource list` printed help and exit 0; it supplied no inventory evidence. Skill-relative reviewer-role read exit 1 (file missing); narrowed rg role searches exit 1 (no matches); actual installed role read exit 0. One candidate rollout source-directory search exit 2 (crate moved); corrected to rollout/. One broad role search returned shell exit 0 but printed a missing-directory error and truncated its output; not used as proof. One quoted registry glob lookup was rejected by zsh, while the containing multi-command shell ended 0 because a later diff-check ran; reran the quoted glob search. Initial replay setup was rejected before process launch because rm -f is prohibited: **no exit code**, replaced by scoped pathlib unlink. Mixed source-read/search calls sometimes ended 1 because the final git grep found no match; individual preceding read statuses were not separately captured. `command -v logbook` exit 1 means no standalone executable. No cargo, just, build, test or local runtime mutant command ran.
++
++## Reproducible static witness
++
++This is a source-contract assertion against pinned blobs, not a substitute Rust implementation or an executed resume. Its observed output is: `legacy segment=129, path=135, new cap=128`, followed by the compatibility assertion failure; real exit 1.
++
++```python
++import re
++import subprocess
++
++base = "39c264c34e61b5171ae13b0f756746c24ea5f51a"
++candidate = "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8"
++def source(tree, path):
++    return subprocess.check_output(["git", "show", f"{tree}:{path}"], text=True)
++path_file = "codex-rs/protocol/src/agent_path.rs"
++old = source(base, path_file)
++new = source(candidate, path_file)
++old_name = old.split("fn validate_agent_name(", 1)[1].split("fn validate_absolute_path(", 1)[0]
++assert "MAX_SEGMENT_BYTES" not in old and "MAX_PATH_BYTES" not in old
++assert "is_ascii_lowercase()" in old_name and "agent_name.len()" not in old_name
++assert '#[serde(try_from = "String", into = "String")]' in new
++cap = int(re.search(r"MAX_SEGMENT_BYTES: usize = (\d+)", new).group(1))
++assert "name_len > AgentPath::MAX_SEGMENT_BYTES" in new
++spawn = source(base, "codex-rs/core/src/tools/handlers/multi_agents_common.rs")
++assert ".join(task_name)" in spawn
++restore = source(candidate, "codex-rs/core/src/agent/control/spawn.rs")
++resume = restore.split("async fn resume_single_agent_from_rollout(", 1)[1]
++assert ".map(AgentPath::try_from)" in resume
++assert "invalid stored agent path: {err}" in resume
++protocol = source(candidate, "codex-rs/protocol/src/protocol.rs")
++assert "agent_path: Option<AgentPath>" in protocol
++reader = source(candidate, "codex-rs/rollout/src/recorder.rs")
++assert "crate::decode_rollout_line(value)" in reader
++assert 'IoError::other("failed to parse thread ID from rollout file")' in reader
++legacy_name = "a" * 129
++legacy_path = "/root/" + legacy_name
++assert legacy_name.isascii() and legacy_name.islower() and "/" not in legacy_name
++print(f"STATIC SOURCE WITNESS: legacy segment={len(legacy_name)}, path={len(legacy_path)}, new cap={cap}", flush=True)
++print("Base grammar admits the identity; candidate stored-path parse and Serde reject it. Rust execution NOT performed.", flush=True)
++assert len(legacy_name) <= cap, "compatibility contract fails: previously admitted persisted identity rejected by shared AgentPath parser"
++```
++
++## Logbook entry — 2026-10-11
++
++Panel A identifies a new persisted-identity regression introduced by the rev4 source cap; the earlier new-envelope bypass is repaired. Sweep 7/7, hosted evidence reused on the exact replay tree, 9/9 patch applicability checks green, compatibility static assertion expected-red (exit 1). Decision: changes_requested, request actual hosted resume/rollout regression tests. Bounds and unresolved lifecycle/tokenizer suspicions are retained as notes, not claimed runtime failures. Attach this text only to the panel task and hand off for review; source task remains read-only.
++
++```verdict-findings
++{
++  "findings": [
++    {
++      "id": "legacy-agent-path-resume-regression",
++      "row": "marker lifecycle",
++      "priority": "P1",
++      "invariant": "New spawn limits must preserve the ability to resume existing rollouts and restore already persisted agent identities, or provide an explicit compatibility/migration path (repository breaking-change review rule).",
++      "mechanism": "AgentPath derives Deserialize via try_from String, and from_string uses the same validate_absolute_path/validate_agent_name as new allocation. The newly added length guards therefore apply retroactively. /root/ plus 129 lowercase a characters was valid at the pinned base (135-byte total path), is reachable through V2 thread_spawn_source -> AgentPath::join, and is written into both SessionMeta.source ThreadSpawn.agent_path and SessionMeta.agent_path. Candidate resume_single_agent_from_rollout parses the stored path with AgentPath::try_from and returns InvalidRequest(\"invalid stored agent path: agent_name must be at most 128 bytes, got 129\") before loading the agent. restore_persisted_v2_agent_metadata likewise skips that child after its parse error. For file-backed history, decode_rollout_line deserializes source through the tightened type; load_rollout_items drops the previously valid SessionMeta as a parse error, and get_rollout_history cannot obtain its thread ID if there is no later valid SessionMeta. No grandfathering/migration is present. This is a static deterministic breaking-change witness, not a claimed runtime test failure.",
++      "reproductions": [
++        {
++          "test_file": ".temp/TASK-261011-3l5dnu-legacy-path-assay.py (full source embedded above)",
++          "command": "python3 .temp/TASK-261011-3l5dnu-legacy-path-assay.py",
++          "expected_failure": "Observed exit 1: source-contract witness requires a previously admitted 129-byte legacy segment to fit the new 128-byte shared-parser cap. This intentionally failing static assertion demonstrates the incompatible acceptance sets; it does not execute Rust."
++        },
++        {
++          "test_file": "codex-rs/core/tests/suite/goal_native_wait.rs (requested new test resume_agent_preserves_legacy_overlong_path; not added or run)",
++          "command": "just test -p codex-core -E 'test(resume_agent_preserves_legacy_overlong_path)'",
++          "expected_failure": "Requested hosted attack: persist a base-valid /root/<129 lowercase chars> child via a legacy fixture, unload it, drive the public resume-agent operation and require successful restoration with the original routing identity. Candidate should instead return invalid stored agent path. Numeric exit code unknown; test does not yet exist."
++        },
++        {
++          "test_file": "codex-rs/rollout/src/recorder_tests.rs (requested new test get_rollout_history_preserves_legacy_agent_path; not added or run)",
++          "command": "just test -p codex-rollout -E 'test(get_rollout_history_preserves_legacy_agent_path)'",
++          "expected_failure": "Requested hosted attack: feed get_rollout_history a valid old SessionMeta whose source contains the 129-byte segment and require unchanged session/history identity. Candidate skips its metadata line and reports failed to parse thread ID. Numeric exit code unknown; test does not yet exist."
++        }
++      ],
++      "severity": "regression",
++      "repeat-of": null,
++      "sources": [
++        "39c264c34e61b5171ae13b0f756746c24ea5f51a:codex-rs/protocol/src/agent_path.rs:125",
++        "39c264c34e61b5171ae13b0f756746c24ea5f51a:codex-rs/core/src/tools/handlers/multi_agents_common.rs:133",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/protocol/src/agent_path.rs:12",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/protocol/src/agent_path.rs:145",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/src/agent/control/spawn.rs:245",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/src/agent/control/spawn.rs:1342",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/protocol/src/protocol.rs:2915",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/rollout/src/lib.rs:52",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/rollout/src/recorder.rs:952",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/rollout/src/recorder.rs:1124"
++      ],
++      "fix_request": "Keep the new-allocation bounds, but preserve or explicitly migrate historical identities without silently truncating their routing keys. Add real entry-point resume/rollout regressions for old-valid over-cap identities, and retain the new-spawn refusal/at-cap assertions and model-context hard bound."
++    }
++  ],
++  "notes": [
++    "Exact evidence reused: CR rev4 validation log names candidate 5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8 and hosted run 38077935582, ends [exit 0], coverage_unit=exact_command_shard required=1 green=1 failed=0 missing=0 test_case_coverage=unknown. Its 385-byte log is readable; no inference from older/truncated logs. Hosted precheck 12 reports lint/small/core/app-server success and 9/9 killed mutants. Neither suite nor mutant execution was rerun here. Per-test numeric exit codes, individual mutant run IDs and exact test-case totals are not supplied and remain unknown.",
++    "Prior-round disposition: the typed interruption fragment, 256-byte prose-path truncation and release-effective 682-byte body cap hold. New allocations now bound author/recipient at their source; spawn refusal test kills the source-length mutant. The rev3 unbounded-new-identity mechanism is repaired. This round identifies a distinct introduced historical-read regression, not repeat-of the old envelope bypass.",
++    "P0 manual context review flag: conservative author+recipient+body byte budget is 2730 excluding fixed framing (1024+1024+682). This is a hard byte bound, not proof of <1K actual model tokens. Actual tokenizer count on adversarial maximum-length random names was not executed; producer under-1K estimate must not substitute for the additional manual review required for potentially >1K-token items. Body alone is at most 682 bytes.",
++    "Coverage measured as 7/7 surface rows swept: 6 held under stated bounds, 1 broken by a static compatibility witness, 0 not-attacked. Nine shipped mutant patches apply-check green; hosted summary reports nine killed. This does not claim one dedicated mutant per row or exhaustive AC coverage. AC5/8/9 remain partial; AC6 enabled-reminder behavior is static-only.",
++    "Carried lifecycle suspicion, not an additional reproduced finding: async clear/status cleanup drops the goal permit before looking up the thread and removes by owned prefix; old cleanup may touch a newer generation. Disable/stop may interleave with post-inspection registration. Request old-cleanup/new-generation and stop-at-registration tests if these interleavings need certification.",
++    "Carried release advisory: candidate-wide release_native_wait search finds one public runtime method and one suite invocation, no internal production trigger/service forwarder. The mechanism is exercised but broader trigger wiring is unknown.",
++    "Full CR is 31 files +2313/-16, beyond the 800-line nonmechanical guideline; the new integration suite is 1082 lines. Rev4 source-bound repair is small, but overall staging remains a reviewer concern. Cargo.toml/Cargo.lock add the codex-extension-items dependency edge; MODULE.bazel.lock is unchanged. Whether bazel-lock-update ran is not established; no lock drift reproduced.",
++    "Global installed reviewer role was read at /Users/administrator/.roles/reviewer/role.md; it lacks the referenced review-round section. Applied the explicit panel brief surface-sweep/bounded-hunt rules. Skill-relative reviewer role path was missing, not assumed to exist.",
++    "Scope: no builds/tests/cargo/just, source edits, commits, branch operations or nested worktree. Candidate read only via pinned git blobs. Temporary index ordinary worktree index untouched. Source task received only reads (q/resource get); no accept/reject/status/handoff/notes/resource/checklist write there.",
++    "Logbook: no standalone logbook command or board logbook mutation is installed. The portable logbook entry in this outcome and panel-scoped board notes record the new regression, evidence limitations and decision; no control-root logbook edited."
++  ],
++  "surface_results": [
++    {
++      "row": "registration and wake",
++      "result": "held",
++      "evidence": "Hosted goal_wait_registers_marker_and_wakes_on_child_completion drives V2 spawn, goal idle and an actual parent model request carrying child completion. ignore_native_pending is killed. The single ExtensionData SleepItem slot prevents double attachment; queue-only mail reaches the shared scheduler after registration.",
++      "bound": "Running-child wake executed hosted, not locally. Does not establish every mail/registration concurrency permutation.",
++      "sources": [
++        "board-resource://TASK-260929-csyzcj/TASK-260929-csyzcj_hosted-precheck-12.md",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/tests/suite/goal_native_wait.rs:247",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/ext/goal/src/runtime.rs:699",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/src/session/handlers.rs:76",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/src/tasks/mod.rs:521"
++      ]
++    },
++    {
++      "row": "eligibility and inspection errors",
++      "result": "held",
++      "evidence": "Hosted pending_native_work_is_only_pending_init_and_running and owned_children_inspection_propagates_failed_lookups attack terminal states, known Unloaded and unknown-child Err; skip_failed_lookups is killed. Non-goal ordinary-parent interruption stays quiet. Production idle checks active goal/host before inspection; inspect_owned_child_ids distinguishes ThreadNotFound+known membership from unknown and propagates other errors.",
++      "bound": "Error attack is an internal inspection helper test, not forced registry/backend failure through the entire idle entry. No new marker is inserted after an Err; existing-marker retention on a transient Err is not independently attacked.",
++      "sources": [
++        "board-resource://TASK-260929-csyzcj/TASK-260929-csyzcj_hosted-precheck-12.md",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/src/agent/control/runtime_context.rs:150",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/src/agent/owned_children.rs:65",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/ext/goal/src/runtime.rs:683"
++      ]
++    },
++    {
++      "row": "completion-before-registration race",
++      "result": "held",
++      "evidence": "Hosted goal_wait_latch_closes_completion_before_registration kills insert_after_mail_check. It releases the gate only after confirmed mailbox enqueue, keeps a second Running child, forbids a masking second idle pass, bounds waits and asserts the actual mail-wake request without goal steering. Candidate inserts before recheck and shares its held semaphore permit with on_turn_start using the existing scoped lease.",
++      "bound": "Final-completion interleaving is executed; interruption before registration is a separate unexecuted scenario. No local Rust execution.",
++      "sources": [
++        "board-resource://TASK-260929-csyzcj/TASK-260929-csyzcj_hosted-precheck-12.md",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/tests/suite/goal_native_wait.rs:366",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/tests/suite/goal_native_wait.rs:485",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/ext/goal/src/runtime.rs:722"
++      ]
++    },
++    {
++      "row": "foreign sleep ownership",
++      "result": "held",
++      "evidence": "Hosted goal_wait_preserves_foreign_sleep_across_register_and_turn_start compares the complete foreign item during registration and admitted turn start. insert_clobbers_one_foreign and unconditional_remove are killed by that suite plus named lease tests. insert_if/remove_if perform predicate and mutation under the ExtensionData lock. Candidate-wide search finds no other production minter of goal-wait IDs.",
++      "bound": "Foreign namespace protection established. Cleanup of a newer goal-owned generation by older async cleanup is not covered by these attacks.",
++      "sources": [
++        "board-resource://TASK-260929-csyzcj/TASK-260929-csyzcj_hosted-precheck-12.md",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/tests/suite/goal_native_wait.rs:623",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/ext/goal/src/native_wait.rs:42",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/ext/extension-api/src/state.rs:140"
++      ]
++    },
++    {
++      "row": "marker lifecycle",
++      "result": "broken",
++      "evidence": "New legacy-agent-path-resume-regression: the shared AgentPath parser now refuses pre-cap identities during stored-child restoration and rollout decoding. A base-valid 129-byte segment fails the candidate 128-byte check. Static compatibility assay exit 1 (expected red). Hosted clear/release/restore and turn-start tests still hold for short identities; exhausted check-in evaluation is exercised by small tests.",
++      "bound": "Static source witness, not an executed Rust resume. Request hosted legacy-session/closed-child resume regressions. Existing coverage also lacks live-child paused-clock check-in reinsertion, exhausted-retention plus late wake, disable/stop races and a full rendered-SleepItem history resume.",
++      "sources": [
++        "board-resource://TASK-260929-csyzcj/TASK-260929-csyzcj_hosted-precheck-12.md",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/protocol/src/agent_path.rs:145",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/src/agent/control/spawn.rs:1342",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/rollout/src/recorder.rs:1124",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/tests/suite/goal_native_wait.rs:731"
++      ]
++    },
++    {
++      "row": "side-effect silence",
++      "result": "held",
++      "evidence": "Hosted registration/wake test asserts 500ms parent event silence and absence of goal-wait history text/current_time from the wake request. Static try_register_goal_wait_sleep only stores ExtensionData; it calls no UI, rollout/history or reminder API. Check-in timing remains with the goal scheduler.",
++      "bound": "CurrentTimeReminder is disabled in this fixture. An enabled reminder schedule is source-inspected, not independently executed; no dedicated side-effect mutant is supplied.",
++      "sources": [
++        "board-resource://TASK-260929-csyzcj/TASK-260929-csyzcj_hosted-precheck-12.md",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/tests/suite/goal_native_wait.rs:326",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/ext/goal/src/native_wait.rs:42"
++      ]
++    },
++    {
++      "row": "child state transitions",
++      "result": "held",
++      "evidence": "Hosted real Op::Interrupt registered/ordinary-parent tests prove one queue-only INTERRUPTED notice/wake, no success claim and ordinary-parent silence; duplicate and success-wording mutants are killed. Global is_final remains unchanged. Typed ContextualUserFragment truncates each prose path; rev4 rejects newly allocated paths over 128 bytes/segment or 1024 bytes total before spawning. Hosted SpawnAgentHandlerV2 refusal/at-cap tests and spawn_task_name_length_unchecked kill establish the new allocation gate.",
++      "bound": "These attacks cover one interruption transition, short envelope identities and new-name boundaries. Reused/error state classification is helper-level; second-child-mid-turn, repeated-interruption transitions and non-default inherited-settings assertions are not independently reported. Scheduler code preserves the existing settings path. Legacy parser regression is reported once in lifecycle row.",
++      "sources": [
++        "board-resource://TASK-260929-csyzcj/TASK-260929-csyzcj_hosted-precheck-12.md",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/tests/suite/goal_native_wait.rs:774",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/src/agent/control/completion.rs:92",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/src/context/inter_agent_interrupted_message.rs:73",
++        "5a51cf5296c78fc1693cb6e1cfd2e7f776e2e5c8:codex-rs/core/src/tasks/mod.rs:604"
++      ]
++    }
++  ],
++  "free_hunt": {
++    "budget_minutes": 3,
++    "started_at_utc": "2026-10-10 20:24:38 UTC",
++    "ended_at_utc": "2026-10-10 20:26:09 UTC",
++    "examined": [
++      "shared AgentPath deserialize/resolve versus create admission",
++      "persisted V2 registry restoration and real resume_agent call chain",
++      "canonical rollout decoder/SessionMeta persistence",
++      "new interruption body and envelope arithmetic",
++      "foreign namespace/generation cleanup",
++      "explicit release callsites",
++      "dependency/Bazel/size footprint"
++    ],
++    "findings": [
++      "legacy-agent-path-resume-regression"
++    ],
++    "unexecuted_suspicions": [
++      "old cleanup versus new goal generation",
++      "stop/disable during registration",
++      "maximum-name actual tokenizer count"
++    ],
++    "scope": "Bounded static hunt plus exact-tree hosted attacks already attached. No local Rust execution."
++  }
++}
++```

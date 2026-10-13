@@ -1,0 +1,21 @@
+{
+  "contract": "primary-goal-v1",
+  "id": "PRIMARY-GOAL-260929-2u1a1e",
+  "revision": 4,
+  "previous_revision": 3,
+  "state": "active",
+  "scope": {
+    "kind": "board"
+  },
+  "objective": "Implement the accepted goal-mode token-burn patch series (TASK-260929-1srn2y final plan) for openai/codex in the fork relux-works/codex: land each story on relux/main via a fork PR (P1 landed as 35af013), push only to the fork, no GitHub CI, board and task-board config kept out of the code history (board repo relux-works/codex-fix-board), signed commits as Ivan Oparin \u003coparin@me.com\u003e, discrete feature branches for later targeted upstream PRs. Operator rule R80: producers codex gpt-6.1-sol high, reviewers claude-sonnet-5-5 high, routine runs muse-spark max. One codex-fix build at a time on the shared cargo target (guard + 15 GB post-suite cap) per collective-mode rulings.",
+  "mutation": {
+    "kind": "objective_realigned",
+    "reason": "Operator confirmed R80 model rule for codex-fix; P1 landed; serial lane with footprint reduction adopted.",
+    "actor": {
+      "kind": "primary_parent",
+      "actor_id": "iv"
+    }
+  },
+  "created_at": "2026-09-28T22:15:58.846745Z",
+  "updated_at": "2026-09-30T22:08:27.720878Z"
+}

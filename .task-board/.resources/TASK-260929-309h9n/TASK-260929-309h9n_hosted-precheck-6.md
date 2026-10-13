@@ -1,0 +1,16 @@
+# TASK-260929-309h9n hosted precheck 6
+
+CI ivanopcode/codex, slim relux-ci run 38188455502: snapshot = worktree tree af312067fcd2392b78deb95d3f71925e739622b7. Lanes: {'lint': 'success', 'small': 'success', 'app-server': 'success', 'core': 'success'}. All green.
+
+Mutants: 6 total, 6 killed, 0 survivors.
+
+| mutant | failing lanes | killing tests |
+|---|---|---|
+| pacing_blocker_skipped_for_paced_turns | core | goal_pacing_empty_blocker_runs_before_rescheduling |
+| pacing_first_continuation_paced_after_human_turn | small,core | pacing_claim_rejects_early_superseded_and_wrong_generation, pacing_emits_no_warnings_or_prompt_text, pacing_event_wake_preempts_timer, pacing_fast_intervening_human_turn_invalidates, pacing_first_continuation_after_human_turn_proceeds_immediately, pacing_first_continuation_without_predecessor_proceeds_immediately, pacing_goal_change_resets_streak_and_proceeds_immediately, pacing_human_input_resets_streak_and_proceeds_immediately, pacing_inactive_goal_never_paced, pacing_invalidation_cancels_armed_timer, pacing_new_schedule_replaces_old_without_accumulation, pacing_non_continuation_turn_does_not_touch_streak, pacing_resume_restarts_at_floor_and_resets_quotas, pacing_stale_ticket_rejected_on_revision_change, pacing_state_change_resets_streak_to_floor, pacing_ticket_reused_is_rejected, pacing_two_polls_grow_streak, goal_pacing_empty_blocker_runs_before_rescheduling, goal_pacing_first_immediate_second_at_60s |
+| pacing_missing_cap | small | pacing_delay_n1_n2_n3_and_cap |
+| pacing_stale_ticket_admission_skip_revision | small | pacing_stale_ticket_rejected_on_revision_change |
+| pacing_streak_reset_on_non_state_change | core,small | goal_pacing_empty_blocker_runs_before_rescheduling, goal_pacing_first_immediate_second_at_60s, pacing_claim_rejects_early_superseded_and_wrong_generation, pacing_emits_no_warnings_or_prompt_text, pacing_event_wake_preempts_timer, pacing_fast_intervening_human_turn_invalidates, pacing_first_continuation_after_human_turn_proceeds_immediately, pacing_goal_change_resets_streak_and_proceeds_immediately, pacing_human_input_resets_streak_and_proceeds_immediately, pacing_inactive_goal_never_paced, pacing_invalidation_cancels_armed_timer, pacing_new_schedule_replaces_old_without_accumulation, pacing_non_continuation_turn_does_not_touch_streak, pacing_resume_restarts_at_floor_and_resets_quotas, pacing_stale_ticket_rejected_on_predecessor_change, pacing_stale_ticket_rejected_on_revision_change, pacing_state_change_resets_streak_to_floor, pacing_ticket_binds_goal_revision_predecessor_generation, pacing_ticket_reused_is_rejected, pacing_two_polls_grow_streak, pacing_waiting_turn_is_paced_not_empty |
+| pacing_timer_not_cancelled_on_invalidation | small | pacing_event_wake_preempts_timer, pacing_invalidation_cancels_armed_timer |
+
+Orchestrator note: snapshot core reported 1 flaky test, `suite::goal_background_wait::scheduled_checkins_fire_through_production_runtime_under_paused_time` (P4a suite; TRY 1 FAIL after 10.5 s, TRY 2 PASS). It passed first try in precheck 4 and 5 on this Story and in P3-1's precheck 12. The pacing tests passed first try. Because pacing shares the check-in timer slot, review rev2 must judge whether this flake can come from the pacing change.

@@ -1,0 +1,192 @@
+# TASK-261011-2k0u5i — R141 panel A, waiting-capabilities snapshot rev3
+
+changes_requested
+
+Replay: base `e0eff057620104a416080da616256ee7f32bda1b` plus the board's rev3 patch, applied only to a temporary Git index, yields `f8ae85582d54c47b237476e8d88742f942961f3f`, exactly the expected candidate tree. No nested worktree, build, Rust test, formatting command, commit or candidate edit was performed.
+
+Key finding: supported server tool-search outputs with null call IDs remain in sampling history but are dropped from waiting-tool discovery (A3-F1). Sweep: 5 held / 1 broken / 1 not-attacked = 7/7 rows. Remote catalog replacement through the actual entry point remains unknown.
+
+Commands run by this panel and actual outcomes:
+
+| Command | Exit/result |
+| --- | --- |
+| `task-board m 'set_status(TASK-261011-2k0u5i, status=analysis)'` | 0 |
+| Initial setup containing `rm -f` | Tool policy rejected before process creation; no exit code; retried with a fresh index path |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2k0u5i-replay-v1.idx" git read-tree e0eff057620104a416080da616256ee7f32bda1b` | 0 |
+| `task-board resource get TASK-260929-2is91w TASK-260929-2is91w_change-request_rev3.patch --output .temp/TASK-260929-2is91w_change-request_rev3.patch` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2k0u5i-replay-v1.idx" git apply --cached .temp/TASK-260929-2is91w_change-request_rev3.patch` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2k0u5i-replay-v1.idx" git write-tree` | 0; exact expected tree printed |
+| `git diff --check e0eff057620104a416080da616256ee7f32bda1b f8ae85582d54c47b237476e8d88742f942961f3f` | 0 |
+| Python materialization of 21 changed files using `git show <candidate>:<path>` | 0; review copies only in `.temp/TASK-261011-2k0u5i-cand` |
+| Python static predicate corroboration against exact-tree scanner, protocol null-ID test and normalizer | 0; source inspection only, not a runtime attack |
+| `python3 .temp/TASK-261011-2k0u5i-validate-verdict.py` | 0; one JSON block, required finding fields, independent surface-table comparison: 7/7 unique rows |
+| Input resource downloads: surface-table.md, producer-brief.md, results.md, hosted-precheck-10.md, rev3-validation.log, review-verdict-rev2.md | Each 0 |
+| Narrow board AC/scope/notes, outcomeResources and own checklist queries; directives reads | Each 0; no directives |
+| Source reads and diff/stat inspection | Successful exact-tree reads; no Rust command executed |
+
+Navigation failures are not validation successes: the first query used unsupported `resources` (exit 1), and the skill-relative reviewer body was absent (cat exit 1); both were recovered through scoped schema and the repository role source. Ancillary searches involving nonexistent role/spec paths reported rg exit 2; no missing file was interpreted as absent behavior. `task-board resource list` printed help (exit 0) rather than listing resources; the actual list was obtained with the `outcomeResources` projection. `command -v logbook` found no CLI (exit 1 in its shell call); the logbook is included in this sole text outcome. No expected-red Rust gate was run or described as green.
+
+Sources: the exact candidate tree's source locations are enumerated in the finding and rows below. Accepted execution evidence is the read-only board resource `TASK-260929-2is91w_hosted-precheck-10.md`, CI [run 38142174620](https://github.com/ivanopcode/codex/actions/runs/38142174620), plus `TASK-260929-2is91w_change-request_rev3-validation.log`. Hosted outcomes are accepted attached evidence, not independently rerun/fetched test logs. The previous recording verdict explicitly preserves standalone server output support and staged plan-enabled replacement.
+
+Logbook — 2026-10-11: exact-tree replay passed; paired-client discovery rework has named negative/mutant and real-search evidence. A new null-server under-advertising defect remains. Request a supported-null regression and narrowing mutant in the owning leaf. Remote catalog entry-point coverage and diff size remain explicit review bounds. No writes were made on the reviewed task; this panel hands its findings to the recording reviewer through its own research task.
+
+Recovery evidence — RUN-261011-d9c1a4, 2026-10-11:
+
+The predecessor's full seven-row sweep and bounded free hunt are retained, with execution attribution unchanged. This successor independently reread the exact-tree discovery scanner, protocol null-ID fixture, stream recording route, prompt orphan rule, existing server discovery test, and production capture call site. These corroborate A3-F1 by source inspection; no requested Rust reproduction ran. The exact-tree hosted precheck-10 results remain accepted attached evidence, not rerun here.
+
+| Successor command | Actual exit/result |
+| --- | --- |
+| `task-board m 'set_status(TASK-261011-2k0u5i, status=analysis)'` | 0 |
+| `mkdir -p .temp` | 0 |
+| `rm -f .temp/TASK-261011-2k0u5i-replay.idx` | Rejected before process creation; no exit; used a fresh index |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2k0u5i-replay-recovery.idx" git read-tree e0eff057620104a416080da616256ee7f32bda1b` | 0 |
+| `task-board resource get TASK-260929-2is91w TASK-260929-2is91w_change-request_rev3.patch --output .temp/TASK-260929-2is91w_change-request_rev3.patch` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2k0u5i-replay-recovery.idx" git apply --cached .temp/TASK-260929-2is91w_change-request_rev3.patch` | 0 |
+| `GIT_INDEX_FILE="$PWD/.temp/TASK-261011-2k0u5i-replay-recovery.idx" git write-tree` | 0; f8ae85582d54c47b237476e8d88742f942961f3f |
+| `git diff --check e0eff057620104a416080da616256ee7f32bda1b f8ae85582d54c47b237476e8d88742f942961f3f` | 0 |
+| Exact-tree `git show` scanner read and Python pinned-source excerpt read | Each 0; source inspection only |
+| Own attached verdict and failed rev1 validation-log downloads | Each 0 |
+| `mv .research/TASK-261011-2k0u5i_panel-verdict.md .temp/TASK-261011-2k0u5i_panel-verdict.md` | 0; preserves text in ignored scratch area |
+| `/Users/administrator/Developer/ReluxWorks/codex/.temp/goal-token-burn/impl/mini-hosted-gate.sh` | 0; empty delta, bde782b85ddbc8536536d0747b3917d0f24e1951 = HEAD tree |
+| `git status --short` after relocation | 0; empty output |
+| `python3 .temp/TASK-261011-2k0u5i-validate-verdict.py` | 0; exactly one valid JSON block; 7/7 unique ordered rows |
+| `task-board spawn directives "$TASK_BOARD_RUN_ID"` | 0; no directives |
+
+Recovery navigation failures: unsupported `resources` projections exit 1 (two queries), combined skill/role read exit 1 for absent role path, ancillary multi-path search exit 2 for absent directories, and focused reviewer-file search exit 1 (no matches). Resource-list attempts returned help with exit 0, not a resource inventory; `outcomeResources` subsequently supplied the actual inventory with exit 0. No failure is reported as a pass. Other input reads and scoped queries exited 0.
+
+Logbook recovery entry — 2026-10-11: predecessor handoff validation failed at command 1/1 with real exit 1: the untracked research artifact changed its candidate to 121728672b282a5c273edd0e6c13d177cc756191 without hosted code validation. This is a panel artifact-placement anomaly, not a failure of the reviewed candidate. Relocating the sole text artifact to ignored scratch restores the evidence-only empty repository delta; the unchanged board outcome persists via resource update. No validation rule was relaxed, no source was changed, and no hosted precheck was requested for this research-only handoff. Nothing was written to TASK-260929-2is91w. The successful gate above validates this panel's empty delta; it is not execution evidence for A3-F1.
+
+```verdict-findings
+{
+  "findings": [
+    {
+      "id": "A3-F1",
+      "row": "final-router derivation",
+      "invariant": "AC2: a registered deferred waiting tool becomes callable after its definition is delivered by supported tool-search output; discovery and actual prompt normalization must agree.",
+      "mechanism": "discovered_waiting_tools_from_history first matches call_id, with None => false. This rejects execution=server/call_id=null before the server exemption is evaluated. The protocol explicitly supports server/null search items (tool_search_server_items_allow_null_call_id). OutputItemDone -> handle_output_item_done -> record_completed_response_item_with_finalized_facts records non-dispatched server search outputs in history. HistoryManager::for_prompt retains them: remove_orphan_outputs only rejects Some(call_id) client outputs without a matching call. A server/null output loading the registered deferred multi_agent_v1.wait_agent therefore remains model-visible but capture_step_context_inner computes native_wait=None. Existing server_tool_search_output_counts_without_call covers only Some(\"server-search-1\"). This is under-advertising of a supported discovered tool, not a failure of the paired-client orphan fix.",
+      "sources": [
+        "f8ae85582d54c47b237476e8d88742f942961f3f:codex-rs/core/src/tools/waiting_capabilities.rs:120-130",
+        "f8ae85582d54c47b237476e8d88742f942961f3f:codex-rs/protocol/src/models.rs:4226-4274",
+        "f8ae85582d54c47b237476e8d88742f942961f3f:codex-rs/core/src/stream_events_utils.rs:361-398",
+        "f8ae85582d54c47b237476e8d88742f942961f3f:codex-rs/core/src/stream_events_utils.rs:82-110",
+        "f8ae85582d54c47b237476e8d88742f942961f3f:codex-rs/core/src/context_manager/normalize.rs:201-208",
+        "f8ae85582d54c47b237476e8d88742f942961f3f:codex-rs/core/src/context_manager/history.rs:581-603",
+        "f8ae85582d54c47b237476e8d88742f942961f3f:codex-rs/core/src/session/mod.rs:3971-3982",
+        "f8ae85582d54c47b237476e8d88742f942961f3f:codex-rs/core/src/tools/waiting_capabilities_tests.rs:433-447"
+      ],
+      "reproductions": [
+        {
+          "test_file": "codex-rs/core/src/tools/waiting_capabilities_tests.rs::server_tool_search_output_counts_without_call (requested extension, not modified)",
+          "command": "just test -p codex-core -E 'test(server_tool_search_output_counts_without_call)'",
+          "expected_failure": "NOT EXECUTED. Extend existing test to loop over [Some(\"server-search-1\"), None] with execution=\"server\" and wait_agent_loadable(\"multi_agent_v1\"), expecting the same singleton discovered set. The None case deterministically returns an empty set in the candidate. Keep orphan/mismatched client refusals. After fixing, add a narrowing mutant requiring a non-null ID for server outputs; the null case must kill it."
+        },
+        {
+          "test_file": "codex-rs/core/tests/suite/search_tool.rs::server_null_id_discovery_updates_waiting_capabilities (requested new integration test, not added)",
+          "command": "just test -p codex-core -E 'test(server_null_id_discovery_updates_waiting_capabilities)'",
+          "expected_failure": "NOT EXECUTED. Drive the Responses stream with a completed server ToolSearchOutput with call_id=null loading the deferred native V1 wait tool. Observe its definition in the next sampling input and native_wait=Some(actual tool name) via a contributor on a subsequent turn with a context change (as the existing discovery test does). Candidate retains the definition but reports native_wait=None. Include Some(server ID), paired-client, and orphan-client controls; do not inject only a fabricated unpaired client output."
+        }
+      ],
+      "severity": "robustness",
+      "repeat-of": "none",
+      "requested_change": "Apply the server exemption independently of call_id; continue requiring a prior matching call ID for client outputs. Carry a named null-server regression and narrowing mutant in this leaf. Same discovery-evidence class as rev2 A2-F1, but opposite discrepancy and a new mechanism, hence repeat-of none."
+    }
+  ],
+  "notes": [
+    "Independent non-recording panel A for CR-TASK-260929-2is91w-3 revision 3. No mutations, outcomes, accept/reject/status/handoff writes were made on TASK-260929-2is91w.",
+    "Execution attribution: accepted TASK-260929-2is91w_hosted-precheck-10.md (run 38142174620; exact candidate tree; lint/small/core/app-server success; 13/13 named mutants killed, 0 survivors). CR rev3-validation.log reports mini-hosted-gate.sh exit 0, coverage_unit=exact_command_shard required=1 green=1 failed=0 missing=0 test_case_coverage=unknown. None of these Rust suites or mutants was rerun by this panel; raw hosted logs and per-test skip counts were not independently fetched.",
+    "Rev2 A2-F1 paired-client orphan discrepancy and D-F1 fabricated discovery fixture are addressed by the pairing gate, negative tests, for_prompt survival assertion, and real tool_search integration test. The null-server finding is new, not a repeated orphan-admission mechanism. Require same-class regression and narrowing mutant on rework without creating another research/harness task.",
+    "Size review: 21 changed files, +2254/-6; new test module 1461 lines. This exceeds the 800-line guidance and complex-change 500-line target. Smallest coherent first stage could be the snapshot/wiring plus direct flag/refusal and receipt integration coverage; discovered deferred-tool support, history parser, and real-search integration belong together in a following stage. Otherwise consolidate repeated fixtures before review. This panel records the size concern as a note, not an additional functional blocker or a granted exception.",
+    "Static source checks corroborate predicates and production routes, not executed Rust behavior. Newly requested reproductions and the remote-catalog attack remain unexecuted. Linux-hosted conclusions do not independently establish all-platform coverage.",
+    "Prompt emission after an in-turn capability change belongs to the separately scoped guidance/context-change work. This leaf computes each StepContext snapshot but contributors rerun only on full context or TurnContextItem changes. The real-search test correctly observes the post-discovery snapshot on a second turn with changed approval policy."
+  ],
+  "surface_results": [
+    {
+      "row": "flag derivation",
+      "result": "held",
+      "attack": "Drop individual host/opt-in/control/policy conjuncts; force V1-only or V2-only native identity and foreign wait decoys.",
+      "evidence": "Exact-tree hosted precheck 10 reports kills for exec_notify_ignores_host/opt_in/stdin/receipt, native_mail_wait_ignores_host/policy, native_wait_v1_only/v2_only/bare_name_match, sleep_counts_nested_or_deferred, stdin_counts_nested. Derivation lines 46-83 matches the AC1 conjunctions. Native identity comes from the finalized registry and native runtime provenance. This hold is bounded by the discovery defect assigned to final-router derivation.",
+      "finding_ids": []
+    },
+    {
+      "row": "final-router derivation",
+      "result": "broken",
+      "attack": "Attack undiscovered/deferred/nested/excluded tools, foreign wait provenance, orphan/mismatched discovery, and supported server output with null call ID.",
+      "evidence": "Hosted real-search discovered_native_wait_updates_waiting_capabilities kills native_wait_ignores_discovered; orphan and mismatched-ID tests kill discovery_ignores_call_pairing. Static trace of the protocol-supported server/null case establishes A3-F1; hosted mutants do not include this case. is_callable checks deferred exposure in the current registry; native_wait_tool checks runtime provenance.",
+      "finding_ids": [
+        "A3-F1"
+      ]
+    },
+    {
+      "row": "subscriptions are not capabilities",
+      "result": "held",
+      "attack": "Arm a receipt through real exec_command, observe idle wake and subsequent sampling; inject pending/acknowledged providers without host controls.",
+      "evidence": "Hosted precheck 10 covers core suite acknowledged_subscription_does_not_flip_waiting_capabilities, which launches notify_on_exit=true, requires an armed receipt, waits for completion wake, and compares all captured snapshots. pending_and_acknowledged_work_does_not_flip_flags tests receipt-only refusal. Derivation reads AsyncNotificationSupport and GoalBackgroundWaitAdmission only, never receipt state.",
+      "finding_ids": []
+    },
+    {
+      "row": "one snapshot, both paths",
+      "result": "held",
+      "attack": "Look for recomputation, copies, independent initial/diff derivation, and disconnected goal registration.",
+      "evidence": "capture_step_context_inner owns one value on StepContext; both contributor calls borrow &step_context.waiting_capabilities (session/mod.rs:4315 and 4413). Hosted same_snapshot_instance_reaches_both_context_paths drives capture and both builders, checking pointer identity and equality. GoalExtension registers as a prompt contributor and forwards the same borrowed reference to waiting_capability_fragments. Goal renderer emits zero fragments. Goal installation is statically traced; the pointer test uses a recording contributor, not GoalExtension itself.",
+      "finding_ids": []
+    },
+    {
+      "row": "configuration coverage",
+      "result": "not-attacked",
+      "attack": "Compare model catalog entry-point replacement with the snapshot tests; inspect hard/reminder off, headless, code-mode and receipt exclusions.",
+      "evidence": "Hosted snapshot_follows_sleep_switches, headless_exec_host_keeps_exec_but_disables_notification_flags, code_mode_only_hides_nested_waits_but_keeps_direct_sleep, excluded_receipt_tool_disables_exec_notify and excluded_exec_command_disables_exec_notify cover four required configuration families. snapshot_follows_catalog_clock_support directly edits resolved ModelInfo.experimental_supported_tools; it does not fetch/replace a remote entry through ModelsManager. ModelsManager replacement is visible at manager.rs:685-700, but no attached public-entry snapshot attack proves it.",
+      "finding_ids": [],
+      "reason": "Remote-catalog replacement through its actual entry point remains unknown; this is a fixture coverage bound, not the prohibition on local builds.",
+      "requested_attack": {
+        "test_file": "codex-rs/core/tests/suite/search_tool.rs or a dedicated waiting_capabilities suite (requested)",
+        "command": "just test -p codex-core -E 'test(remote_catalog_replacement_changes_waiting_snapshot)'",
+        "expected_failure": "NOT EXECUTED. Mock remote entries for the same bundled model slug removing/adding clock support, sample through the real session, and record the snapshot; require a mutant ignoring the remote replacement to fail. Other configuration legs have attached execution evidence."
+      }
+    },
+    {
+      "row": "bounded and transient",
+      "result": "held",
+      "attack": "Trace native ToolName heap bounds rather than trusting size_of; inspect persistence, serialization and prompt-history rewrites.",
+      "evidence": "WaitingCapabilities has four booleans plus Option<ToolName>, no collections/serde. The native name is wait_agent; V1 namespace is fixed, V2 config validation caps namespace at 64 ASCII characters (core/src/config/mod.rs:3148-3202). Foreign names cannot enter because of runtime provenance. The public type can be manually constructed with longer strings, so the bound applies to core-derived snapshots. Hosted waiting_snapshot_does_not_persist_to_history_or_rollout compares both context outputs and the persisted turn item; goal emits no text. snapshot_stays_small_and_bounded measures headers only; the config validation supplies the native heap bound.",
+      "finding_ids": []
+    },
+    {
+      "row": "API surface and placement",
+      "result": "held",
+      "attack": "Trace contributor construction, plan-enabled behavior, dependency direction, module size and Bazel source inclusion.",
+      "evidence": "One exported extension-api type plus one borrowed input field; all in-tree constructors updated. Goal consumes that API via an existing contributor contract without introducing core->goal dependencies. Core derivation is a separate 303-line module. No dependency/config/schema/build-time file reads changed. Rust source globs cover the new files. update_plan_enabled remains unchanged: merged rev1/rev2 reviews explicitly accept staging its replacement to the guidance leaf, preserving existing prompt behavior. Adding a public Rust struct field is a source compatibility change for external extension implementers, not a new app-server/CLI/config/rollout wire change; hosted workspace callers compile.",
+      "finding_ids": []
+    }
+  ],
+  "free_hunt": {
+    "budget": "After all seven rows: five adjacent concerns (server/null discovery and normalization, stale discovery after exclusions, native namespace heap bounds, prompt emission/goal installation, and API/Bazel/change-size wiring). No builds, product changes or delegation.",
+    "result": "One static robustness defect A3-F1; no second independent production defect established.",
+    "coverage": {
+      "surface_rows_swept": 7,
+      "surface_rows_total": 7,
+      "held": 5,
+      "broken": 1,
+      "not_attacked": 1,
+      "hosted_named_mutants_killed": 13,
+      "hosted_named_mutants_total": 13,
+      "new_rust_runtime_attacks_executed_by_panel": 0,
+      "required_configuration_families_with_attached_router_attacks": 4,
+      "required_configuration_families_total": 5
+    },
+    "checks": [
+      "Raw server/null output reaches recording and survives prompt normalization, but is discarded by discovery: A3-F1.",
+      "Stale discovered names still require current deferred exposure; excluded/missing entries cannot create a capability. No new bypass found.",
+      "Native provenance plus validated config bounds the production snapshot heap; size_of alone is insufficient.",
+      "Both context builders share one instance; speculative capture delegates to capture_step_context_inner. Goal empty-fragment forwarding does not change prompt bytes.",
+      "No new dependencies, schemas, wire payload changes or compile-time assets. Public Rust input-field compatibility and excessive diff size are recorded notes."
+    ],
+    "blind_spots": [
+      "Null-server repro is source-established, requested but not executed.",
+      "Remote catalog fetch/replacement with snapshot observation has no attached entry-point test.",
+      "Structural pointer/persistence/dependency properties have inspection/test evidence, not dedicated narrowing mutants.",
+      "Hosted outcomes are attached evidence; no raw logs/per-test skip audit or new macOS/Windows execution."
+    ],
+    "stop_condition": "Seven rows each have exactly one result, prior findings assessed, five adjacent concerns swept; no first-finding exit."
+  }
+}
+```

@@ -1,0 +1,151 @@
+# Rev4 = rev3 tree 486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7 republished unchanged (lifecycle repair). Merged panel verdict below, produced on that identical tree.
+
+# Merged review verdict — TASK-260929-3ld28o CR revision 4 (tb-R141 / R132 merge)
+
+Verdict: **accept**
+
+Panel outcomes: `TASK-261011-2h80lb_panel-verdict.md` (accept), `TASK-261011-wcmuu1_panel-verdict.md` (accept), `TASK-261011-16oznh_panel-verdict.md` (accept)
+
+Merge rules (R132): identical findings (same row, file and class) collapse; everything else is unioned; each surface row takes its worst panel result; any changes_requested sends the CR back to rework.
+
+```verdict-findings
+{
+  "findings": [
+    {
+      "id": "B-N1",
+      "row": "non-resets",
+      "invariant": "AC2/AC8: every ignored item class stays ignored; a regression that starts recording one is caught.",
+      "mechanism": "Ignore-arm execution coverage beyond AC2's five named non-resets is partial: tests feed FileChange(non-completed), AgentMessage, CommandExecution, a CollabAgentToolCall subset, SubAgentActivity(non-started) and ToolFinish-success to the classifier, while McpToolCall, DynamicToolCall, FunctionCallOutput, Plan, Reasoning, WebSearch, ImageView, Extension, ImageGeneration, EnteredReviewMode, ExitedReviewMode, ContextCompaction, UserMessage and HookPrompt never reach record_state_change_for_item in tests, so a regression that starts recording one would go undetected by the suite. Mitigated structurally: the match in ext/goal/src/accounting.rs:290-334 lists every TurnItem variant explicitly with no wildcard arm, so adding a recording arm requires touching the classifier and a new variant forces compile-time handling (non-exhaustive match is a compile error; hosted lint/type-check is green on this exact tree). Classifier file is byte-identical to the rev2 green tree, so this condition is unchanged from rev2 panel-B B-N1.",
+      "reproductions": [
+        {
+          "test_file": "codex-rs/ext/goal/src/accounting.rs (record_state_change_for_item, static read)",
+          "command": "static inspection only: git show 486ebfe5:accounting.rs plus git grep of classifier feeds in the observation test files; no build or test executed (forbidden by panel brief)",
+          "expected_failure": "No failure observed and none claimed as executed: the ignore arm enumerates every TurnItem variant with no wildcard, so uncovered arms are compile-time-guarded. NOT a test execution.",
+          "pinned_blobs": [
+            "486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7:codex-rs/ext/goal/src/accounting.rs (record_state_change_for_item, static read)"
+          ]
+        },
+        {
+          "test_file": "codex-rs/ext/goal/src/accounting.rs:289-335 and classifier-focused observation test files (static inventory)",
+          "command": "Static inspection on 486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7: git show <candidate>:codex-rs/ext/goal/src/accounting.rs; compare TurnItem inventory and test feeds using the saved source audit. No Rust test executed locally.",
+          "expected_failure": "Unknown/unexecuted: to measure the gap, feed each remaining ignored family at the goal callback and narrow the ignore match to record that family; require the corresponding new negative test to fail. Existing suite survival is not asserted.",
+          "pinned_blobs": [
+            "486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7:codex-rs/ext/goal/src/accounting.rs:289-335 and classifier-focused observation test files (static inventory)"
+          ]
+        }
+      ],
+      "severity": "note",
+      "repeat-of": "rev2/B-N1",
+      "reported_by": [
+        "TASK-261011-wcmuu1"
+      ],
+      "also_reported_by": [
+        "TASK-261011-16oznh"
+      ],
+      "collapsed_ids": [
+        "B-N1",
+        "D-N1"
+      ],
+      "collapsed_mechanisms": {
+        "B-N1": "Ignore-arm execution coverage beyond AC2's five named non-resets is partial: tests feed FileChange(non-completed), AgentMessage, CommandExecution, a CollabAgentToolCall subset, SubAgentActivity(non-started) and ToolFinish-success to the classifier, while McpToolCall, DynamicToolCall, FunctionCallOutput, Plan, Reasoning, WebSearch, ImageView, Extension, ImageGeneration, EnteredReviewMode, ExitedReviewMode, ContextCompaction, UserMessage and HookPrompt never reach record_state_change_for_item in tests, so a regression that starts recording one would go undetected by the suite. Mitigated structurally: the match in ext/goal/src/accounting.rs:290-334 lists every TurnItem variant explicitly with no wildcard arm, so adding a recording arm requires touching the classifier and a new variant forces compile-time handling (non-exhaustive match is a compile error; hosted lint/type-check is green on this exact tree). Classifier file is byte-identical to the rev2 green tree, so this condition is unchanged from rev2 panel-B B-N1.",
+        "D-N1": "Retained rev2 B-N1 advisory. Classifier-focused tests directly construct 5/19 TurnItem families. Fourteen other ignored families (UserMessage, FunctionCallOutput, HookPrompt, Plan, Reasoning, DynamicToolCall, WebSearch, ImageView, Extension, ImageGeneration, EnteredReviewMode, ExitedReviewMode, McpToolCall, ContextCompaction) lack distinct executed ignore-arm feeds. Production explicitly enumerates every variant without a wildcard, and the five AC2 categories have hosted killers. Exhaustiveness prevents omission of a new variant but cannot prevent recording an existing ignored variant. No executed surviving mutant or observed product failure is claimed."
+      }
+    }
+  ],
+  "notes": [
+    "[TASK-261011-2h80lb] No blocking finding after all seven surface rows and four bounded free-hunt probes. Rev2 A-F1/D-F1 is closed by the receipt-bound V1 spawn mapping and the hosted accepted-with-Errored fixture plus killed liveness mutant.",
+    "[TASK-261011-2h80lb] Coverage is seven of seven specified surface rows, sixteen of sixteen supplied mutants killed, and seven of seven pre-existing accounting/lifecycle functions byte-identical. This is not exhaustive mutation coverage of every possible event/branch.",
+    "[TASK-261011-2h80lb] Arbitrary shell side effects are UNKNOWN: shell success does not record a state change, pacing may remain conservative, and completion must never be inferred from shell output or status (AC7).",
+    "[TASK-261011-2h80lb] The CR is 17 paths, +1828/-7 (1835 changed lines), above the 800-line guideline. About 300 lines are production; the rest is tests supporting AC8. Nonblocking review-size advisory: a follow-on split can isolate the additive plan hook/API with its integration test from observation accounting and multi-agent receipt regression coverage. No architectural expansion into core was found.",
+    "[TASK-261011-2h80lb] Hosted snapshot core reports 5081 passed, 11 skipped, 3 flaky after configured retries; small reports 948 passed/1 skipped; app-server 1833 passed/2 skipped. Three unrelated skill/exec approval cases are explicitly quarantined by the hosted core filter. No all-platform, all-feature, quarantine, or real-child race-frequency claim.",
+    "[TASK-261011-2h80lb] The deterministic accepted-receipt AgentControl fixture pins the real V1 handler mapping; actual asynchronous child-error incidence is unknown. Core emission and goal observation are proved as two executed links.",
+    "[TASK-261011-2h80lb] The installed requested skill copy lacks its referenced reviewer round-role file. A second installed reviewer-role copy was located/read, but lacks the detailed round section; the explicit panel brief supplies the authoritative sweep and adversarial-review rules used here.",
+    "[TASK-261011-wcmuu1] [TASK-261011-wcmuu1] Independent non-recording panel B on CR-TASK-260929-3ld28o-3 rev3. Base/patch replay tree exactly equals expected candidate 486ebfe5. No local cargo/just/build/test ran; production behavior evidence is static plus hosted logs unless stated.",
+    "[TASK-261011-wcmuu1] [TASK-261011-wcmuu1] Hosted identity independently verified via GitHub API: snapshot commit eb345af5e4085cf3120a250904ef85389037a8e3 has tree exactly 486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7 with parent 07c018be (the CR base). Run 38083359851: plan/lint/snapshot-small/snapshot-core/snapshot-app-server success; overall conclusion failure because 16 expected-red mutant lanes fail. Snapshot core: 5081/5081 passed, 11 skipped, 3 flaky retried to green.",
+    "[TASK-261011-wcmuu1] [TASK-261011-wcmuu1] Mutant evidence independently verified: all 16 hosted mutant commits are children of the snapshot commit, and local temp-index replay of each attached mutant patch reproduces the hosted mutant tree OID exactly (16/16). Failing-lane pattern matches the precheck-7 table exactly (13 small, 3 core). Raw logs confirm: mutant-15 core (spawn_status tree e5924ad6) fails spawn_agent_accepted_with_errored_child_emits_completed_item 3/3 tries at multi_agents_tests.rs:3170 (the Completed assertion) while spawn_agent_refused_emits_failed_item and send_input_rejected_compaction_emits_failed_item PASS under it; mutant-3 core (code_mode tree 2e496bbb) fails code_mode_leaf_applied_patch_delivered_exactly_once; both new spawn tests PASS on snapshot core. Numeric exit codes of CI steps other than these log-confirmed kills are unknown here; no expected-red run is presented as exit 0.",
+    "[TASK-261011-wcmuu1] [TASK-261011-wcmuu1] Rev2 A-F1/D-F1 closure, verified on this tree: spawn.rs:178-192 binds the V1 completed-item status to result.is_ok() (delivery), mirroring send_input.rs:114-125; sampled liveness stays in agents_states for display (spawn.rs:175-177); the emission precedes result propagation so the refused path emits exactly one Failed item. The new accepted-with-errored test drives the real SpawnAgentHandler with an AgentControl accepted receipt (Ok LiveAgent, real thread id, Errored status) as the rev2 verdict allowed; the stub shape matches spawn_agent_internal (commit, disarm, then get_status sampled into LiveAgent). Observation link Completed->1 / Failed->0 is the unchanged executed classifier (accounting.rs:296-306). The deterministic fixture pins handler mapping; real-child race frequency remains unknown and unclaimed, as the results file honestly states.",
+    "[TASK-261011-wcmuu1] [TASK-261011-wcmuu1] AC7 bound present in results: arbitrary shell side effects are UNKNOWN; pacing may stay conservative and completion is never inferred from shell output or exit status.",
+    "[TASK-261011-wcmuu1] [TASK-261011-wcmuu1] Record-site inventory re-verified: exactly 2 state-change record calls in extension.rs (:344 on_item_completed, :526 on_plan_committed); on_tool_finish records only activity/progress state; on_item_completed has exactly one production caller (session/mod.rs:2631, inside emit_turn_item_completed); runtime/tool record sites unchanged from rev2 green tree. Rev2-to-rev3 delta is exactly 2 files (+333/-1), so all other CR files are byte-identical to the precheck-6 green tree.",
+    "[TASK-261011-wcmuu1] [TASK-261011-wcmuu1] Presentation consequence of the mandated fix (advisory, not a finding): an accepted spawn with an already-errored child now emits Completed instead of Failed. TUI renders a terminal cell either way; analytics maps Completed to tool-success instead of tool-error, consistent with the tool call having succeeded and with the rev1 send_input precedent; exec output is a passthrough; V2 event mappings are untouched. agents_states retains Errored for display in all these paths.",
+    "[TASK-261011-wcmuu1] [TASK-261011-wcmuu1] Change size 17 paths +1828/-7 exceeds the 800-line guideline; production logic is roughly 300 added lines and the rest is the AC8-mandated test plus mutant coverage. Smallest first stage remains the defaulted plan-commit hook, core fan-out, and plan test. Advisory only, not a finding. No model-visible context, wire schema, config, or dependency change.",
+    "[TASK-261011-16oznh] Scope: independent non-recording DELTA panel on CR-TASK-260929-3ld28o-3, candidate 486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7, base 07c018be3507b8d4a5558a85a117b94ed2a23872. All board writes are restricted to TASK-261011-16oznh. No accept_cr, reject_cr, withdraw_cr, set_status, handoff, resource, checklist or notes mutation was issued on TASK-260929-3ld28o.",
+    "[TASK-261011-16oznh] Prior merged verdict rev2 contains exactly two findings (A-F1 and D-F1), both describing the same V1 accepted-spawn/liveness mechanism. Audited 2/2; production fix and deterministic handler-boundary tests address both correctly. The new test pins mapping rather than measuring async real-child race incidence, which remains unknown. Rework changes exactly two files relative to rev2; no unrelated accounting logic changed.",
+    "[TASK-261011-16oznh] Prior B-N1 advisory retained. Source-derived TurnItem inventory is 19 variants; classifier-focused tests directly construct 5/19 (FileChange, CollabAgentToolCall, SubAgentActivity, CommandExecution, AgentMessage). Additional un-fed ignore families: UserMessage, FunctionCallOutput, HookPrompt, Plan, Reasoning, DynamicToolCall, WebSearch, ImageView, Extension, ImageGeneration, EnteredReviewMode, ExitedReviewMode, McpToolCall, ContextCompaction. Exhaustive production match prevents implicit fallthrough but does not constitute executed negative coverage for those 14. No executed survivor is claimed; the five AC2 non-reset categories are covered.",
+    "[TASK-261011-16oznh] Hosted exactness independently verified, rather than inferred from workflow headSha. Plan and snapshot checkout name eb345af5e4085cf3120a250904ef85389037a8e3; GitHub git-commit API returns exactly candidate tree 486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7 with parent base 07c018be3507b8d4a5558a85a117b94ed2a23872. Workflow headSha e0eff057620104a416080da616256ee7f32bda1b identifies the workflow definition and is not the test-input tree.",
+    "[TASK-261011-16oznh] Executed attack evidence reused from run 38083359851. Lint and snapshot small/core/app-server jobs succeed. Small: 948/948 passed, 1 skipped; core: 5081/5081 passed, 11 skipped, 3 flaky tests recovered by retries; app-server: 1833/1833 passed, 2 skipped. Overall workflow conclusion is failure because expected-red mutant lanes fail. Numeric snapshot/lint process exit codes are not explicitly printed in these logs; successful job/step conclusions are reported as such, not invented local exits.",
+    "[TASK-261011-16oznh] All 16 attached mutant patches replay to their respective hosted commit trees (16/16), all 16 hosted commits have the exact snapshot as parent, and all 16 fail a named relevant killer with runner exit 100 (16/16 killed, 0/16 survivors). This ratio applies to the supplied mutant corpus, not all possible paths or mutations. Mutant-12 also hit an unrelated guardian-message scenario failure; the named send_input refusal killer fails independently, so its kill does not depend on that extra failure.",
+    "[TASK-261011-16oznh] CR rev3 validation log records mini-hosted-gate.sh exit 0, coverage_unit=exact_command_shard required=1 green=1 failed=0 missing=0; test_case_coverage=unknown. Accepted as attached evidence; not rerun locally. No cargo, just, build, lint, formatting or Rust test command was run by this panel.",
+    "[TASK-261011-16oznh] AC7 stated bound verified in results revision 8: arbitrary shell side effects are UNKNOWN; pacing may stay conservative and completion is never inferred from shell output or exit status. Automatic goal stops and usage-accounting writes remain excluded as previously reviewed. Plan memory is thread-global, so identical plans across goals are not a transition. These are maintained documented bounds, not new regressions.",
+    "[TASK-261011-16oznh] Large-diff advisory retained: 17 paths +1828/-7 exceeds 800-line guidance, mainly test scaffolding/coverage; roughly 300 production lines. Split suggestion is the defaulted plan hook + thin core dispatch/test, then goal consumer and remaining tests. No code restructuring was performed in this read-only panel.",
+    "[TASK-261011-16oznh] Successor recovery RUN-261011-0d3111: retain the B-N1 advisory as structured D-N1 (severity note, repeat-of rev2/B-N1) because the rev2 recording-review refusal explicitly identified loss of this object during merging. This is advisory evidence preservation, not a new blocking implementation defect. Verdict remains accept; all seven rows remain held."
+  ],
+  "surface_results": [
+    {
+      "row": "reset sources at committing handlers",
+      "result": "held",
+      "detail": "Held: the classifier accepts only Completed FileChange; Completed SpawnAgent/SendInput/SendMessage/FollowupTask; and Started/Interacted activity. The plan handler calls the hook after parse/publication; goal create/update record after successful DB returns; external set/clear record after a successful committed-state reread. Failed, declined, rejected and unknown-turn paths do not increment. V1 spawn/send completion now uses the accepted result while agents_states retains liveness. Hosted real-handler accepted/refused controls and backend create/update/set/clear tests pass. Mutants 5–9, 11–15 fail in the named tests below. Production sources: accounting.rs:222–316, extension.rs:332–344,516–529, tool.rs:230–250,298–321, runtime.rs:352–447, V1 spawn.rs:179–204 and send_input.rs:109–137.",
+      "reported_by": "TASK-261011-2h80lb"
+    },
+    {
+      "row": "non-resets",
+      "result": "held",
+      "detail": "Held: ToolFinish updates the pre-existing activity state only; no observation is recorded there. Plan equality compares ordered steps and status, excluding explanation. CommandExecution, model messages and generic tool outcomes are ignored by the observation classifier. Hosted failed/declined file, failed/in-progress spawn/send, identical-plan, shell-success, wrapper-only and progress-claim tests pass. Mutants 1,4,8,10,16 fail in the named tests below. Sources: accounting.rs:117–211,266–334; extension.rs:531 onward.",
+      "reported_by": "TASK-261011-2h80lb"
+    },
+    {
+      "row": "code-mode leaf accounting",
+      "result": "held",
+      "detail": "Held by public-entry execution plus classifier composition: core code_mode_leaf_applied_patch_delivered_exactly_once applies and reads a real file, records exactly one Completed FileChange, zero CommandExecution and no wrapper call-id item. Wrapper-only control records one nested CommandExecution and no FileChange/wrapper item. Goal code_mode_leaf_counts_once_and_wrapper_adds_none proves one leaf gives count 1, wrapper/shell alone 0. Double-emission mutant 3 fails the core real-entry test with exit 100. This proves delivery and classification separately; it does not claim a single black-box core→goal test. Sources: core/tests/suite/code_mode.rs:6847–6996; ext/goal/tests/state_change_observations.rs:354 onward.",
+      "reported_by": "TASK-261011-2h80lb"
+    },
+    {
+      "row": "no model-writable bypass",
+      "result": "held",
+      "detail": "Held within the trusted-host event boundary: the observation is private host memory, with no request/config/rollout field. Magic tool names, plan step/message keywords and success flags cannot set it. A changed plan legitimately counts as a plan transition; arbitrary explanation cannot reach the comparator. Hosted no_model_writable_bypass_sets_observation passes, and the keyword/counting mutants 1–2 fail it with exit 100. Source: accounting.rs:266–334,679–697; ext/goal/tests/state_change_observations.rs:396 onward. Malicious trusted extensions that fabricate host items are outside this model-writable-input claim.",
+      "reported_by": "TASK-261011-2h80lb"
+    },
+    {
+      "row": "existing activity and blocker untouched",
+      "result": "held",
+      "detail": "Held: independent byte comparisons found record_tool_outcome, record_item, empty_response_goal, finish_turn, on_turn_stop, on_turn_abort and on_thread_resume identical to the CR base (7/7 functions). New counts do not feed the existing activity booleans or blocker. Hosted empty_blocker_still_fires_first_with_no_observation and observation_does_not_disturb_empty_blocker pass; unchanged on_turn_stop retains the original stop/account/finish ordering. Source: accounting.rs:117–211,362 onward,599; extension.rs:347–445. The observation is preparatory state, not the pacing policy itself.",
+      "reported_by": "TASK-261011-2h80lb"
+    },
+    {
+      "row": "transient state",
+      "result": "held",
+      "detail": "Held: state_change_count is initialized to 0 in GoalTurnAccounting, kept in the in-memory turn map, and removed by finish_turn. The last plan is thread-runtime memory; it is not a rollout/history field. Hosted observation_is_transient_per_turn, fresh_state_carries_no_observation_or_plan_memory and backend_fresh_runtime_carries_no_observation pass. The backend fresh-runtime test reconstructs a runtime over the same state DB; static resume wiring initializes accounting through thread-store get_or_init and restores only existing persistent goal state. No direct app-server resume-RPC observation test is claimed. Sources: accounting.rs:40–56,95–110,599–606,697–737; extension.rs:117–200.",
+      "reported_by": "TASK-261011-2h80lb"
+    },
+    {
+      "row": "API surface and placement",
+      "result": "held",
+      "detail": "Held: additive PlanCommitInput borrows existing plan/stores; on_plan_committed has a default no-op, preserving existing contributor implementations. The new runtime readers expose bounded u32/bool values. Core adds a thin plan fan-out and receipt-bound spawn/send mappings; classification/state live in ext/goal. No core→goal dependency, config, schema, CLI, rollout or persistence change is introduced. Hosted extension-api, core and app-server suites and lint pass. Plan hook has a real model-turn integration test. Sources: extension-api/src/contributors.rs:414 onward, contributors/tool_lifecycle.rs:197 onward; core/src/tools/lifecycle.rs:165 onward. Size advisory below is nonblocking.",
+      "reported_by": "TASK-261011-2h80lb"
+    }
+  ],
+  "free_hunt": []
+}
+```
+
+
+Recording audit — RUN-261011-768e31, 2026-10-11: verified unanimous acceptance (3/3), seven held rows (7/7), both advisory findings and reproductions (2/2) and all structured notes (25/25). Revision 4 patch equals revision 3 byte-for-byte; temporary-index replay and working-tree tree equal 486ebfe55fd1df2cbb3d4744e15150ef2c85e9c7. No new findings or implementation review. Detailed audit: TASK-260929-3ld28o_recording-review-audit-rev4.md.
+
+Acceptance-format normalization: the eight completed held probe narratives below are archival panel evidence, not unresolved free-hunt findings. They are preserved verbatim; the structured free_hunt field is empty as required by the CR lifecycle contract. All findings, notes and surface results remain unchanged.
+
+Completed panel free-hunt narratives (archival evidence):
+
+1. [TASK-261011-wcmuu1] [TASK-261011-wcmuu1] {"attack": "V1 spawn emission cardinality on every path", "result": "held", "evidence": "One emit_turn_item_started plus exactly one emit_turn_item_completed per handler invocation past the depth check; the completed emission precedes result propagation so Err emits Failed; depth-limit refusal returns before any emission (conservative, correct: a refused spawn is no observation). Telemetry failure record is counter-only, not a turn item."}
+
+2. [TASK-261011-wcmuu1] [TASK-261011-wcmuu1] {"attack": "Consumers of the changed SpawnAgent item status", "result": "held", "evidence": "TUI renders terminal cells for Completed and Failed alike; analytics success/error mapping change is consistent with the tool call having succeeded (same class as the rev1 send_input fix); exec mapping is a passthrough; app-server SpawnBegin/InteractionEnd mappings are V2-event paths, untouched. agents_states preserves Errored for display everywhere."}
+
+3. [TASK-261011-wcmuu1] [TASK-261011-wcmuu1] {"attack": "Dead code or lint risk from dropping collab_tool_call_status use", "result": "held", "evidence": "spawn.rs imports via use super::* (glob), so no unused-import lint; the status variable is still consumed by agents_states construction. Hosted lint lane is green on this exact tree."}
+
+4. [TASK-261011-wcmuu1] [TASK-261011-wcmuu1] {"attack": "New mutant narrows instead of deleting", "result": "held", "evidence": "spawn_status_ignores_delivery_result reverts exactly the 9-line delivery-binding hunk to the sampled-status proxy. Under it the accepted-with-errored test fails (Failed instead of Completed) while the refused control stays green (log-confirmed), so the mutant narrows the accepted/refused boundary rather than deleting the gate."}
+
+5. [TASK-261011-wcmuu1] [TASK-261011-wcmuu1] {"attack": "Rev1 closures still hold on this tree", "result": "held", "evidence": "send_input delivery binding intact (file rev2-identical); code-mode real-path, paused/blocked dispatch, external set/clear production-site, and message-variant kills all re-executed on precheck 7 with the same named killers. Rev2-to-rev3 delta touches only spawn.rs plus its tests."}
+
+6. [TASK-261011-wcmuu1] [TASK-261011-wcmuu1] {"attack": "Turn-id consistency across record paths", "result": "held", "evidence": "Rev2-verified single id family across start_turn, on_item_completed, on_plan_committed, goal tools, and external set/clear is unchanged (those files are rev2-identical); spawn.rs touches no turn ids."}
+
+7. [TASK-261011-wcmuu1] [TASK-261011-wcmuu1] {"attack": "Evidence identity confusion (workflow head vs snapshot, mutant mismatch)", "result": "held", "evidence": "Snapshot commit tree independently equals candidate; all 16 mutant commits are snapshot children whose trees equal local replay of the attached patches; failing lanes and log-confirmed killers match the precheck table. Workflow head_sha is the definition commit, not test input, and was not used as evidence."}
+
+8. [TASK-261011-16oznh] {"bound": "After auditing prior findings, swept every surface row, then inspected sibling V1/V2 acceptance mappings, item-start/completion delivery, private observation writer/readers, goal reconcile failures, wire/persistence surfaces and change-size/test identity. Static attack plus exact-tree hosted evidence; no builds.", "attacks": [{"target": "Acceptance versus child liveness siblings", "result": "held", "reason": "V1 spawn/send are result-bound. Remaining collab_tool_call_status users are V1 resume/close (excluded from observation) and V2 spawn analytics; V2 observation comes from receipt-success Started, not the analytics item. V2 messages use a common receipt-success Interacted path. No additional liveness-proxy observation defect found."}, {"target": "Started/completed double counting and code-mode wrapper", "result": "held", "reason": "Goal writes only at on_item_completed. emit_sub_agent_activity starts then completes one item; only completion is classified. Real nested-patch duplicate-emission mutant is killed. Wrapper emits no turn item."}, {"target": "Failed reads versus legitimate goal absence", "result": "held", "reason": "External set/clear reconcile_live_activity returns Result and is awaited with ?, before the committed/absence decision. Error cannot flow into the committed.is_none() fallback. The changes preserve the pre-existing reconciliation failure behavior."}, {"target": "Observation persistence, context exposure and caller inventory", "result": "held", "reason": "No new serialization, rollout/history/context fragment, dependency or schema surface; private writers are confined to goal source and host callbacks. Runtime count accessors are read-only for the next pacing leaf. Original activity methods are byte-identical."}, {"target": "Residual test-coverage and size advisories", "result": "held", "reason": "5/19 directly fed TurnItem families and oversized total diff remain stated advisories. They are not presented as universal coverage or newly executed defects."}], "new_blocking_findings": 0, "unexecuted_requested_attacks": []}

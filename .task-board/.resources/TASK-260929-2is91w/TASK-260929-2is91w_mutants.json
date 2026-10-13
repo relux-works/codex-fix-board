@@ -1,0 +1,62 @@
+[
+  {
+    "name": "sleep_counts_nested_or_deferred",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -45,12 +45,7 @@ pub(crate) fn derive_waiting_capabilities(\n     discovered: &HashSet<ToolName>,\n ) -> WaitingCapabilities {\n     let specs = router.model_visible_specs();\n-    let sleep = is_callable(\n-        router,\n-        &specs,\n-        discovered,\n-        &ToolName::namespaced(CLOCK_NAMESPACE, SLEEP_TOOL_NAME),\n-    );\n+    let sleep = router.exposes_tool(&ToolName::namespaced(CLOCK_NAMESPACE, SLEEP_TOOL_NAME));\n     let stdin = is_callable(\n         router,\n         &specs,\n"
+  },
+  {
+    "name": "stdin_counts_nested",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -51,12 +51,7 @@ pub(crate) fn derive_waiting_capabilities(\n         discovered,\n         &ToolName::namespaced(CLOCK_NAMESPACE, SLEEP_TOOL_NAME),\n     );\n-    let stdin = is_callable(\n-        router,\n-        &specs,\n-        discovered,\n-        &ToolName::plain(WRITE_STDIN_TOOL_NAME),\n-    );\n+    let stdin = router.exposes_tool(&ToolName::plain(WRITE_STDIN_TOOL_NAME));\n     let native_wait = find_native_wait_agent(router, &specs, discovered);\n     let host_available = AsyncNotificationSupport::read_from(thread_store).is_available();\n     let exec_notify = host_available\n"
+  },
+  {
+    "name": "native_wait_v1_only",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -213,7 +213,9 @@ fn find_native_wait_agent(\n     discovered: &HashSet<ToolName>,\n ) -> Option<ToolName> {\n     let name = router.native_wait_tool()?;\n-    is_callable(router, specs, discovered, &name).then_some(name)\n+    (name.namespace.as_deref() == Some(\"multi_agent_v1\")\n+        && is_callable(router, specs, discovered, &name))\n+    .then_some(name)\n }\n \n /// Whether the callable `exec_command` schema exposes the `notify_on_exit`\n"
+  },
+  {
+    "name": "native_wait_v2_only",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -213,7 +213,9 @@ fn find_native_wait_agent(\n     discovered: &HashSet<ToolName>,\n ) -> Option<ToolName> {\n     let name = router.native_wait_tool()?;\n-    is_callable(router, specs, discovered, &name).then_some(name)\n+    (name.namespace.as_deref() != Some(\"multi_agent_v1\")\n+        && is_callable(router, specs, discovered, &name))\n+    .then_some(name)\n }\n \n /// Whether the callable `exec_command` schema exposes the `notify_on_exit`\n"
+  },
+  {
+    "name": "exec_notify_ignores_host",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -59,8 +59,7 @@ pub(crate) fn derive_waiting_capabilities(\n     );\n     let native_wait = find_native_wait_agent(router, &specs, discovered);\n     let host_available = AsyncNotificationSupport::read_from(thread_store).is_available();\n-    let exec_notify = host_available\n-        && exec_command_advertises_notify_on_exit(router, &specs, discovered)\n+    let exec_notify = exec_command_advertises_notify_on_exit(router, &specs, discovered)\n         && stdin\n         && is_callable(\n             router,\n"
+  },
+  {
+    "name": "exec_notify_ignores_opt_in",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -59,8 +59,8 @@ pub(crate) fn derive_waiting_capabilities(\n     );\n     let native_wait = find_native_wait_agent(router, &specs, discovered);\n     let host_available = AsyncNotificationSupport::read_from(thread_store).is_available();\n+    let _ = exec_command_advertises_notify_on_exit(router, &specs, discovered);\n     let exec_notify = host_available\n-        && exec_command_advertises_notify_on_exit(router, &specs, discovered)\n         && stdin\n         && is_callable(\n             router,\n"
+  },
+  {
+    "name": "exec_notify_ignores_stdin",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -61,7 +61,6 @@ pub(crate) fn derive_waiting_capabilities(\n     let host_available = AsyncNotificationSupport::read_from(thread_store).is_available();\n     let exec_notify = host_available\n         && exec_command_advertises_notify_on_exit(router, &specs, discovered)\n-        && stdin\n         && is_callable(\n             router,\n             &specs,\n"
+  },
+  {
+    "name": "exec_notify_ignores_receipt",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -61,13 +61,7 @@ pub(crate) fn derive_waiting_capabilities(\n     let host_available = AsyncNotificationSupport::read_from(thread_store).is_available();\n     let exec_notify = host_available\n         && exec_command_advertises_notify_on_exit(router, &specs, discovered)\n-        && stdin\n-        && is_callable(\n-            router,\n-            &specs,\n-            discovered,\n-            &ToolName::plain(EXEC_NOTIFICATION_TOOL_NAME),\n-        );\n+        && stdin;\n     let native_mail_wait =\n         host_available && thread_store.get::<GoalBackgroundWaitAdmission>().is_some();\n     WaitingCapabilities {\n"
+  },
+  {
+    "name": "native_mail_wait_ignores_host",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -68,8 +68,9 @@ pub(crate) fn derive_waiting_capabilities(\n             discovered,\n             &ToolName::plain(EXEC_NOTIFICATION_TOOL_NAME),\n         );\n-    let native_mail_wait =\n-        host_available && thread_store.get::<GoalBackgroundWaitAdmission>().is_some();\n+    let native_mail_wait = thread_store\n+        .get::<GoalBackgroundWaitAdmission>()\n+        .is_some();\n     WaitingCapabilities {\n         sleep,\n         stdin,\n"
+  },
+  {
+    "name": "native_mail_wait_ignores_policy",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -68,8 +68,8 @@ pub(crate) fn derive_waiting_capabilities(\n             discovered,\n             &ToolName::plain(EXEC_NOTIFICATION_TOOL_NAME),\n         );\n-    let native_mail_wait =\n-        host_available && thread_store.get::<GoalBackgroundWaitAdmission>().is_some();\n+    let _ = thread_store.get::<GoalBackgroundWaitAdmission>();\n+    let native_mail_wait = host_available;\n     WaitingCapabilities {\n         sleep,\n         stdin,\n"
+  },
+  {
+    "name": "native_wait_bare_name_match",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -208,12 +208,27 @@ fn is_directly_visible(specs: &[ToolSpec], name: &ToolName) -> bool {\n /// `wait_agent` never match. The registered native tool must then be\n /// directly visible or deferred-but-discovered, like every other flag.\n fn find_native_wait_agent(\n-    router: &ToolRouter,\n+    _router: &ToolRouter,\n     specs: &[ToolSpec],\n-    discovered: &HashSet<ToolName>,\n+    _discovered: &HashSet<ToolName>,\n ) -> Option<ToolName> {\n-    let name = router.native_wait_tool()?;\n-    is_callable(router, specs, discovered, &name).then_some(name)\n+    specs.iter().find_map(|spec| match spec {\n+        ToolSpec::Function(tool) => {\n+            (tool.name == WAIT_AGENT_TOOL_NAME).then(|| ToolName::plain(tool.name.clone()))\n+        }\n+        ToolSpec::Freeform(tool) => {\n+            (tool.name == WAIT_AGENT_TOOL_NAME).then(|| ToolName::plain(tool.name.clone()))\n+        }\n+        ToolSpec::Namespace(namespace) => namespace\n+            .tools\n+            .iter()\n+            .any(|tool| match tool {\n+                ResponsesApiNamespaceTool::Function(tool) => tool.name == WAIT_AGENT_TOOL_NAME,\n+                ResponsesApiNamespaceTool::Custom(tool) => tool.name == WAIT_AGENT_TOOL_NAME,\n+            })\n+            .then(|| ToolName::namespaced(namespace.name.clone(), WAIT_AGENT_TOOL_NAME)),\n+        ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } => None,\n+    })\n }\n \n /// Whether the callable `exec_command` schema exposes the `notify_on_exit`\n"
+  },
+  {
+    "name": "native_wait_ignores_discovered",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -210,10 +210,10 @@ fn is_directly_visible(specs: &[ToolSpec], name: &ToolName) -> bool {\n fn find_native_wait_agent(\n     router: &ToolRouter,\n     specs: &[ToolSpec],\n-    discovered: &HashSet<ToolName>,\n+    _discovered: &HashSet<ToolName>,\n ) -> Option<ToolName> {\n     let name = router.native_wait_tool()?;\n-    is_callable(router, specs, discovered, &name).then_some(name)\n+    is_directly_visible(specs, &name).then_some(name)\n }\n \n /// Whether the callable `exec_command` schema exposes the `notify_on_exit`\n"
+  },
+  {
+    "name": "discovery_ignores_call_pairing",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -123,10 +123,8 @@\n         else {\n             continue;\n         };\n-        let orphan = match call_id {\n-            Some(call_id) => execution != \"server\" && !calls.contains(call_id.as_str()),\n-            None => false,\n-        };\n+        let _ = execution;\n+        let orphan = call_id.is_none();\n         if orphan {\n             continue;\n         }\n"
+  },
+  {
+    "name": "discovery_requires_server_call_id",
+    "patch": "--- a/codex-rs/core/src/tools/waiting_capabilities.rs\n+++ b/codex-rs/core/src/tools/waiting_capabilities.rs\n@@ -125,7 +125,7 @@\n         };\n         let orphan = match call_id {\n             Some(call_id) => execution != \"server\" && !calls.contains(call_id.as_str()),\n-            None => false,\n+            None => true,\n         };\n         if orphan {\n             continue;\n"
+  },
+  {
+    "name": "snapshot_ignores_remote_catalog_replacement",
+    "patch": "--- a/codex-rs/models-manager/src/manager.rs\n+++ b/codex-rs/models-manager/src/manager.rs\n@@ -690,7 +690,7 @@ impl OpenAiModelsManager {\n                     .iter()\n                     .position(|existing| existing.slug == model.slug)\n                 {\n-                    models[index] = model;\n+                    let _ = (index, model);\n                 } else {\n                     models.push(model);\n                 }\n"
+  }
+]

@@ -1,0 +1,168 @@
+# R141 DELTA panel — TASK-261012-1ubigw
+
+CR-TASK-260929-1w5ivu-2, revision 2. Independent non-recording panel.
+
+Verdict: accept
+
+Replay: base `7e4289e21fab653fea8c0089a7ffd790145e5686` plus the attached revision-2 patch produced exactly `786339645058198ba030dffbba8ed1cfbf1e36a9`. The expected and actual tree OIDs agree. A second write-tree after static attacks produced the same OID. Replay used a temporary index; no nested worktree, repository source edit, local Rust build/test, commit, or branch operation occurred.
+
+No mutation, acceptance, rejection, withdrawal, status, resource, note, or handoff write was issued on TASK-260929-1w5ivu. All board writes belong to this panel task.
+
+## Predecessor command evidence and exit codes
+
+Commands ran as separate processes, without tee or pipelines hiding their status. `$IDX` below denotes `$PWD/.temp/TASK-261012-1ubigw-replay.idx`.
+
+| Command | Exit | Evidence |
+|---|---:|---|
+| `task-board m 'set_status(TASK-261012-1ubigw, status=analysis)'` | 0 | Panel lifecycle only |
+| `mkdir -p .temp` | 0 | Replay directory |
+| `GIT_INDEX_FILE="$IDX" git read-tree 7e4289e21fab653fea8c0089a7ffd790145e5686` | 0 | Base loaded |
+| `task-board resource get TASK-260929-1w5ivu TASK-260929-1w5ivu_change-request_rev2.patch --output .temp/TASK-260929-1w5ivu_change-request_rev2.patch` | 0 | Read-only CR download |
+| `GIT_INDEX_FILE="$IDX" git apply --cached .temp/TASK-260929-1w5ivu_change-request_rev2.patch` | 0 | Replay applied |
+| `GIT_INDEX_FILE="$IDX" git write-tree` (twice) | 0 each | Exact candidate tree both times |
+| `git diff --check 7e4289e21fab653fea8c0089a7ffd790145e5686 786339645058198ba030dffbba8ed1cfbf1e36a9` | 0 | Candidate patch whitespace |
+| `git diff --numstat 7e4289e21fab653fea8c0089a7ffd790145e5686 786339645058198ba030dffbba8ed1cfbf1e36a9` | 0 | 1,921 additions + 29 deletions = 1,950; 254 production/template, 1,696 tests |
+| `task-board q 'get(TASK-260929-1w5ivu) { description scope ac }'` | 0 | Original AC, interpreted with the explicit revision-2 amendments |
+| `task-board q 'get(TASK-260929-1w5ivu) { preconditionResources outcomeResources }'` | 0 | Resource inventory |
+| Resource downloads of `surface-table.md`, prior merged verdict, hosted-precheck-5, results, mutants, rev2-validation.log, final-plan, producer-brief, and review1 rework brief | 0 each | Read-only context and evidence |
+| `gh run view 38265238386 --repo ivanopcode/codex --json headSha,conclusion,jobs,url` (also with compact jq projection) | 0 each | Snapshot lanes success; workflow conclusion failure because mutant lanes fail |
+| `gh api repos/ivanopcode/codex/git/commits/9f8fdf9aa3f7b28ded9e62fd628b2206c2c76a8b --jq '{sha,tree:.tree.sha}'` | 0 | Workflow head tree is a2b4fea0, not the tested snapshot; do not mistake workflow head for candidate |
+| `gh api repos/ivanopcode/codex/git/commits/225718e8cf43ec6322680852433866c29091d7d8 --jq '{sha,tree:.tree.sha}'` | 0 | Snapshot checkout commit has exact candidate tree 78633964 |
+| `gh run view 38265238386 --repo ivanopcode/codex --job JOB --log > FILE` for jobs 114870324709, 114870324445, 114870327294, 114870327104 | 0 each | Core/small snapshot and two regression mutant logs downloaded; redirects preserve gh's exit code |
+| For each i=1..8, separate `GIT_INDEX_FILE=.temp/TASK-261012-1ubigw-mutant-i.idx git read-tree 786339645058198ba030dffbba8ed1cfbf1e36a9`, then `git apply --cached --check .temp/panel-mutant-i.patch` with that index | 0 for all 16 processes | 8/8 attached mutant patches applicable; replay index unchanged |
+| `python3 .temp/TASK-261012-1ubigw-static-audit.py` | 0 | Source-derived literals, 80/80 render shapes, 81/81 JSON round trips, 6,561/6,561 flat-schema RFC7386 transitions; independent calculations, not Rust execution |
+| `task-board spawn directives "$TASK_BOARD_RUN_ID"` | 0 | No directives |
+| `git status --short` | 0 | No tracked source edits |
+| Standalone Python outcome validation (JSON parsing, exact fence count and independent surface-table row equality) | 0 | Exactly one valid verdict-findings block, accept verdict, 9/9 rows exactly once |
+
+Lookup failures are not passing gates: unsupported `resources`/`artifacts` get projections and `resources(...)` query each exited 1; `rg --files` searches for the uninstalled reviewer-role reference exited 1 (no matches); reading `/Users/administrator/.claude/skills/project-management/.roles/reviewer/role.md` exited 1 (file absent). The installed skill body and its negative-evidence/resources references were read instead, alongside the task's explicit review-round contract. An initial source materialization Python command exited 1 because it used `codex-rs/extension-api` rather than `codex-rs/ext/extension-api` (inner git show exit 128); corrected materialization exited 0. A later git show for nonexistent `core/src/context.rs` exited 128; the actual trait was then located and read in `context-fragments/src/fragment.rs` (exit 0). A git grep against obsolete tool-spec paths exited 1; corrected `tools/handlers` source reads exited 0. The initial compound replay setup containing `rm -f` was rejected before process launch, so it has no exit code; the successful replay above used separate commands without that deletion. Other source inspection commands (`git show/diff/grep`, `rg`, `sed`, `cat`, and bounded Python log extraction) were read-only; no Rust gate is claimed from them.
+
+## Accepted execution evidence, not rerun locally
+
+The [hosted run](https://github.com/ivanopcode/codex/actions/runs/38265238386) uses workflow head 9f8fdf9a but its snapshot jobs explicitly check out **225718e8**, whose tree is the candidate. The attached [precheck report](board-resource://TASK-260929-1w5ivu/precondition/TASK-260929-1w5ivu_hosted-precheck-5.md) records lint/small/core/app-server success and 8/8 killed mutants. Independently downloaded [core log](https://github.com/ivanopcode/codex/actions/runs/38265238386/job/114870324709) lines 9459–9471 show PASS for all 11 waiting-guidance scenarios; line 9501 reports 5,142/5,142 passed, 11 skipped, one other flaky test. The [small log](https://github.com/ivanopcode/codex/actions/runs/38265238386/job/114870324445) lines 4740–4756 show the contract, renderer/bounds and World State units passing; line 5464 reports 1,504/1,504 passed, one skipped. Their successful lane conclusions indicate successful commands; raw numeric exit codes for these successful commands are not explicitly printed and are not invented here.
+
+The [always-renders core mutant](https://github.com/ivanopcode/codex/actions/runs/38265238386/job/114870327294) exited **100**, with 10 failed tests including cross-turn no-churn. The [no-retraction core mutant](https://github.com/ivanopcode/codex/actions/runs/38265238386/job/114870327104) exited **100**, with four failed tests including goal-stop. These are expected-red gates: admitting repetition or withholding the stop correction must fail. Both hosted mutant lanes invoke `INSTA_WORKSPACE_ROOT="$PWD" just test -p codex-core -E "$expr" "${extra[@]}"`, which runs `RUST_MIN_STACK=8388608 NEXTEST_PROFILE=local cargo nextest run --no-fail-fast "$@"`. Their actual filter is `test(waiting) | test(guidance) | test(continuation) | test(goal) | test(skills) | test(world_state)`. Remaining six mutant kills are accepted from the attached report and lane conclusions, not independently re-executed or inferred to have numeric exit 100.
+
+The [CR validation log](board-resource://TASK-260929-1w5ivu/outcome/TASK-260929-1w5ivu_change-request_rev2-validation.log) records `mini-hosted-gate.sh` exit 0 and `exact_command_shard required=1 green=1 failed=0 missing=0 test_case_coverage=unknown`. It attests hosted reuse, not an additional local Rust suite. No cargo, just, build or test was run by this panel.
+
+## Delta findings and measurements
+
+Previous merged F1 is fixed: goal-stop now contributes the static retraction before the first follow-up request and preserves one retraction on the later turn. Previous F2 is fixed: unchanged capability snapshots contribute no additional item over three turns. The old per-turn contribution is removed. Named suite tests and the two narrowing mutants exercise these production paths.
+
+The active snapshot contains four Boolean fields and an optional capped string; absent native_wait is omitted. There are no nulls, floats, nested objects or arrays to diverge under core's persistence normalization. Inactive false also round-trips exactly. Capabilities disappearing remove native_wait through merge-patch deletion; false/object transitions reconstruct the current snapshot. Retraction has no retained matcher, so unchanged false is silent. Active matcher requires developer role, both markers and one exec sentence, rejecting the retraction. Compaction paths either install current initial context plus its snapshot, or drop this section's baseline and rebuild on the next turn. No reachable stale-retention defect was established; full waiting-specific compaction execution remains an explicit coverage bound.
+
+Request counts independently checked in the candidate: post-create 2; tool-create 4; code-mode 1; remote catalog 1 responses + 1 models; excluded receipt 2; headless 1; non-goal 1; same-turn stability 3; cross-turn stability 3; goal stop 5; discovery 5. Total **28 responses + 1 models**. Code-mode retains direct clock.sleep, as explicitly amended and covered; remote absence also depends on disabling the reminder sleep grant. These are disclosed base semantics.
+
+Two non-blocking corrections to the producer measurements: actual markers are 47 bytes, concatenated without separators by `ContextualUserFragment::render`. Maximal body/wire are **1,724/1,771 bytes**, wire estimate **443 tokens**; retraction body/wire are **88/135 bytes**, wire estimate **34 tokens**. Thus the stated maximal wire 1,769 is off by two bytes but both AC4 bounds hold. The stated snapshot ≤512-byte worst-case bound is ASCII-test coverage, not universal: a capped four-byte Unicode name yields up to **606 bytes**, and maximally escaped control characters up to **862 bytes**. The hard character cap still gives a bounded small snapshot; the AC supplies no 512-byte snapshot limit. These calculations do not assert that arbitrary control-character native tool names are reachable through the built-in router.
+
+## Panel logbook
+
+Exact-tree replay and hosted checkout provenance verified. F1/F2 fixed at their production entry points; no additional blocking finding after all nine surface rows and six bounded free-hunt families. Record the two measurement corrections and the existing unit-only positive exec/native-mail, BudgetLimited and compaction coverage limits for the recording reviewer. This logbook entry travels only in this task-scoped outcome; the reviewed task remains untouched.
+
+Sources: [previous merged verdict](board-resource://TASK-260929-1w5ivu/outcome/TASK-260929-1w5ivu_review-verdict-rev1.md), [surface table](board-resource://TASK-260929-1w5ivu/outcome/surface-table.md), [revision-2 amendment](board-resource://TASK-260929-1w5ivu/precondition/a2-rework-brief-review1.md), [producer results](board-resource://TASK-260929-1w5ivu/outcome/TASK-260929-1w5ivu_results.md), [plan §9](board-resource://TASK-260929-1w5ivu/precondition/final-plan.md). Code citations below refer to snapshot commit [225718e8](https://github.com/ivanopcode/codex/commit/225718e8cf43ec6322680852433866c29091d7d8), proven above to have the replayed candidate tree.
+
+## Successor audit and handoff recovery (2026-10-12)
+
+The predecessor outcome and local report matched byte-for-byte before this revision. Its review evidence above is inherited, not claimed as newly executed by the successor. The successor repeated the temporary-index replay: read-tree, cached apply and write-tree each exited **0**, producing exactly `786339645058198ba030dffbba8ed1cfbf1e36a9`. Patch retrieval exited **0**. No local Rust build or test ran.
+
+Successor standalone checks: `git diff --check BASE CANDIDATE` **0**; `python3 .temp/TASK-261012-1ubigw-static-audit.py` **0** (80/80 render shapes, 81/81 round trips, 6,561/6,561 modeled transitions); `gh api repos/ivanopcode/codex/git/commits/225718e8cf43ec6322680852433866c29091d7d8 --jq '{sha,tree:.tree.sha}'` **0** (exact candidate tree); `gh run view 38265238386 --repo ivanopcode/codex --json headSha,conclusion,jobs,url --jq ...` **0** (snapshot lint/small/core/app-server successful, aggregate failure with mutant lanes failing); fresh surface-table and attached-verdict downloads **0** each. Source inspection confirms F1/F2 request assertions, the omitted absent native-wait field, the inactive false snapshot and matcher exclusion of retraction. The earlier raw hosted logs and mutant applicability checks remain predecessor evidence, not successor reruns.
+
+The predecessor's own panel handoff validation really failed with **exit 1**, not a green gate: `mini-hosted-gate.sh` refused research-artifact tree `07d9d270587e385953f8312a714bebafede8e6ba` because no hosted green was recorded. This did not concern the reviewed production candidate. The untracked report in `.research/` made this research-only panel appear to change repository source. The successor preserved this report in `.temp/TASK-261012-1ubigw_panel-verdict.md` (an ignored path) and updates the existing panel-owned outcome. The repository delta is therefore empty; source validation should be skipped under the documented research-only rule. No validation policy or source file was changed.
+
+Successor outcome validator **exit 0**: exactly one verdict-findings JSON block, accept verdict, all nine freshly downloaded surface-table rows exactly once, expected result/schema keys, and no tracked or untracked repository delta after preserving the report. The report-preservation Python process exited **0**. Unsupported `resources` projections failed **exit 1** twice; missing reviewer reference `cat` failed **exit 1**; the initial file search failed **exit 2** because optional search roots were absent; the focused reference search found no matches (**exit 1**). These lookup failures are not validation passes. Supported compact projections, skill-body reads, validation-log retrieval, handoff help, ignored-path check and directive read each exited **0**. No directive was present.
+
+Logbook recovery entry: replay and static measurements reconfirmed; accept verdict retained with measurement corrections and runtime coverage limits. Handoff failure isolated to the untracked research document; preserve task-scoped evidence while keeping this non-recording review source-free. All successor board writes target only TASK-261012-1ubigw. No write targets TASK-260929-1w5ivu.
+
+```verdict-findings
+{
+  "findings": [],
+  "notes": [
+    "Previous merged F1 fixed: ext/goal/src/waiting_world_state.rs:106-129 emits one static active-to-inactive correction. core/tests/suite/waiting_guidance.rs:862-929 verifies first post-stop request and later-turn silence; hosted no-retraction mutant fails with exit 100.",
+    "Previous merged F2 fixed: waiting_world_state.rs:80-99 compares every step snapshot; extension.rs:654-674 owns only the World State path. waiting_guidance.rs:812-859 verifies three unchanged turns. Hosted always-renders mutant fails with exit 100.",
+    "Measurement correction, non-blocking: maximal body 1724B, markers 47B, maximal wire 1771B/443 estimated tokens (producer reports 1769B). Retraction wire 135B/34t is correct. Bound remains below 3072B/1000t.",
+    "Snapshot measurement correction, non-blocking: <=512B test uses ASCII. Unicode worst case is 606B; escaped-control upper shape is 862B. Snapshot is still hard-bounded by the 128-character name cap plus ellipsis and fixed schema; no universal 512B AC exists.",
+    "Coverage bounds: positive exec_notify and native_mail_wait production claims remain unit-only; BudgetLimited has no dedicated request scenario. Waiting-specific compaction has unit/static coverage rather than its own public-entry integration run, expressly permitted by the rework brief. Do not infer those runtime claims from 8/8 mutant kills.",
+    "Workflow head is not snapshot checkout. Independently verified snapshot 225718e8 tree 78633964. Snapshot lanes pass; aggregate workflow fails because expected-red mutants fail. All eight mutant patches apply to the candidate; two new regression kills independently verified in raw logs.",
+    "Goal-less core paragraph remains explicitly out of scope. The no-wait/end-turn paragraph remains deferred. AC3 permits one transition retraction; AC9 permits only the one core production pass-through. No reviewed-task write occurred.",
+    "Exact request count total is 28 responses + 1 models across 11 scenarios. Diff size is 1950 changed lines, 254 production/template and 1696 tests; overrun disclosed and unchanged by review. No dependency/config/schema/CLI/app-server wire change. Extension-api struct construction sites have mechanical field updates."
+  ],
+  "surface_results": [
+    {
+      "row": "contract text",
+      "result": "held",
+      "reason": "Source-derived byte comparison against plan section 9: exactly one template line changes; both update_plan variants derive from that template. continuation_prompt_carries_section_nine_verified_wait_contract passes in hosted small job and kills old-text mutant. No unrelated template churn."
+    },
+    {
+      "row": "sentence selection",
+      "result": "held",
+      "reason": "steering.rs:65-141 selects exactly one exec sentence and optional sleep/stdin/native/mail sentences in fixed order, using exact plan literals. Names render actual dotted or default identity under the cap. Hosted renderer/selection tests and flag/name mutants cover all requested selections. Deferred paragraph absent."
+    },
+    {
+      "row": "scope and gating",
+      "result": "held",
+      "reason": "extension.rs:665 uses GoalActivity exclusively. Base activity.rs:104-126 publishes Active/BudgetLimited and removes other states/read errors. waiting_world_state.rs:41-52 omits section for inactive never-recorded threads, allowing only the amended transition correction. Hosted non-goal public-entry test and mutant attack production gating. No core goal-less paragraph. BudgetLimited/inactive status breadth remains the stated execution bound."
+    },
+    {
+      "row": "bounded",
+      "result": "held",
+      "reason": "Hosted bounds/cap tests plus independent 80-shape source calculation establish <=1771B/443t maximal wire. Native name cap is 128 Unicode characters plus ellipsis. Retraction static 135B/34t wire. Fixed Boolean/optional capped-string snapshot is bounded; correct universal serialized upper shape is 862B, not the producer's ASCII-only 512B claim. Existing core WorldStateContextFragment implements ContextualUserFragment; no new injected item type."
+    },
+    {
+      "row": "incremental, no churn",
+      "result": "held",
+      "reason": "F2 fixed. Active comparison uses persisted snapshot per request; absent native_wait omission makes null stripping an identity operation, Boolean false survives persistence. Same/cross-turn tests pass, discovery adds one fragment, goal-stop retracts once, always-renders and no-retraction mutants fail. Active/retraction retained-matcher unit passes. Independent schema model checks 6561 transitions; static compaction trace found no reachable baseline/history mismatch."
+    },
+    {
+      "row": "request agreement",
+      "result": "held",
+      "reason": "F1 fixed. All 11 exact-tree public-entry suite scenarios pass with exact counts: 28 responses plus one models request. Step World State recording precedes request assembly; create/discovery updates and stop retraction are now visible immediately. Existing code-mode direct sleep and remote reminder suppression are disclosed. Assertions and append order establish most recent guidance/correction for the covered requests, with positive exec/mail and compaction runtime breadth explicitly unmeasured."
+    },
+    {
+      "row": "tool descriptions",
+      "result": "held",
+      "reason": "Read candidate tools/handlers/shell_spec.rs:25-31,75-82,146-175; sleep.rs:39-77; multi_agents_spec.rs:268-292. Acknowledgment, receipt release, long empty stdin waits, interruptible direct sleep and V1/V2 native waits agree. Multiple identifiers are qualified by where supported. No contradictory or unnecessary description change."
+    },
+    {
+      "row": "mutants and measurement",
+      "result": "held",
+      "reason": "All 8/8 patches apply via independent cached-index checks. Attached exact-tree hosted report identifies filter-selected killers for all eight; raw logs confirm cross-turn and stop mutants each exit 100, not build/setup failures. All request counts independently checked. Measurement discrepancies are non-blocking notes with corrected bounds above. Coverage is 8/8 enumerated mutants, not proof of every possible mutation."
+    },
+    {
+      "row": "placement and size",
+      "result": "held",
+      "reason": "Only core production diff is world_state.rs:308 passing the step snapshot. Extension-api field and all 21 skills test constructions updated mechanically. Goal owns new 140-line module and removes old turn-context emission. Tests in ext/goal/tests and core/tests/suite. 1950 changed lines (254 production/template,1696 tests) disclosed versus 600 target; no additional core concept, dependency, API wire or P4b logic leakage."
+    }
+  ],
+  "free_hunt": {
+    "bounded_scope": "Six additional static attack families after the nine-row sweep; no local build/test or product-code mutation.",
+    "attacks": [
+      {
+        "family": "snapshot persistence equivalence",
+        "result": "Audited null stripping and RFC7386 false/object/name-removal transitions in core/context/world_state/mod.rs. New snapshot uses only Booleans and a bounded optional string; 81/81 modeled shapes and 6561/6561 transitions stable. Real hosted no-churn tests exercise core persistence. No additional defect."
+      },
+      {
+        "family": "retained matcher narrowing and retraction identity",
+        "result": "Wrong role, missing markers, bare markers and marker-sharing retraction rejected; either exec variant accepted. Unknown unreachable without legacy matcher and fails visible. Matcher attests active-section presence rather than exact body identity: arbitrary replacement preserving an older active fragment with a newer baseline is not independently executed; no reachable compaction path doing that was established."
+      },
+      {
+        "family": "compaction replacement and baseline retention",
+        "result": "compact.rs:87-106,367-383 and session/mod.rs:4173-4195 install current full initial context plus matching baseline for mid-turn compaction, or clear goal baseline for DoNotInject. Goal registers no retain_world_state_after_compaction override. New active context rebuilds, inactive history no longer contains the old section. Unit/static bound accepted per brief; no full waiting-specific compaction suite run claimed."
+      },
+      {
+        "family": "Unicode and serialized bounds",
+        "result": "Character-safe 128 cap plus ellipsis survives Unicode/control-character JSON escaping and round trips. Source-derived corrected maximal wire 1771B/443t; snapshot upper shape 862B. Reported 1769B and universal512B measurements need editorial correction, with no AC bound violation."
+      },
+      {
+        "family": "resuming rollouts and external surfaces",
+        "result": "Stable section id and false/object snapshots use existing rollout World State protocol; no new protocol variant or history rewrite. Old rev1 unmarked turn fragments lack a legacy matcher, but rejected unlanded rev1 is not a supported persisted rollout migration in this delta. No CLI/config/app-server wire change found."
+      },
+      {
+        "family": "P4b and gate provenance",
+        "result": "Only fixture continuation_pacing adapts to base P4b. No pacing implementation changed; hosted snapshot core/app-server lanes green. Checked snapshot commit/tree independently rather than workflow head; no evidence substitution."
+      }
+    ],
+    "additional_findings": [],
+    "coverage": "9/9 surface rows attacked: 9 held, 0 broken, 0 not-attacked. 6/6 bounded free-hunt families inspected. Runtime unknowns and non-blocking measurement corrections stated explicitly."
+  }
+}
+```

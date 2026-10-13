@@ -1,0 +1,21 @@
+  TRY 1 FAIL [  11.064s] (─────────) codex-core::all suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound
+    thread 'suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound' (162590) panicked at core/tests/suite/goal_native_wait.rs:244:6:
+    timed out waiting for the native child to reach Running: Elapsed(())
+  TRY 1 FAIL [  13.863s] (─────────) codex-core::all suite::goal_native_wait::goal_wait_latch_closes_completion_before_registration
+    thread 'suite::goal_native_wait::goal_wait_latch_closes_completion_before_registration' (162860) panicked at core/tests/suite/goal_native_wait.rs:513:10:
+    goal set hung after the registration gate was released: Elapsed(())
+  TRY 2 FAIL [  10.870s] (─────────) codex-core::all suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound
+    thread 'suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound' (163972) panicked at core/tests/suite/goal_native_wait.rs:244:6:
+    timed out waiting for the native child to reach Running: Elapsed(())
+  TRY 3 FAIL [  11.151s] (3657/5160) codex-core::all suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound
+    thread 'suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound' (166876) panicked at core/tests/suite/goal_native_wait.rs:244:6:
+    timed out waiting for the native child to reach Running: Elapsed(())
+  TRY 1 FAIL [   0.877s] (─────────) codex-core::all suite::hooks::permission_request_hook_allows_exec_command_without_user_approval
+    thread 'suite::hooks::permission_request_hook_allows_exec_command_without_user_approval' (179547) panicked at core/tests/suite/hooks.rs:3042:5:
+  TRY 1 FAIL [  10.409s] (─────────) codex-core::all suite::realtime_conversation::conversation_second_start_replaces_runtime
+    thread 'suite::realtime_conversation::conversation_second_start_replaces_runtime' (205117) panicked at core/tests/common/lib.rs:393:14:
+     Summary [ 902.754s] 5160 tests run: 5159 passed (9 slow, 3 flaky), 1 failed, 11 skipped
+   FLAKY 2/3 [   4.161s] (3624/5160) codex-core::all suite::goal_native_wait::goal_wait_latch_closes_completion_before_registration
+   FLAKY 2/3 [   0.853s] (3782/5160) codex-core::all suite::hooks::permission_request_hook_allows_exec_command_without_user_approval
+   FLAKY 2/3 [   0.458s] (4293/5160) codex-core::all suite::realtime_conversation::conversation_second_start_replaces_runtime
+  TRY 3 FAIL [  11.151s] (3657/5160) codex-core::all suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound

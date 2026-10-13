@@ -1,0 +1,164 @@
+diff --git a/.research/261010_state_change_observations_panel_a_rev2/TASK-261010-1nhjne_panel-verdict.md b/.research/261010_state_change_observations_panel_a_rev2/TASK-261010-1nhjne_panel-verdict.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..c5850a0423ffa53ad68ff235d4b91ffb664204eb
+--- /dev/null
++++ b/.research/261010_state_change_observations_panel_a_rev2/TASK-261010-1nhjne_panel-verdict.md
+@@ -0,0 +1,158 @@
++# Panel A — state-change observations, CR revision 2
++
++changes_requested
++
++Review scope: `CR-TASK-260929-3ld28o-2`, independent non-recording panel. This outcome belongs only to `TASK-261010-1nhjne`. No write, status transition, acceptance, rejection, withdrawal or handoff was issued on `TASK-260929-3ld28o`.
++
++Replay tree check: **MATCH**. Base `07c018be3507b8d4a5558a85a117b94ed2a23872` plus the attached revision-2 patch, applied through a temporary index, produced exactly `568588edd89a50d4f259f9e17eb902cd38ae9e8e`. Every source reference below is pinned to that candidate tree, not the workspace HEAD.
++
++The revision fixes the previous refused-send bypass and adds the missing public code-mode delivery tests. One separate production path still substitutes child liveness for acceptance: V1 spawn can return success after accepting initial input while emitting a Failed completed item if the child has already errored. The observation then misses an accepted spawn. This is a conservative missed reset, not a false progress or completion claim. Runtime frequency was not measured; the finding is a static production counterexample with a named requested attack.
++
++## Commands and exit codes
++
++Commands were executed synchronously. No cargo, just, build or test command ran locally. Hosted results below are evidence inspected, not suites rerun by this panel.
++
++| Direct command/check | Actual exit code | Evidence/result |
++| --- | --- | --- |
++| `task-board m 'set_status(TASK-261010-1nhjne, status=analysis)'` | 0 | Own panel task entered analysis. |
++| `git rev-parse --show-toplevel` | 0 | Assigned Story worktree. |
++| Python `Path('.temp/TASK-261010-1nhjne-replay.idx').unlink(missing_ok=True)` with parent directory creation | 0 | Prepared temporary index. The originally requested `rm -f` command was rejected before execution; it has no process exit code and was replaced by this command. |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-1nhjne-replay.idx" git read-tree 07c018be3507b8d4a5558a85a117b94ed2a23872` | 0 | Base loaded. |
++| `task-board resource get TASK-260929-3ld28o TASK-260929-3ld28o_change-request_rev2.patch --output .temp/TASK-260929-3ld28o_change-request_rev2.patch` | 0 | Source patch downloaded read-only. |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-1nhjne-replay.idx" git apply --cached .temp/TASK-260929-3ld28o_change-request_rev2.patch` | 0 | Patch replayed. |
++| `GIT_INDEX_FILE="$PWD/.temp/TASK-261010-1nhjne-replay.idx" git write-tree` | 0 | Exactly `568588edd89a50d4f259f9e17eb902cd38ae9e8e`. |
++| `git diff --check 07c018be3507b8d4a5558a85a117b94ed2a23872 568588edd89a50d4f259f9e17eb902cd38ae9e8e` | 0 | No whitespace errors in candidate diff. |
++| `git diff --stat 07c018be3507b8d4a5558a85a117b94ed2a23872 568588edd89a50d4f259f9e17eb902cd38ae9e8e` | 0 | 16 files, +1495/-6. |
++| Python brace-balanced extraction/equality of base/candidate `record_tool_outcome`, `record_item`, `empty_response_goal`, `finish_turn` using `git show` | 0 | 4/4 byte-identical existing accounting functions. |
++| `gh run view 38047301443 --repo ivanopcode/codex --json headSha,conclusion,status,jobs,url` and its compact `--jq` projection | 0 each | Read succeeded; workflow conclusion is **failure**, with green snapshot lanes and red mutant lanes. The CLI exit is not the workflow result. |
++| `gh api repos/ivanopcode/codex/git/commits/228b827004027801dba38bfe3687ace4f57a5fe8 --jq '{sha,tree:.tree.sha,message}'` | 0 | Hosted snapshot commit's tree is exactly the candidate tree. |
++| `gh run view 38047301443 --repo ivanopcode/codex --job JOB --log` for jobs 114199302416, 114199321415, 114201099549, 114201099586, 114201099619, 114201101132, 114201101108 | 0 each | Downloaded plan, lint, snapshot core/small and three expected-red mutant logs to `.temp/TASK-261010-1nhjne-hosted-*.log`. |
++| `task-board resource get TASK-260929-3ld28o RESOURCE --output FILE` for surface-table, producer-brief, results, hosted-precheck-6, prior verdict, validation log, mutants and handoff-note-6 | 0 each | All eight evidence/context reads succeeded. |
++| `task-board q 'get(TASK-260929-3ld28o) { description scope ac notes }'` and `get(...){ preconditionResources outcomeResources }` | 0 each | AC and evidence inventory read. |
++| `task-board spawn directives "$TASK_BOARD_RUN_ID"` | 0 | No directives pending. |
++| Python JSON/shape audit of this outcome against the source `surface-table` JSON | 0 | Exactly one valid findings block, one-word verdict, 7/7 unique rows, required fields present. |
++| Python source-derived classifier/test-family inventory | 0 | 19 classifier variant families; 5 directly constructed in observation tests; 23 unit tests. |
++
++Read/discovery errors are not validation passes: the initial query using the unsupported `resources` field exited 1; corrected projections exited 0. The skill's linked `.roles/reviewer/role.md` is absent beside the supplied skill (cat exited 1); a discovered infra copy was read successfully (exit 0), and the supplied panel brief governs this non-recording review. Several file-discovery searches returned 1 for no matches/missing paths. An initial candidate materialization script exited 1 when it requested nonexistent `ext/goal/src/service.rs` (`git show` exited 128); `git ls-tree` located the service in `api.rs`, which was subsequently read successfully. No absence or successful gate was inferred from these failures.
++
++## Execution evidence inspected
++
++The CR validation resource `TASK-260929-3ld28o_change-request_rev2-validation.log` records `mini-hosted-gate.sh` exit **0**, `exact_command_shard` coverage **1/1**, with `test_case_coverage=unknown`. This panel did not rerun that gate.
++
++[Hosted run 38047301443](https://github.com/ivanopcode/codex/actions/runs/38047301443) has green lint and snapshot app-server/core/small jobs, but an overall **failure** conclusion because mutation attacks deliberately fail. Plan and checkout logs identify snapshot commit `228b827004027801dba38bfe3687ace4f57a5fe8`; GitHub's Git commit API independently identifies its tree as the exact replayed candidate. The workflow's `headSha` is its workflow driver, not the snapshot SHA; it was not used as candidate identity.
++
++Snapshot core log: **5079/5079 executed tests passed, 11 skipped**, including the real-handler refusal/acceptance tests, both public code-mode tests and the plan hook test. Snapshot small log: **948/948 executed tests passed, 1 skipped**, including 23 observation unit tests and 7 backend tests. These are executed-test ratios, not claims of exhaustive semantic coverage. Green job conclusions are observed; individual numeric success-process exits are not printed in these logs and are not invented here.
++
++Hosted precheck 6 reports **15/15 mutants killed, 0 survivors** and lists each named killer. The workflow metadata independently has a failing job for each mutant index 1..15. Three killer logs were independently inspected:
++
++| Hosted failing attack | Actual gate exit | Observed killing test | Expected-failure rationale |
++| --- | --- | --- | --- |
++| [mutant-3 core](https://github.com/ivanopcode/codex/actions/runs/38047301443/job/114201099619) | 100 | `code_mode_leaf_applied_patch_delivered_exactly_once` | Duplicate real FileChange completion violates exactly-once delivery. 550/551 pass, 1 fails; failure persists through all three attempts. |
++| [mutant-12 core](https://github.com/ivanopcode/codex/actions/runs/38047301443/job/114201101132) | 100 | `send_input_rejected_compaction_emits_failed_item` | Restoring child-liveness status counts a refused send as Completed. 550/551 pass, 1 fails; failure persists through all three attempts. |
++| [mutant-13 small](https://github.com/ivanopcode/codex/actions/runs/38047301443/job/114201101108) | 100 | `send_message_and_followup_task_completed_set_observation` | Dropping the two accepted message variants loses observations. 71/72 pass, 1 fails; failure persists through all three attempts. |
++
++The other 12 killers are accepted from the attached precheck's named-test table and failing workflow jobs; their numeric process exit codes were not inspected and remain **unknown** here. None of these red gates is represented as passing. No hosted attack in the submitted 15-mutant corpus tests the accepted-but-already-Errored V1 spawn result described below.
++
++## Scope and limits
++
++All **7/7** surface-table rows receive exactly one result below: **6 held, 1 broken, 0 not-attacked**. AC7 is satisfied by the producer results' explicit bound: arbitrary shell side effects are **UNKNOWN**, pacing can stay conservative, and completion is never inferred from shell output or success.
++
++AC3 is supported by two separately executed links: real `functions.exec` → nested apply_patch delivers exactly one Completed FileChange and no wrapper item, then GoalExtension's item callback/classifier records one for that item. The wrapper-only control delivers one nested shell CommandExecution and no wrapper item; shell classification records zero. This is composition evidence, not a claim that the core test directly reads the goal extension's counter. Core must not depend on goal; the composition is reasonable for this leaf. The proposed V1 spawn regression likewise needs a production-emission test and a goal-classifier assertion.
++
++Prior rev1 A-F1's refused-send path, A-F2's code-mode public delivery gap, A-F3's complete-only update mutant, F1's external set/clear coverage and F2's message variants are addressed by the new sources/tests and precheck 6. The remaining spawn path is a new mechanism in the same acceptance-proxy class; the finding's `repeat-of` is `none` because rev1 A-F1 named V1 send_input, not V1 spawn. Prior note F4's incorrect killer attribution is corrected. Prior note F3's untested ignore variants remain a stated advisory bound: a source-derived inventory finds only five of the 19 classifier TurnItem variant families directly constructed by the observation tests, although the classifier match is exhaustive. No mutant survival is claimed measured for those other variants.
++
++Size is advisory: +1495/-6 exceeds the 800-line guidance, mostly through tests. The smallest independently reviewable stage remains the defaulted extension-api plan hook, thin core dispatch and plan-hook test; the observation consumer and its tests can follow. No new model-visible context, wire field, configuration field, dependency or persisted observation is introduced.
++
++## Logbook — 2026-10-10
++
++Recorded on this panel only: exact replay and exact hosted snapshot identity established; expected-red workflow conclusion preserved; earlier refused-send issue addressed; remaining V1 accepted-spawn/liveness mismatch found during bounded free hunt and swept back into the reset-source row. Recommended rework is to bind V1 spawn's completed-item status to the spawn result, retaining child status in `agents_states`, and add the named real-handler regression with failed-spawn and normal-success controls. No extra generalized research prerequisite or full-suite rerun is requested. Read-only source review and evidence are ready for the recording reviewer's merge.
++
++```verdict-findings
++{
++  "findings": [
++    {
++      "id": "A-F1",
++      "row": "reset sources at committing handlers",
++      "invariant": "AC1: an accepted spawn records an observation at its committing handler/event; subsequent child execution failure does not undo acceptance.",
++      "mechanism": "Static production counterexample on candidate 568588edd89a50d4f259f9e17eb902cd38ae9e8e: codex-rs/core/src/agent/control/spawn.rs:851 admits the initial input, :866 commits the reservation and :870 disarms cleanup, then :893 samples child liveness with get_status and :914 returns Ok((agent, config)). Child execution can fail after admission, so an accepted result may carry AgentStatus::Errored. codex-rs/core/src/tools/handlers/multi_agents/spawn.rs:150-152 copies that status from the successful result; :184 derives the completed item's status through collab_tool_call_status. codex-rs/core/src/tools/handlers/multi_agents.rs:90-93 maps Errored to Failed even with Some(receiver_thread_id). The handler still returns successful SpawnAgentResult at :195 onward. GoalExtension on_item_completed, extension.rs:342-344, then calls accounting.rs:297-306, which only counts Completed SpawnAgent items. Thus an accepted V1 spawn with an already-Errored child is missed (0 observations instead of 1). V2 spawn uses a receipt-success Started activity and has no such liveness condition. Bind the V1 completed-item status to result.is_ok(), as rev2 already does for send_input, while retaining child liveness for presentation. No executed race reproduction or incidence rate is claimed.",
++      "reproductions": [
++        {
++          "test_file": "codex-rs/core/src/tools/handlers/multi_agents_tests.rs (requested spawn_agent_accepted_with_errored_child_emits_completed_item)",
++          "command": "Requested hosted, NOT RUN: just test -p codex-core -E 'test(spawn_agent_accepted_with_errored_child_emits_completed_item)'",
++          "expected_failure": "Drive the real V1 SpawnAgentHandler with a committed accepted spawn whose child status is synchronized to Errored before the accepted LiveAgent snapshot is observed; assert successful tool output, Completed emitted item and Errored retained in agents_states. Current source emits Failed. Include rejected-spawn and normal accepted controls. A deterministic accepted-result fixture at the AgentControl boundary can pin the handler mapping, but a real-child integration case is needed to measure the race; do not call the fixture a runtime-race reproduction. Pair the emitted-item assertion with GoalExtension's executed Completed/Failed classifier cases to establish observation 1/0. No existing supplied mutant measures this accepted-spawn/error boundary."
++        }
++      ],
++      "severity": "robustness",
++      "repeat-of": "none"
++    }
++  ],
++  "notes": [
++    "Independent non-recording panel: only TASK-261010-1nhjne is mutated. Base/patch replay tree exactly equals expected candidate. No local cargo/just/build/test ran; production behavior findings are static unless explicitly attributed to hosted logs.",
++    "Hosted snapshot identity independently checked using checkout/plan logs and GitHub commit API: commit 228b827004027801dba38bfe3687ace4f57a5fe8 has tree 568588edd89a50d4f259f9e17eb902cd38ae9e8e. Run 38047301443 has four green snapshot/lint lanes and expected-red mutant jobs; its overall conclusion is failure.",
++    "CR validation records mini-hosted-gate.sh exit 0 and exact_command_shard 1/1; test_case_coverage unknown. Accepted hosted report: 15/15 mutants killed. Independently inspected mutant-3 core, mutant-12 core, mutant-13 small: each fails with exit 100 and the named killer; numeric exits of other mutant jobs are unknown here.",
++    "Previous blocking mechanisms are addressed: refused V1 send is delivery-bound; actual exec/nested patch delivery is covered and duplicate completion killed; paused/blocked goal updates kill complete-only narrowing; external set/clear production service calls and message variants have named kills. The remaining accepted V1 spawn path is distinct from prior A-F1's send_input path, hence repeat-of none, although the acceptance-proxy class recurs.",
++    "AC7 bound: arbitrary shell side effects UNKNOWN; successful shell commands do not record progress, pacing may stay conservative, completion is never inferred from shell success.",
++    "Advisory: source-derived inventory finds observation tests directly construct 5/19 classifier TurnItem variant families; other ignore variants are statically ignored by an exhaustive match. No unexecuted surviving-mutant claim is made. Prior F4 killer attribution is corrected in producer results.",
++    "Change size 16 paths +1495/-6 is above guidance; smallest independent first stage is the defaulted plan-commit extension hook, core fan-out/handler call and core plan-hook test. Production accounting fields remain private/transient; public runtime reads are justified for the next pacing leaf. No model-visible context or new wire schema is introduced."
++  ],
++  "surface_results": [
++    {
++      "row": "reset sources at committing handlers",
++      "result": "broken",
++      "reason": "A-F1: accepted V1 spawn can emit Failed from child liveness, causing a missed observation. Swept four source families and both collaboration generations. File Completed events and failed-patch exclusions are covered; plan handler publishes then fans out to the borrowed-plan hook; create/update record after DB success; external set/clear record after committed-state reconciliation. Precheck 6 kills file-auto-approval, plan-content, complete-only update, external-set/clear, message-dropping and send-delivery mutants. V2 Started/Interacted emissions follow successful control-plane receipts. These attacks do not cover the remaining accepted V1 spawn/error snapshot boundary."
++    },
++    {
++      "row": "non-resets",
++      "result": "held",
++      "reason": "5/5 named AC2 non-reset categories have tests. Static classifier ignores shell CommandExecution and agent text; ToolFinish writes only old activity state; identical plans compare steps/status and ignore explanation. Refused send now emits Failed from result, confirmed by real handler test and mutant-12 core exit 100. Hosted failed-patch, identical-plan, command, text and ToolFinish mutants are killed. Failed V1 spawn has no receiver and remains Failed; the new finding misses an accepted spawn rather than counting a failed request."
++    },
++    {
++      "row": "code-mode leaf accounting",
++      "result": "held",
++      "reason": "2/2 public scenarios now executed: functions.exec with nested apply_patch changes actual file contents and delivers exactly one Completed FileChange, zero shell items, no wrapper-call-id item; nested read-only exec delivers zero FileChange and one nested CommandExecution, no wrapper item. Snapshot core passes both. Mutant-3 core duplicate leaf emit fails exit 100 in the exactly-once test. Goal callback/classifier tests establish one observation per Completed leaf, no observation from command/ToolFinish. Wrapper emits no turn item, corroborated by execute_handler.rs; this is explicitly a two-link production-delivery/classifier proof."
++    },
++    {
++      "row": "no model-writable bypass",
++      "result": "held",
++      "reason": "Observation writers are host-completed item classification, post-store goal mutation calls and the plan-commit callback. Tool arguments and text carry no count/force-observation field. Plan comparator takes only PlanItemArg step/status; explanation cannot reach it. Model keyword messages and arbitrary successful tool names leave counts unchanged in hosted tests; keyword mutant is killed. Actual plan edits are legitimate transitions. The V1 spawn defect is a host false-negative acceptance proxy, not a model-writable observation setter."
++    },
++    {
++      "row": "existing activity and blocker untouched",
++      "result": "held",
++      "reason": "Direct equality check exits 0: record_tool_outcome, record_item, empty_response_goal and finish_turn are 4/4 byte-identical to base. The state-change count is separate and never read by the blocker. on_turn_stop ordering is unchanged. Both new empty-blocker tests pass in snapshot small, alongside existing suites: the third fully empty continuation triggers with and without a separately recorded observation."
++    },
++    {
++      "row": "transient state",
++      "result": "held",
++      "reason": "Count lives in private in-memory GoalTurnAccounting, initializes to zero and is removed by finish_turn; plan memory lives in GoalAccountingInner and is not serialized. Thread-start uses fresh per-thread ExtensionData/default accounting, and resume reconciles persisted goals without importing counts. Hosted observation_is_transient_per_turn, fresh_state_carries_no_observation_or_plan_memory and backend_fresh_runtime_carries_no_observation pass. The backend test checks a new runtime on the same DB rather than JSON-RPC resume; persistence/resume exclusion is additionally supported by source inspection. No rollout/history/protocol writes carry this field."
++    },
++    {
++      "row": "API surface and placement",
++      "result": "held",
++      "reason": "New defaulted ToolLifecycleContributor method preserves existing implementors; PlanCommitInput borrows stores/plan. Core adds a thin handler call and contributor fan-out, and the delivery-status fix; accounting/classification stays in the goal extension. The real plan-hook integration test passes; lint and extension-api suites are green. No core-to-goal dependency, new context injection, schema/config/dependency change or persisted observation. Diff-size staging advice is recorded separately."
++    }
++  ],
++  "free_hunt": [
++    {
++      "attack": "Residual child-liveness acceptance proxies outside the repaired send_input handler",
++      "result": "broken",
++      "evidence": "V1 spawn accepted-result path still consults LiveAgent.status; complete static trace recorded as A-F1. V2 spawn/message paths use successful admission before Started/Interacted. Runtime race frequency unknown; requested hosted regression named."
++    },
++    {
++      "attack": "Stale or self-minted external goal effects; read failure substituted for absence",
++      "result": "held",
++      "evidence": "runtime.rs external set returns on failed reconciliation via ?, absent committed goal or goal mismatch; clear checks committed absence after a successful read. GoalSetOutcome's committed fields are private and production service writes precede runtime effects. Goal tool DB errors return before recording. External service test executes set and clear; no failed read is asserted to be absence."
++    },
++    {
++      "attack": "Code-mode wrappers or duplicate event surfaces manufacture extra observations",
++      "result": "held",
++      "evidence": "Real public code-mode tests and duplicate-leaf kill inspected. V2 completed SubAgentActivity is the counted public event; analytics do not generate a second CollabAgentToolCall observation. Repeated identical plans are ignored even across the thread's plan memory. No extra wrapper emission found."
++    },
++    {
++      "attack": "Evidence snapshot mismatch or expected-red runs silently described as green",
++      "result": "held",
++      "evidence": "Temporary-index replay equals expected candidate; GitHub snapshot commit tree independently equals it. Four candidate lanes are green while workflow conclusion failure is preserved. Three mutant logs explicitly exit 100; remaining twelve kills are attributed to precheck evidence with numeric exit codes unknown. No local runtime execution claimed."
++    }
++  ]
++}
++```
