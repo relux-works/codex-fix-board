@@ -1,0 +1,50 @@
+[
+  {
+    "path": "codex-rs/core/src/agent/control.rs",
+    "sha256": "2423c25fc9212140ee71ca1a920405818b7d3b0c6b710ec2b20d686c9fcb92a1"
+  },
+  {
+    "path": "codex-rs/core/src/agent/control/completion.rs",
+    "sha256": "5e867bce43c7b68497ab217f4039202e303c1b50c71a5b0448f0dd0293bf9fef"
+  },
+  {
+    "path": "codex-rs/core/src/agent/control_bridge_tests.rs",
+    "sha256": "76d734e3b8688076f5eebd9491913b24c8072710a2d0898259cfeec9b4be1b8a"
+  },
+  {
+    "path": "codex-rs/core/src/agent/control_tests.rs",
+    "sha256": "d6688de211472c94f822e314a384ef0682dce4b8f3d31de11b9b7eaf43ff58b7"
+  },
+  {
+    "path": "codex-rs/core/src/codex_thread.rs",
+    "sha256": "0830dd9db84792e63ab11982e42b26d99e23829ccbd3fb609396d5f0d4418b7c"
+  },
+  {
+    "path": "codex-rs/core/src/context/subagent_notification.rs",
+    "sha256": "d724fc682ae6cdfb30eaac00b9faaed4e37d56a25b303b972831815a7672d4d3"
+  },
+  {
+    "path": "codex-rs/core/src/session/input_queue.rs",
+    "sha256": "75781cbac03b4d45139ea507befbf8d8d180d035615b43b3bbd894097975e8ea"
+  },
+  {
+    "path": "codex-rs/core/src/tasks/mailbox.rs",
+    "sha256": "cd3e8cd072c3f45c1c72af11ef8aaa0e53f8c713324c90346b533b168a0b94df"
+  },
+  {
+    "path": "codex-rs/core/src/tasks/mod.rs",
+    "sha256": "6c5fa875a8a527db3c705b94fd90255cad8dbc6b39452584ad243dde3e7bae2a"
+  },
+  {
+    "path": "codex-rs/core/tests/suite/goal_background_wait.rs",
+    "sha256": "f4bb03ffaf181e68e9ec3ef55037d97e164d1c843941c92f5940c2bd97b84953"
+  },
+  {
+    "path": "codex-rs/core/tests/suite/pending_input.rs",
+    "sha256": "0b45c4467a3a396ec8fa897132a1084e8a1e6f31ad4648aaf5b2c5c2c314affd"
+  },
+  {
+    "path": "codex-rs/core/tests/suite/pending_input_subagent_bridge.rs",
+    "sha256": "96e56f4d7d0945248d90fea9a946e0876afa105c26829d954ef2894908998aed"
+  }
+]

@@ -1,44 +1,33 @@
-# TASK-260929-csyzcj — goal-owned-durable-sleep-lease: precheck 18 request
+# TASK-260929-csyzcj \u2014 goal-owned-durable-sleep-lease: CR revision 6 review handoff
 
-Current authoritative outcome. Candidate UNCOMMITTED; no handoff. Hosted CI must validate the changed tree before checklist acceptance. No local Rust build, clippy, test binary, or mutant ran (R194/R223).
 
-Candidate tree: `a318e16991df9427aa922e9de2cbd8f898dba713`. Checkpoint: `99533cf034007f30e2c49916bcba411d7ffa282d`.
-This pass changes only `codex-rs/core/tests/suite/goal_native_wait.rs` relative to precheck 17 snapshot `5adf190a`. All production code, including the whole-item cap, routing/legacy resume fixes, pacing integration and the orchestrator's `config: &*parent.config().await` correction, is unchanged.
+## Current handoff verification \u2014 2026-10-14
 
-## Precheck 17 findings and root causes
+Candidate remains UNCOMMITTED and byte-identical to hosted precheck 19 tree `0b9a8f04e991fd685a0d43a0b3f8a4cc11ddf148`, snapshot `b6f695ece58c262bb6030ad8e7f98d0dc`. Temporary-index `git read-tree HEAD`, `git add -A`, and `git write-tree` each exited 0. The real index was not changed. No source/test/configuration file was changed during this handoff pass; no local build, formatter, test or mutant execution was rerun.
 
-Hosted run 38328884035: lint, small and app-server passed; core failed the dense-path test on all three attempts and the latch passed only on its second attempt. All 15 mutants were reported killed, but the candidate was red, so those kills are not accepted evidence for this tree. The two unrelated flaky suites named in the brief are outside this rework.
+Authoritative reused evidence: `TASK-260929-csyzcj_hosted-precheck-19.md`, [relux-ci run 38476605332](https://github.com/ivanopcode/codex/actions/runs/38476605332), dispatched from relux/ci-next. Live read confirms lint, snapshot small, snapshot core and snapshot app-server all succeeded. The small lane includes protocol/rollout: their named failing mutant tests are present in the retrieved logs. All 15 mutants have named failures on this green candidate; 0 survivors. The mutant lanes intentionally exit 100 on test failure: these are expected-red checks, not passing tests. Full failed-test names, mutant commit identities and observed exit codes are attached in `TASK-260929-csyzcj_precheck19-mutant-evidence.json`.
 
-### Dense-path timeout: test requested nested spawning from a model without native V2 support
+This evidence closes rev5 `interrupted-item-token-threshold-unreviewed` with the 838-byte whole-item bound, while retaining prior typed-fragment, identity/legacy-resume, envelope and routing fixes. The orchestrator's `config: &*parent.config().await` compile fix and ThreadSpawn legacy-resume fixture fix remain. The V2 catalog fixture correction below is verified by the green hosted run; the short precheck summary's phrase \u201castra rework\u201d is a label, not the implementation: the candidate explicitly overrides gpt-5.5 metadata to V2.
 
-Code evidence:
+Commands rerun in this pass: tree commands above (0 each); board resource/query reads (0 after correcting an unsupported `resources` projection); `gh run view ... --json jobs` (0); `gh run view ... --log-failed` (0); local `git show -s --format=%s <mutant-sha>` (0 each). An initial scratch-directory existence assertion exited 1 before any tree check, then the temporary directory was created and the tree check succeeded. A direct `gh api .../logs` read exited 1 because terminal escapes require opt-in; the successful `gh run view --log-failed` read supplied the evidence instead. Missing optional skill directories gave rg exit 2; the project-management skill and existing .codex skill catalog were read successfully. None of these exploratory failures is presented as a green gate.
 
-- `core/tests/common/test_codex.rs:951` pins the generic fixture to gpt-5.5.
-- `models-manager/models.json:1172-1189` declares gpt-5.5 with `multi_agent_version: null`; gpt-6-sol at lines 178-195 declares `v2`.
-- `core/src/tools/spec_plan.rs:687-697`, `collab_tools_enabled`, permits V2 collaboration for a root without an AgentPath, but requires `model_info.multi_agent_version == Some(V2)` for a spawned child.
-- `core/src/tools/handlers/multi_agents_v2/spawn.rs:131-153` constructs each child's path from the parent's source; names are 128, 128 and 6 bytes and resulting paths are 134, 263 and 270 bytes, all within `join_new`'s 128/1024 creation caps. V2 routing has no depth-limit rejection at these depths.
+Tool readiness was checked with task-board help, git/rg/gh/Python version output. Scratch evidence was staged only under ignored `.temp/`, attached through board resource mutations, and the task-created scratch files/directories are removed before handoff. No control-root file was edited directly. The remainder records the implementation and previous-pass validation, followed by current hosted mutant results. Declared coverage limits are retained rather than upgraded by a green suite.
 
-Thus level zero can spawn, but when the interrupted depth-one child is reused as a parent, the scripted collaboration.spawn_agent call is unavailable. The old idle mock accepted any function-call output, including the tool error, then the helper waited for a child that did not exist. This is a fixture capability error, not a valid supported depth-three spawn being refused. The earlier failure log did not capture depth/status; the location of the failure follows from this code path, not an invented runtime trace.
+## Precheck 18 root cause and fixture correction
 
-Fix: parameterize the shared fixture's model and select the actual bundled gpt-6-sol only for the dense-path test. All other tests explicitly keep their previous gpt-5.5 model. No production router rule or model metadata is changed. At every depth, the test now asserts spawn_agent is in the actual submitted request tools, parses the real spawn output, and compares its canonical task_name to the expected child identity before waiting for Running. A status timeout now prints the depth and last directly-owned child inspections. The 10-second timeout is unchanged; no retries or sleeps were added.
+Hosted run 38365654460 passed lint, small and app-server; core was 5159/5160 with the dense fixture failing its depth-zero spawn-tool assertion three times. This red baseline does not certify a green candidate or behavioral mutant kills.
 
-### Latch flake: TurnComplete is earlier than teardown, so two idle passes competed for one release
+The earlier claim that choosing the bundled gpt-6-sol was sufficient was incorrect. Its metadata supplies both `multi_agent_version: v2` AND `tool_mode: code_mode_only` (`models-manager/models.json`). `requested_tool_mode` in `core/src/tools/mod.rs` gives model metadata precedence over feature defaults. `build_model_visible_specs` calls `is_hidden_by_code_mode_only` in `core/src/tools/spec_plan.rs`, hiding collaboration.spawn_agent from direct request tools. This scripted conversation uses direct namespaced calls, not code-mode execution. The depth-zero assertion correctly rejects that fixture. Separately, `collab_tools_enabled` requires explicit V2 metadata for descendants, so returning to unmodified gpt-5.5 would restore the depth-one failure.
 
-Code evidence:
+Use the existing passing `core/tests/suite/multi_agent_tool_descriptions.rs` pattern: `with_model_info_override("gpt-5.5", |model| model.multi_agent_version = Some(MultiAgentVersion::V2))`. The helper pins the bundled model in config.model_catalog (`core/tests/common/test_codex.rs`), retaining the ordinary direct-tool mode and standard SSE transport. The shared fixture now takes TestCodexBuilder instead of a model string, allowing this one test to specify its capabilities explicitly. Every other fixture call retains `.with_model("gpt-5.5")`. `build_agent_shared_config` clones the config including model_catalog; role configuration likewise clones the config, so descendants inherit this supported fixture capability.
 
-- `core/src/tasks/mod.rs:1035-1065` sends TurnComplete, then clears the active turn, runs idle contributors, flushes, and finally checks pending mail. Receiving TurnComplete is not a teardown barrier.
-- `ext/goal/src/api.rs`, `GoalService::set_thread_goal`, commits the goal before `GoalSetOutcome::apply_runtime_effects`; `runtime.rs:438-440` later calls continue_if_idle from those effects.
-- `ext/goal/src/runtime.rs:689-753` acquires the goal permit, reads committed state and reaches the test registration gate. `native_wait.rs` uses Notify::notify_one for a single release.
+No router/model production defaults or product semantics changed. No assertion weakened, timeout increased, retry added, or matcher changed. All three levels still assert actual submitted spawn exposure, successful production spawn output and canonical path identity before waiting for Running. The Interrupted item assertions still require exactly one notice and exactly 838 bytes (<=1000), with both display envelopes checked. This is a test configuration correction, not a depth/path product workaround.
 
-A permitted interleaving: the initial turn's still-running idle callback observes the newly committed goal and reaches the gate first; the explicit set's continuation is waiting for its permit. The test releases the first callback, then the set reaches the retained gate a second time. The test awaits the set before sending its second release, causing exactly the reported 'goal set hung after ... released' failure. This pre-existing harness race is independent of the pacing match arms; pacing is evaluated only after the gate. Enabling pacing changes timing but does not create this gate ownership rule.
+## Trunk integration and scheduler observation
 
-Fix: use the existing `TestWakeLeaseGate` teardown signal (already used by exec_completion tests), armed before the initial parent turn. This scenario has no exec runtime leases, so it observes teardown without pausing any wake. Await `wait_scheduler_done` with a bounded 10-second timeout before setting the goal, then disarm. This proves the original idle callback AND its subsequent pending-mail scheduler pass returned before registration testing starts. The latter also prevents an old scheduler pass from masking the wrong-order mutant. No new production test hook, timer or scheduling rule is added.
+The previous pacing/World State integration and precheck-18 latch teardown fix remain byte-identical. This pass re-read the tool-mode selection, spec exposure, catalog override and child config inheritance call sites to ensure the fixture drives the merged production routing rules. The detailed retained integration and AC maps below remain applicable.
 
-The original registration latch still pauses after inspection and releases only after completion mail is enqueued. The retained gate still prevents post-wake idle reinsertion from racing the removal assertion. A new immediate mailbox-empty assertion after the set returns makes `insert_after_mail_check` fail directly: the mutant leaves the fast child's completion queued. Real wake/model-request and marker-removal assertions remain. No timeout was raised and no retry was added.
-
-## Trunk integration recheck for precheck 18
-
-Read current `collab_tools_enabled`, model catalog, native spawn/path creation, ThreadManager direct-child edges, task teardown and mailbox scheduler, goal external-set / idle / permit-sharing flow, and the prior trunk integration table below. The current failures are test configuration/synchronization errors. No product change to the merged native-pending/pacing behavior is justified. Native pending with empty exec work still uses check-ins; disabled background gate with pacing still does not register a native marker. Waiting-guidance and world-state code is untouched.
+The unrelated `scheduled_checkins_fire_through_production_runtime_under_paused_time` flake has no assertion/trace in the supplied brief, so its precise cause is UNKNOWN. Source inspection found a potential harness timing weakness: after TurnComplete it waits at most 1000 `yield_now` iterations for the warning rather than awaiting an acknowledged lifecycle/warning signal. TurnComplete precedes the idle callback in tasks/mod.rs. This is an observation, not proof that this was the reported failure. No scheduler test or production code changed outside this leaf.
 
 ## Retained rev6 implementation and coverage
 
@@ -90,7 +79,7 @@ World State review: core/tools/waiting_capabilities.rs captures actual router to
 
 ## Coverage map and bounds
 
-**9 of 9 AC rows have named tests driving production entry points; 7 of 7 surface rows have tests and a proposed narrowing-mutant witness. Current-tree Rust execution: 0 of 9 AC rows, 0 of 15 mutants executed locally.** Precheck 15 ran the previous tree (12/12 mutants killed), and is historical evidence only. New-tree green coverage and kills are unknown until precheck 18. A row being mapped does not imply all its subcases have independent integration coverage.
+**9 of 9 AC rows mapped to named tests driving production entry points; 7 of 7 surface rows mapped to tests and killed narrowing mutants.** Hosted precheck 19 passed all four candidate lanes and killed 15 of 15 mutants on the exact current tree. Prior local evidence ran 8 of 8 goal_native_wait tests. This does not claim a dedicated integration test for every AC subcase; the verification bounds below remain explicit.
 
 | AC | Driving tests / production call site | Negative evidence or remaining bound |
 |---|---|---|
@@ -106,49 +95,80 @@ World State review: core/tools/waiting_capabilities.rs captures actual router to
 
 Source-bound/resume regression coverage retained: spawn_agent_v2_rejects_overlong_task_name / spawn_agent_v2_accepts_task_name_at_cap -> SpawnAgentHandlerV2 -> thread_spawn_source -> AgentPath::join_new; legacy AgentPath try_from/serde tests; resume_agent_preserves_legacy_overlong_path -> resume_agent_from_rollout with ThreadSpawn source (orchestrator test fix retained); get_rollout_history_preserves_legacy_agent_path -> rollout parsing/history; agent_message_envelope_truncates_legacy_paths_for_display -> to_model_input_item. No production source-text inspection gate was added. V1 notification bridge stays outside G1.
 
-## Mutants submitted for precheck 18
+## Hosted precheck 19 mutant evidence
 
-All patches are rebased onto the current tree, and individually `git apply --check` clean. The prior rev6 native-pending patch already includes context for the new pacing branch; no patch changes were needed this pass. All 12 earlier mutations remain, plus the requested bound regression and two witnesses for the review table's lifecycle/silence rows. None is claimed killed on this tree.
+All 15 previously apply-clean patches were executed by hosted CI against the unchanged candidate. The table uses actual TRY 3 FAIL records from run 38476605332, mapped to mutant names using each recorded RUN_SHA and its local commit subject. No mutant is inferred killed from lane status alone. The bound mutants have direct unit assertion failures even where their downstream integration also times out after the formatter assertion.
 
-| Mutant | Intended assertion killer / surface |
-|---|---|
-| skip_failed_lookups | owned_children_inspection_propagates_failed_lookups; eligibility/errors |
-| insert_after_mail_check | goal_wait_latch_closes_completion_before_registration; registration race |
-| unconditional_remove | conditional_remove_only_removes_owned_id + goal_wait_preserves_foreign_sleep_across_register_and_turn_start; foreign ownership |
-| insert_clobbers_one_foreign | register_never_clobbers_foreign_sleep + foreign-sleep integration; foreign ownership |
-| interrupted_claims_success | goal_wait_registered_parent_gets_single_interrupted_notice / interrupted_fragment_renders_exact_notice_body; transitions |
-| ignore_native_pending | native_pending_supersedes_pacing_with_checkins / empty_exec_with_native_pending_waits_and_uses_checkins / goal_wait_registers_marker_and_wakes_on_child_completion; registration/wake |
-| interrupted_notice_delivered_twice | goal_wait_registered_parent_gets_single_interrupted_notice; transitions |
-| interrupted_sender_path_uncapped | interrupted_fragment_truncates_overlong_paths_to_hard_cap; transitions/bounds |
-| spawn_task_name_length_unchecked | spawn_agent_v2_rejects_overlong_task_name / agent_path_join_new_rejects_overlong_segment; new identity refusal |
-| legacy_paths_rejected_by_shared_parser | agent_path_accepts_legacy_overlong_segment / resume_agent_preserves_legacy_overlong_path / get_rollout_history_preserves_legacy_agent_path; legacy compatibility |
-| envelope_author_display_uncapped | agent_message_envelope_truncates_legacy_paths_for_display; envelope bound |
-| legacy_long_path_rejected_by_shared_parser | agent_path_accepts_legacy_path_over_total_cap; legacy compatibility |
-| interrupted_body_path_cap_256 | inter_agent_interrupted_dense_item_fits_byte_bound; new regression. Widens the actual truncator to 256 using a local constant, retaining the declared 64-byte bound and compile-time assertion. This deliberately tests implementation drift rather than relying on a compile failure; the body debug assertion / behavioral bound test must reject it. The dense integration exercises the same formatter. |
-| owned_generation_seven_not_removed | conditional_remove_only_removes_owned_id; lifecycle removal. Keeps removal for other owned generations and refusal of foreign markers, but wrongly retains generation 7. |
-| single_child_registration_records_history | goal_wait_registers_marker_and_wakes_on_child_completion; silence. Keeps ordinary registration, but injects an assistant history item only when exactly one child is owned; the request's no-goal-wait-text assertion must reject it. |
+| Mutant | Narrowed gate / admitted counterexample | Named failing tests (hosted) | Result / survivor bound |
+|---|---|---|---|
+| skip_failed_lookups | Treat failed/unknown lookups as absent while inspecting successful children | `agent::control::tests::owned_children_inspection_propagates_failed_lookups` | Killed; test command exit 100 (expected red); no survivor. |
+| insert_after_mail_check | Keep the marker but check pending mail only before insertion | `suite::goal_native_wait::goal_wait_latch_closes_completion_before_registration` | Killed; test command exit 100 (expected red); no survivor. |
+| unconditional_remove | Retain removal but admit foreign marker deletion | `conditional_remove_only_removes_owned_id`; `suite::goal_native_wait::goal_wait_preserves_foreign_sleep_across_register_and_turn_start` | Killed; test command exit 100 (expected red); no survivor. |
+| insert_clobbers_one_foreign | Allow replacement of the one foreign id clock-wait-1 | `register_never_clobbers_foreign_sleep`; `suite::goal_native_wait::goal_wait_preserves_foreign_sleep_across_register_and_turn_start` | Killed; test command exit 100 (expected red); no survivor. |
+| interrupted_claims_success | Keep the interruption notice but falsely label it successful completion | `context::inter_agent_interrupted_message::tests::inter_agent_interrupted_dense_item_fits_byte_bound`; `context::inter_agent_interrupted_message::tests::interrupted_fragment_renders_exact_notice_body`; `context::inter_agent_interrupted_message::tests::interrupted_fragment_truncates_overlong_paths_to_hard_cap`; `session_prefix::tests::interrupted_notice_is_queue_only_without_claiming_success`; `suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound`; `suite::goal_native_wait::goal_wait_registered_parent_gets_single_interrupted_notice` | Killed; test command exit 100 (expected red); no survivor. |
+| ignore_native_pending | Gate exec work while treating native-only work as empty | `empty_exec_with_native_pending_waits_and_uses_checkins`; `native_pending_exhausts_checkins_then_waits_without_deadline`; `native_pending_supersedes_pacing_with_checkins`; `suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound`; `suite::goal_native_wait::goal_wait_preserves_foreign_sleep_across_register_and_turn_start`; `suite::goal_native_wait::goal_wait_registered_parent_gets_single_interrupted_notice`; `suite::goal_native_wait::goal_wait_registers_marker_and_wakes_on_child_completion` | Killed; test command exit 100 (expected red); no survivor. |
+| interrupted_notice_delivered_twice | Keep goal-owned delivery but duplicate an Interrupted transition | `suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound`; `suite::goal_native_wait::goal_wait_registered_parent_gets_single_interrupted_notice` | Killed; test command exit 100 (expected red); no survivor. |
+| interrupted_sender_path_uncapped | Cap task-name text while letting sender text exceed the bound | `context::inter_agent_interrupted_message::tests::inter_agent_interrupted_dense_item_fits_byte_bound`; `context::inter_agent_interrupted_message::tests::interrupted_fragment_truncates_overlong_paths_to_hard_cap`; `suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound` | Killed; test command exit 100 (expected red); no survivor. |
+| spawn_task_name_length_unchecked | Keep syntax/total-path validation but accept an over-cap segment | `agent_path::tests::agent_path_join_new_rejects_overlong_segment`; `tools::handlers::multi_agents::tests::spawn_agent_v2_rejects_overlong_task_name` | Killed; test command exit 100 (expected red); no survivor. |
+| legacy_paths_rejected_by_shared_parser | Preserve new-identity limits but wrongly reject legacy overlong segments | `agent::control::tests::resume_agent_preserves_legacy_overlong_path`; `agent_path::tests::agent_path_accepts_legacy_overlong_segment`; `agent_path::tests::agent_path_display_truncates_overlong_path`; `context::inter_agent_interrupted_message::tests::inter_agent_interrupted_dense_item_fits_byte_bound`; `protocol::tests::agent_message_envelope_truncates_legacy_paths_for_display`; `recorder::tests::get_rollout_history_preserves_legacy_agent_path` | Killed; test command exit 100 (expected red); no survivor. |
+| envelope_author_display_uncapped | Keep recipient display cap but expose full author identity | `context::inter_agent_interrupted_message::tests::inter_agent_interrupted_dense_item_fits_byte_bound`; `protocol::tests::agent_message_envelope_truncates_legacy_paths_for_display`; `suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound` | Killed; test command exit 100 (expected red); no survivor. |
+| legacy_long_path_rejected_by_shared_parser | Keep valid short legacy identities but reject old total paths over 1024 bytes | `agent_path::tests::agent_path_accepts_legacy_path_over_total_cap` | Killed; test command exit 100 (expected red); no survivor. |
+| interrupted_body_path_cap_256 | Keep both truncators but increase body-path allowance to 256 bytes | `context::inter_agent_interrupted_message::tests::inter_agent_interrupted_dense_item_fits_byte_bound`; `context::inter_agent_interrupted_message::tests::interrupted_fragment_truncates_overlong_paths_to_hard_cap`; `suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound` | Killed; test command exit 100 (expected red); no survivor. |
+| owned_generation_seven_not_removed | Remove owned markers except generation 7 | `conditional_remove_only_removes_owned_id` | Killed; test command exit 100 (expected red); no survivor. |
+| single_child_registration_records_history | Remain silent except when exactly one owned child is registered | `suite::goal_native_wait::goal_wait_registers_marker_and_wakes_on_child_completion` | Killed; test command exit 100 (expected red); no survivor. |
 
-Suggested hosted filter (all intended killers are selected):
+Hosted filter (all intended killers are selected; CI also includes test(pacing)):
 `test(goal_native_wait) | test(native_wait) | test(owned_children) | test(interrupted) | test(native_pending) | test(foreign_sleep) | test(conditional_remove) | test(task_name) | test(agent_path) | test(spawn) | test(legacy) | test(rollout_history) | test(resume_agent)`.
 
-**Hosted lane requirement:** include codex-protocol and codex-rollout tests, as precheck 15's relux/ci-next workflow did. The checked-out trunk workflow's small command does not list them; dispatch the campaign workflow that includes them. Otherwise legacy/parser/envelope mutant results are unverified. No CI file was changed in this leaf.
+**Hosted lane identity:** precheck 19 ran from relux/ci-next, including codex-protocol and codex-rollout; their named mutant failures were verified. No CI file was changed in this leaf.
 
-## Commands and verification for this pass
 
-- Lifecycle start: `task-board m 'set_status(TASK-260929-csyzcj, status=development)'`: exit 0.
-- `/Users/administrator/.cargo/bin/cargo fmt -- --config imports_granularity=Item`: exit 0 (three passes while refining the test); stable-channel imports_granularity warnings are expected.
-- `/Users/administrator/.cargo/bin/cargo fmt -- --config imports_granularity=Item --check`: exit 0; log attached as TASK-260929-csyzcj_fmt-check-precheck18.log.
-- Each of the 15 existing JSON patches: standalone `git apply --check -`, exit 0. They modify production files unchanged by this pass, so the patches are unchanged. No mutant was executed locally; all named killers remain in the supplied hosted filter.
-- `git diff --check`: exit 0.
-- Temporary-index `git read-tree HEAD`, `git add -A`, `git write-tree`: exit 0 each. Real index untouched; temporary index removed in finally.
-- Comparison to precheck 17: `git diff --name-only 5adf190a a318e16991df9427aa922e9de2cbd8f898dba713` exit 0; only goal_native_wait.rs (74 insertions, 17 deletions).
+## Previous implementation-pass verification (ivmbp local allowance; retained evidence)
 
-No local Rust builds, checks, clippy, tests, nextest, helper builds or full suite. Hosted precheck 18 must run all lanes (including protocol/rollout) and all 15 mutants against this tree. Current-tree executed coverage is **0 of 9 AC rows; 0 of 15 mutants**. The map remains **9 of 9 AC rows mapped (AC5/8/9 have the stated integration bounds), 7 of 7 surface rows mapped to tests and narrowing mutants**. Mapped coverage is not passing evidence. Precheck 17's green lint/small/app-server lanes and earlier green prechecks are accepted only as historical evidence, not certification of this revision. No passing-test/build/mutant checklist item is newly checked.
+All eight goal_native_wait tests passed on the first attempt, including `goal_wait_dense_paths_interrupted_item_bound` (0.807s) and `goal_wait_latch_closes_completion_before_registration` (3.531s). The dense test actually verified direct V2 spawning at depths 0, 1 and 2, a registered parent with a Running child, interruption delivery in the outbound request, exactly one notice and exactly 838 model-visible bytes. This provides behavioral confirmation of the fixture correction above. This pass adds no production behavior or new test name: it repairs the already-required named regression test.
 
-Exploratory file searches of guessed paths returned 1/2 and were corrected; they were not validation gates. No temporary directory was created; transient format logs and the temporary Git index are removed after evidence attachment. No real CODEX_HOME was copied, no installed codex binary ran, and no background process is left at turn end. No commit, branch operation or handoff.
+| Command | Real exit | Evidence |
+|---|---:|---|
+| task-board m set_status(..., status=development) | 0 | Lifecycle began in development. |
+| python3 /Users/iv/Developer/IV/codex/.temp/goal-token-burn/impl/codex-fix-suite-busy.py --any | 0 | FREE before the first cargo command. |
+| bash /Users/iv/Developer/IV/codex/.temp/goal-token-burn/impl/codex-target-guard.sh | 0 | Same checkout, cache kept. |
+| cargo fmt -- --config imports_granularity=Item | 0 | Formatting after edits. |
+| cargo fmt -- --config imports_granularity=Item --check | 0 | Expected stable-channel imports_granularity warnings. |
+| RUST_MIN_STACK=33554432 cargo nextest run -p codex-core --test all -E 'test(goal_native_wait)' | 0 | 8 passed, 2285 skipped; build 4m06s, tests 3.544s. |
+| Each of 15 standalone git apply --check - calls | 0 each | Patches apply to the candidate; no local behavioral mutant execution. |
+| git diff --check | 0 | Whitespace check. |
+| Temporary-index git read-tree HEAD / git add -A / git write-tree | 0 each | Candidate tree above; real index unchanged. |
+| git diff --stat a318e16991df9427aa922e9de2cbd8f898dba713 <candidate> | 0 | One test file, 18 additions / 15 deletions. |
+| rm -r /Users/iv/Developer/IV/codex-target/debug | 0 | Allowance-required post-test trim. |
 
-## Logbook / routing
+The nextest command ran directly without tee/pipes. It inherited shared target/jobs/V8 config and exported only NEXTEST_TEST_THREADS=4, INSTA_UPDATE=no, INSTA_WORKSPACE_ROOT=$PWD (codex-rs), plus the brief's RUST_MIN_STACK. No build ran in parallel, no extra helper binary was explicitly built, no second test run, clippy or full suite ran. At that implementation pass hosted evidence was pending. This handoff now reuses precheck 19 Linux lint/small/core/app-server and mutant execution for the exact tree. Dedicated Windows/foreign-exec lanes remain unverified. Local compilation emitted existing unused-import warnings in tools/registry.rs, tests/suite/openai_file_mcp.rs and tests/suite/scenarios.rs; those files are unchanged.
 
-2026-10-13: root-only V2 feature exposure is insufficient for nested gpt-5.5 spawns; choose an actual V2-capable model and assert the submitted tools plus the real spawn result. TurnComplete precedes idle and teardown scheduling; synchronize the latch with the existing teardown scheduler signal to keep exactly one registration attempt under test. Both findings are recorded in this outcome and the task note. Previous bounds, source-identity/resume decisions, and the 838-byte whole-item proof remain unchanged.
+| Resource gate | Before test | During / after | Required |
+|---|---:|---:|---|
+| Disk available | 128 GiB | 124 GiB after test; 127 GiB after trim | >=50 GiB before |
+| CPU idle | 69.26% | Not a continuous gate | >=25% before |
+| Memory free | 91% | 91% at every sampled point through completion | >=30% |
 
-Next action: **HOSTED-PRECHECK-REQUESTED: precheck 18**. Do not hand off before hosted evidence.
+The first trim command using rm -rf was rejected before execution by command review (no shell exit code); the safer non-force rm -r command above succeeded. Exploratory missing-directory/glob reads were not validation gates. No real CODEX_HOME was copied or installed codex binary invoked. No checklist item for full tests/build/mutants was newly marked green.
+
+## Surface coverage map
+
+Each row retains a named negative/mutant witness killed in hosted precheck 19. No row is silently treated as fully proved by marker presence or prose; AC subcase bounds above still apply.
+
+| Surface row | Named driving / refusal test | Narrowing witness |
+|---|---|---|
+| registration and wake | goal_wait_registers_marker_and_wakes_on_child_completion | ignore_native_pending |
+| eligibility and inspection errors | owned_children_inspection_propagates_failed_lookups; goal_wait_ordinary_parent_stays_quiet_on_child_interrupt | skip_failed_lookups |
+| completion-before-registration race | goal_wait_latch_closes_completion_before_registration | insert_after_mail_check |
+| foreign sleep ownership | goal_wait_preserves_foreign_sleep_across_register_and_turn_start | insert_clobbers_one_foreign; unconditional_remove |
+| marker lifecycle | goal_wait_removed_on_clear_release_and_resume; conditional_remove_only_removes_owned_id | owned_generation_seven_not_removed |
+| side-effect silence | goal_wait_registers_marker_and_wakes_on_child_completion | single_child_registration_records_history |
+| child state transitions | goal_wait_registered_parent_gets_single_interrupted_notice; goal_wait_dense_paths_interrupted_item_bound | interrupted_notice_delivered_twice; interrupted_body_path_cap_256 |
+
+Coverage ratio: 9 of 9 AC rows mapped to named production-entry tests; 7 of 7 surface rows mapped. The previous local pass executed 8 of 8 native-wait integration tests; hosted precheck 19 subsequently passed the snapshot lanes including protocol/goal/rollout and killed all mutants. No tests were rerun in this handoff pass. The specific AC subcases without dedicated coverage remain declared in the retained map. Out of contract: the V1 notification bridge is explicitly excluded by the task description (sibling G2); pre-existing completion-message body bounds are excluded by review2's instruction not to change that type. Missing AC subcase coverage is a stated verification bound, not silently classified out of contract.
+
+## Outcome-scoped logbook and routing
+
+2026-10-13: replaced an insufficient bundled-model selection with the existing explicit V2 catalog fixture pattern. Both the original nested-capability constraint and the code-mode direct-tool constraint now hold in an actual passing depth-three integration. All prior production fixes and regression tests remain. The unexpected neighboring scheduler flake is not reproduced or claimed fixed. Notes and this outcome carry these findings; no control-root logbook file was edited.
+
+2026-10-14 handoff logbook: exact-tree comparison succeeded, all four snapshot lane statuses and 15 named mutant failures verified, and the results/outcome evidence refreshed. Reuse of precheck 19 is justified by exact source/test/configuration identity; no new platform claim or missing subcase coverage is inferred. No code change, local build or commit was made. Open test/mutant/lint/build checklist items are checked citing this hosted run. The developer now requests CR revision 6 handoff; reviewer acceptance remains separate.

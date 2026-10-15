@@ -1,5 +1,5 @@
 ## Status
-to-dev
+done
 
 ## Review
 required
@@ -19,20 +19,21 @@ estimated(fibonacci(13))
 ## Checklist
 - [x] AC table detailed before spawn
 - [x] Code written per task description and AC
-- [ ] Relevant tests written for new or changed behavior and passing
+- [x] Relevant tests written for new or changed behavior and passing
 - [x] In a managed Story worktree the candidate is left UNCOMMITTED in the worktree for the handoff to snapshot — never commit on the Story branch. A producer commit moves the branch tip off the recorded checkpoint and the handoff refuses with change_request_candidate_committed_past_checkpoint; repair with `git reset --soft <checkpoint_oid>` before completing again.
 - [x] Every command, message, state, or refusal named in the AC is driven through the production entry point by a named committed test, or is declared a stated bound. Report coverage as a ratio — `n of m AC rows driven` — and name the production call site for each. Prose in place of the ratio is not evidence.
 - [x] Gating, refusing, validating, authorizing, or attesting behavior covered by negative tests that fail when the gate admits what it must reject, with the production call site named
-- [ ] Every gate ships at least one NARROWING mutant — the gate stays present and is weakened to admit exactly one member of the class it must reject, and a named test must fail. A delete-only mutant proves only that the gate exists and is not accepted as evidence.
+- [x] Every gate ships at least one NARROWING mutant — the gate stays present and is weakened to admit exactly one member of the class it must reject, and a named test must fail. A delete-only mutant proves only that the gate exists and is not accepted as evidence.
 - [x] A gate that inspects source text is additionally attacked by a mutant that PRESERVES the searched-for token and changes behavior, and the mutant harness executes the behavioral suite, not only the static checker.
-- [ ] Lint clean
-- [ ] Relevant build/validation commands run after changes and build not broken
+- [x] Lint clean
+- [x] Relevant build/validation commands run after changes and build not broken
 - [x] New outcome artifact attached on the board with a task-scoped name when the work produces notes, logs, screenshots, or other deliverables
 - [x] Important findings, decisions, anomalies, or regressions recorded in logbook when relevant
 - [x] Implementation matches AC
 - [x] Solution fits project architecture
-- [ ] Tests green
+- [x] Tests green
 - [x] If review does not accept the work — verdict evidence added and status routed by the explicit verdict branches
+- [x] Gate, refusal, validation, authorization, and attestation behavior attacked, not read — positive-path-only evidence is not accepted
 
 ## Notes
 spawn agent resolution: Agent selection: muse via explicit_override
@@ -465,6 +466,68 @@ spawn run started: [implementer] developer (codex) (run=RUN-261013-032194)
 spawn run RUN-261013-032194 cancelled by operator; operator action required; reason: no operator reason supplied
 agent completed: [implementer] developer (codex) (exit=-1)
 spawn run RUN-261013-032194 failed without autonomous retry; operator action required; provider failure: provider_capability_unavailable: Codex app-server capability is unavailable; remediation: install or update Codex, then relaunch via `task-board codex` and retry
+spawn agent resolution: Agent selection: codex via explicit_override
+spawn queued: [implementer] developer (codex) (run=RUN-261013-227201, max_parallel=4)
+spawn run RUN-261013-227201 failed; operator action required; failure: queued spawn preparation failed: worktree_configured_trunk_not_protected_default: the configured integration base is not the independently resolved protected default (configured_branch=relux/main, configured_merge_ref=, configured_remote=, protected_branch=relux/main, protected_oid=99533cf034007f30e2c49916bcba411d7ffa282d, protected_ref=refs/heads/relux/main, protected_remote=origin, remedy=configure the independently protected branch and its authorized remote tracking pair, or remove the pin)
+spawn agent resolution: Agent selection: codex via explicit_override
+spawn queued: [implementer] developer (codex) (run=RUN-261013-82832b, max_parallel=4)
+spawn run RUN-261013-82832b failed; operator action required; failure: queued spawn preparation failed: worktree_base_fast_forward_blocked: the STORY-260929-wo5dnz branch 99533cf034007f30e2c49916bcba411d7ffa282d carries commits past its recorded checkpoint 39c264c34e61b5171ae13b0f756746c24ea5f51a while that checkpoint is already superseded by the selected authority 99533cf034007f30e2c49916bcba411d7ffa282d, so the workspace can neither be fast-forwarded nor published as it stands (branch_oid=99533cf034007f30e2c49916bcba411d7ffa282d, branch_ref=refs/heads/task-board/story/STORY-260929-wo5dnz, checkpoint_oid=39c264c34e61b5171ae13b0f756746c24ea5f51a, execution_root=/Users/iv/Developer/IV/codex/.temp/STORY-260929-wo5dnz/worktree, reason=uncheckpointed_commits_on_a_superseded_base, remediation=refresh, remediation_command=task-board worktree status STORY-260929-wo5dnz; the final-leaf base refresh replays committed work onto the moved trunk, or task-board worktree abort STORY-260929-wo5dnz, selected_oid=99533cf034007f30e2c49916bcba411d7ffa282d, story_id=STORY-260929-wo5dnz)
+spawn agent resolution: Agent selection: codex via explicit_override
+spawn queued: [implementer] developer (codex) (run=RUN-261013-eb8099, max_parallel=4)
+spawn run RUN-261013-eb8099 failed; operator action required; failure: queued spawn preparation failed: snapshotting outcome resources for TASK-260929-csyzcj: reading task-scoped outcome resource "TASK-260929-csyzcj_fmt-check-precheck16.log": reading resource "TASK-260929-csyzcj_fmt-check-precheck16.log" for TASK-260929-csyzcj: resource "TASK-260929-csyzcj_fmt-check-precheck16.log" for TASK-260929-csyzcj: resource not found
+spawn agent resolution: Agent selection: codex via explicit_override
+spawn queued: [implementer] developer (codex) (run=RUN-261013-54877f, max_parallel=4)
+spawn run started: [implementer] developer (codex) (run=RUN-261013-54877f)
+Precheck 19 rework: dense fixture failure is caused by gpt-6-sol tool_mode=code_mode_only hiding the direct collaboration.spawn_agent call. Applied the existing multi_agent_tool_descriptions suite pattern: with_model_info_override on gpt-5.5, multi_agent_version=V2, preserving direct tools and inherited model catalog. Kept all depth/spawn and 838-byte assertions. Only goal_native_wait.rs changes versus precheck 18. fmt/check and 15 patch-apply checks exit 0; one allowed local narrow nextest is running after FREE and resource gates (128 GiB, 69.26% CPU idle, 91% memory free). No acceptance claimed yet.
+HOSTED-PRECHECK-REQUESTED: precheck 19. Candidate tree 0b9a8f04e991fd685a0d43a0b3f8a4cc11ddf148 remains UNCOMMITTED. Dense-test fixture now uses with_model_info_override(gpt-5.5, V2): gpt-6-sol was code_mode_only, hiding direct spawn_agent. One allowed local nextest goal_native_wait run exited 0: 8/8 passed first attempt, including dense 838-byte item and latch. fmt/check exit 0; all 15 unchanged mutant patches apply. Resource gates passed (128 GiB, 69.26% idle, 91% memory); debug trimmed. Updated results/mutants and full local logs attached. Request all hosted candidate lanes plus all 15 mutants, including protocol/rollout tests; no handoff or full-checklist acceptance yet.
+agent completed: [implementer] developer (codex) (exit=0)
+spawn run completed: codex (run=RUN-261013-54877f, pid=23042, exit=0)
+No Change Request revision was published for TASK-260929-csyzcj (handoff_unsatisfied): the board is not at to-review
+spawn autonomous recovery: run RUN-261013-54877f queued successor RUN-261013-074580 (attempt 1/1, model=gpt-6-astra): producer run RUN-261013-54877f remains unsatisfied: producer run RUN-261013-54877f published no Change Request and reached no handoff branch while TASK-260929-csyzcj is development: the board is not at to-review
+spawn run started: [implementer] developer (codex) (run=RUN-261013-074580)
+spawn run RUN-261013-074580 cancelled by operator; operator action required; reason: no operator reason supplied
+spawn agent resolution: Agent selection: codex via explicit_override
+spawn queued: [implementer] developer (codex) (run=RUN-261014-23020b, max_parallel=4)
+spawn run started: [implementer] developer (codex) (run=RUN-261014-23020b)
+CR rev6 handoff verification: unchanged tree 0b9a8f04e991fd685a0d43a0b3f8a4cc11ddf148 exactly matches hosted precheck 19, run 38476605332 (relux/ci-next). Lint/small/core/app-server snapshot lanes green. All 15 mutants have named TRY 3 FAIL tests and expected-red exit 100, verified from hosted logs and recorded in the refreshed results plus precheck19-mutant-evidence.json. Check items 3, 7, 9, 10 and 15 against that evidence. Coverage: 9/9 AC rows mapped, 7/7 surface rows with killed witnesses; dedicated-subcase and platform bounds remain explicit in results. Rev5 interrupted-item-token-threshold-unreviewed addressed by <=838-byte item. No source changes, no local build/test, no commit; candidate remains uncommitted. Outcome-scoped logbook updated.
+agent completed: [implementer] developer (codex) (exit=0)
+spawn run completed: codex (run=RUN-261014-23020b, pid=55946, exit=0)
+spawn agent resolution: Agent selection: muse via explicit_override
+spawn queued: [reviewer] reviewer (muse) (run=RUN-261014-3ce407, max_parallel=4)
+spawn run started: [reviewer] reviewer (muse) (run=RUN-261014-3ce407)
+RECORDING REFUSAL rev1 (RUN-261014-3ce407): both panels accept (TASK-261014-1ew7jo, TASK-261014-uvs95n: findings [], 7/7 rows held, replay = 0b9a8f04), but the orchestrator merge is missing — TASK-260929-csyzcj_review-verdict-rev1.md still holds the prior round merge (TASK-261009 panels, changes_requested). No merge of the new panels exists anywhere on the board. No accept/reject recorded; element stays reviewing. See TASK-260929-csyzcj_recording-refusal-rev1.md. DO NOT respawn recording until the merge is attached.
+spawn run child final message (run=RUN-261014-3ce407, tools=26 patches=1 failed=0):
+Recording refused: both panels accept, but the required orchestrator merge is missing — the evidence file still holds the prior round's `changes_requested` merge.
+
+What I verified:
+- Panel A (`TASK-261014-1ew7jo`) and panel B (`TASK-261014-uvs95n`) both say **accept**, with empty findings, 7/7 surface rows held, and replays matching this CR's pin (base `99533cf03`, candidate `0b9a8f04`). Panel B explicitly closes the prior finding `interrupted-fragment-outside-context`.
+- The named evidence `TASK-260929-csyzcj_review-verdict-rev1.md` is the stale Oct-9 merge of the `TASK-261009` panels (`changes_requested`, one finding). Board-wide grep confirms no merge of the new panels exists anywhere.
+
+What I recorded (no accept, no reject, no code touched):
+- Outcome artifact `TASK-260929-csyzcj_recording-refusal-rev1.md` with the panel audit, merge audit, and the exact missing item.
+- Task note with the refusal and a do-not-respawn-until-the-merge-is-attached guard.
+- Element left in `reviewing`: `accept_cr` is forbidden on wrong evidence, rework routes would be false (zero findings), and `blocked` needs a human-only decision that doesn't exist here.
+
+Next step belongs to the orchestrator: merge the two `TASK-261014` panel verdicts per R132 under the evidence name, then respawn recording.
+agent completed: [reviewer] reviewer (muse) (exit=0)
+spawn run completed: muse (run=RUN-261014-3ce407, pid=11241, exit=0)
+spawn autonomous recovery: run RUN-261014-3ce407 queued successor RUN-261014-56986c (attempt 1/3, model=muse-spark-1.3-contributor): reviewer run RUN-261014-3ce407 remains unsatisfied: reviewer run has no verdict branch while TASK-260929-csyzcj is reviewing
+spawn run started: [reviewer] reviewer (muse) (run=RUN-261014-56986c)
+spawn run RUN-261014-56986c cancelled by operator; operator action required; reason: no operator reason supplied
+spawn agent resolution: Agent selection: muse via explicit_override
+spawn queued: [reviewer] reviewer (muse) (run=RUN-261014-859dcd, max_parallel=4)
+spawn run child final message (run=RUN-261014-56986c): unavailable (no_terminal_record)
+agent completed: [reviewer] reviewer (muse) (exit=143)
+spawn run completed: muse (run=RUN-261014-56986c, pid=58548, exit=143)
+spawn run started: [reviewer] reviewer (muse) (run=RUN-261014-859dcd)
+spawn run child final message (run=RUN-261014-859dcd, tools=46 patches=3 failed=1):
+Verdict recorded: **accepted**. `CR-TASK-260929-csyzcj-1` revision 1 is now `accepted` and `TASK-260929-csyzcj: goal-owned-durable-sleep-lease` routed to `integrating`, stamped with this run as reviewer and bound to producer `developer`/`implementer`. Write boundary clean.
+
+How it was decided (recording review, no re-review): both independent panels accept with zero findings — `TASK-261014-1ew7jo` (accept, 7/7 rows held, 12 notes) and `TASK-261014-uvs95n` (accept, 7/7 rows held, 10 notes + 9 non-blocking free-hunt probes). I verified the orchestrator merge keeps all of it: 0 findings, 7/7 surface rows held in table order, and all 31 notes/probes present by prefix match. Candidate identity confirmed by replaying base `99533cf0` + rev1 patch to exactly `0b9a8f04`. This also resolves the prior recording refusal, which correctly rejected a stale Oct-8/9 merge — the resource now holds the current TASK-261014 merge.
+
+Two gate resolutions on the way there: the checklist's last open item (gate behavior attacked, not read) is checked against the round's hosted production-entry attacks with 15/15 narrowing mutants killed on precheck 19 (run 38476605332); and since the pre-existing verdict file can't satisfy the fresh-evidence gate under a names-only manifest (two `change_request_evidence_missing` refusals, same as the rev5 recording precedent), the acceptance evidence is a new run-scoped copy, `TASK-260929-csyzcj_review-verdict-rev1-recording-RUN-261014-859dcd.md`, with a byte-identical verdict block plus the recording attestation. The worktree candidate was left untouched (34 uncommitted paths, as handed off).
+agent completed: [reviewer] reviewer (muse) (exit=0)
+spawn run completed: muse (run=RUN-261014-859dcd, pid=64856, exit=0)
 
 ## Precondition Resources
 - [final-plan.md](file://TASK-260929-csyzcj/final-plan.md) — codex-fix preconditions
@@ -502,17 +565,20 @@ spawn run RUN-261013-032194 failed without autonomous retry; operator action req
 - [TASK-260929-csyzcj_handoff-note-15.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_handoff-note-15.md)
 - [TASK-260929-csyzcj_recording-brief-rev5.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_recording-brief-rev5.md)
 - [g1-rework-brief-review5.md](file://TASK-260929-csyzcj/g1-rework-brief-review5.md)
-- [TASK-260929-csyzcj_loop-response.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_loop-response.md) — loop-detector response for rev5: bound (signal S4)
 - [g1-rework-brief-rev6.md](file://TASK-260929-csyzcj/g1-rework-brief-rev6.md)
 - [g1-orch-converge-16.md](file://TASK-260929-csyzcj/g1-orch-converge-16.md)
 - [g1-orch-test-fix-17.md](file://TASK-260929-csyzcj/g1-orch-test-fix-17.md)
 - [g1-rework-brief-precheck17.md](file://TASK-260929-csyzcj/g1-rework-brief-precheck17.md)
 - [g1-precheck-17-core-excerpt.txt](file://TASK-260929-csyzcj/g1-precheck-17-core-excerpt.txt)
+- [g1-rework-brief-precheck18.md](file://TASK-260929-csyzcj/g1-rework-brief-precheck18.md)
+- [TASK-260929-csyzcj_hosted-precheck-19.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_hosted-precheck-19.md)
+- [g1-handoff-note-19.md](file://TASK-260929-csyzcj/g1-handoff-note-19.md)
+- [recording-brief-rev1.md](file://TASK-260929-csyzcj/recording-brief-rev1.md)
 
 ## Outcome Resources
 - [TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261007-da6cd2.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261007-da6cd2.log) — System spawn log captured by task-board
-- [TASK-260929-csyzcj_results.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_results.md) — Precheck 18: test-only fixes, source-proven root causes, historical evidence separated from current validation
-- [TASK-260929-csyzcj_mutants.json](file://TASK-260929-csyzcj/TASK-260929-csyzcj_mutants.json) — 15 unchanged narrowing mutants apply to a318e169; hosted precheck 18 must rerun every killer
+- [TASK-260929-csyzcj_results.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_results.md) — CR rev6 handoff: exact precheck 19 tree, four green lanes, 15 named mutant kills, retained coverage bounds
+- [TASK-260929-csyzcj_mutants.json](file://TASK-260929-csyzcj/TASK-260929-csyzcj_mutants.json) — 15 unchanged mutants apply to tree 0b9a8f04; hosted execution pending
 - [TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261007-e1bbd0.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261007-e1bbd0.log) — System spawn log captured by task-board
 - [TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261007-5cb4d2.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261007-5cb4d2.log) — System spawn log captured by task-board
 - [TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261007-ffe38d.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261007-ffe38d.log) — System spawn log captured by task-board
@@ -522,10 +588,9 @@ spawn run RUN-261013-032194 failed without autonomous retry; operator action req
 - [TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261008-33b426.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261008-33b426.log) — System spawn log captured by task-board
 - [TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261008-48b3cb.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261008-48b3cb.log) — System spawn log captured by task-board
 - [TASK-260929-csyzcj_handoff.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_handoff.md) — Developer handoff summary on hosted precheck 5 (verify-only run, zero code changes)
-- [TASK-260929-csyzcj_change-request_rev1.patch](file://TASK-260929-csyzcj/TASK-260929-csyzcj_change-request_rev1.patch) — Change Request CR-TASK-260929-csyzcj-1 revision 1 candidate patch (repository_delta=present, 26 changed paths)
+- [TASK-260929-csyzcj_change-request_rev1.patch](file://TASK-260929-csyzcj/TASK-260929-csyzcj_change-request_rev1.patch) — Change Request CR-TASK-260929-csyzcj-1 revision 1 candidate patch (repository_delta=present, 34 changed paths)
 - [TASK-260929-csyzcj_change-request_rev1-validation.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_change-request_rev1-validation.log) — Change Request CR-TASK-260929-csyzcj-1 revision 1 bounded validation log
 - [TASK-260929-csyzcj_spawn-log_-reviewer--reviewer--codex-_RUN-261009-2fe57d.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-reviewer--reviewer--codex-_RUN-261009-2fe57d.log) — System spawn log captured by task-board
-- [TASK-260929-csyzcj_review-verdict-rev1.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_review-verdict-rev1.md) — Recording reviewer: both panel outcomes retained, 7/7 rows, changes_requested revision 1
 - [TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261009-8c6c02.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261009-8c6c02.log) — System spawn log captured by task-board
 - [TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261009-898169.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261009-898169.log) — System spawn log captured by task-board
 - [TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261009-65c5cf.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--muse-_RUN-261009-65c5cf.log) — System spawn log captured by task-board
@@ -572,12 +637,29 @@ spawn run RUN-261013-032194 failed without autonomous retry; operator action req
 - [TASK-260929-csyzcj_mutant-apply-precheck18.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_mutant-apply-precheck18.log) — All 15 standalone git apply --check commands exited 0 on a318e169; no behavioral mutant execution
 - [TASK-260929-csyzcj_tree-precheck18.txt](file://TASK-260929-csyzcj/TASK-260929-csyzcj_tree-precheck18.txt) — Candidate a318e169; only goal_native_wait.rs differs from precheck 17, 74 additions and 17 deletions
 - [TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-032194.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-032194.log) — System spawn log captured by task-board
+- [TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-227201.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-227201.log) — System spawn log captured by task-board
+- [TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-82832b.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-82832b.log) — System spawn log captured by task-board
+- [TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-eb8099.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-eb8099.log) — System spawn log captured by task-board
+- [TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-54877f.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-54877f.log) — System spawn log captured by task-board
+- [TASK-260929-csyzcj_nextest-precheck19.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_nextest-precheck19.log) — Standalone local narrow nextest exit 0: 8/8 native-wait tests, first attempt
+- [TASK-260929-csyzcj_fmt-check-precheck19.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_fmt-check-precheck19.log) — cargo fmt --check exit 0
+- [TASK-260929-csyzcj_validation-precheck19.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_validation-precheck19.log) — Readiness, resource gates, memory monitoring, trim, 15 apply checks and final tree
+- [TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-074580.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261013-074580.log) — System spawn log captured by task-board
+- [TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261014-23020b.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-implementer--developer--codex-_RUN-261014-23020b.log) — System spawn log captured by task-board
+- [TASK-260929-csyzcj_precheck19-mutant-evidence.json](file://TASK-260929-csyzcj/TASK-260929-csyzcj_precheck19-mutant-evidence.json) — Hosted run 38476605332: actual named TRY 3 FAIL tests, mutant commit subjects and exit 100; 15 of 15
+- [TASK-260929-csyzcj_spawn-log_-reviewer--reviewer--muse-_RUN-261014-3ce407.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-reviewer--reviewer--muse-_RUN-261014-3ce407.log) — System spawn log captured by task-board
+- [TASK-260929-csyzcj_recording-refusal-rev1.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_recording-refusal-rev1.md) — Recording reviewer refusal: both panels accept but the orchestrator merge is missing; attached verdict file is the stale prior-round merge
+- [TASK-260929-csyzcj_spawn-log_-reviewer--reviewer--muse-_RUN-261014-56986c.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-reviewer--reviewer--muse-_RUN-261014-56986c.log) — System spawn log captured by task-board
+- [TASK-260929-csyzcj_review-verdict-rev1.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_review-verdict-rev1.md) — Merged review verdict rev1 (2 panels accept, 0 findings, 7/7 held) with recording attestation
+- [TASK-260929-csyzcj_spawn-log_-reviewer--reviewer--muse-_RUN-261014-859dcd.log](file://TASK-260929-csyzcj/TASK-260929-csyzcj_spawn-log_-reviewer--reviewer--muse-_RUN-261014-859dcd.log) — System spawn log captured by task-board
+- [TASK-260929-csyzcj_recording-audit-rev1.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_recording-audit-rev1.md) — Recording reviewer audit: merge keeps 0 findings, 7/7 rows, 31 notes; replay exact; prior refusal resolved
+- [TASK-260929-csyzcj_review-verdict-rev1-recording-RUN-261014-859dcd.md](file://TASK-260929-csyzcj/TASK-260929-csyzcj_review-verdict-rev1-recording-RUN-261014-859dcd.md) — Recording-run verdict evidence: rev1 merge (2 panels accept, 0 findings, 7/7 held) with attestation
 
 ## Created
 2026-09-29T00:50:59Z
 
 ## Last Update
-2026-10-13T07:52:59Z
+2026-10-14T01:51:05Z
 
 ## Assigned To
-[implementer] developer (codex)
+[reviewer] reviewer (muse)

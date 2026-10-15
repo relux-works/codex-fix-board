@@ -174,10 +174,89 @@ index 2034d03fbd7ab1baf723a137f1bb9fe3148a90e5..d2cbdfa68b036a5efd0f84e6af3b5abf
 +    }
  }
 diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
-index dbd89a5ccfe2603d45d3698cafd47b32b2679153..8523ee2d84963e08302f2df40ee8508b67c399ac 100644
+index dbd89a5ccfe2603d45d3698cafd47b32b2679153..c4c57dcb8c21d0a5a1abe1a0ada2d99a136acec4 100644
 --- a/codex-rs/core/src/agent/control_tests.rs
 +++ b/codex-rs/core/src/agent/control_tests.rs
-@@ -5640,3 +5640,66 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails()
+@@ -4709,6 +4709,78 @@ async fn resume_agent_from_rollout_reads_archived_rollout_path() {
+         .expect("resumed child shutdown should succeed");
+ }
+ 
++#[tokio::test]
++async fn resume_agent_preserves_legacy_overlong_path() {
++    let harness = AgentControlHarness::new().await;
++    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
++    // Valid under the pre-cap grammar (129-byte segment), over the
++    // new-spawn cap: simulates an identity persisted before the cap.
++    let legacy_str = format!("/root/{}", "l".repeat(AgentPath::MAX_SEGMENT_BYTES + 1));
++    let legacy_path =
++        AgentPath::try_from(legacy_str.as_str()).expect("legacy overlong path should parse");
++    let child_thread_id = harness
++        .control
++        .spawn_agent(
++            harness.config.clone(),
++            text_input("hello legacy"),
++            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                parent_thread_id,
++                depth: 1,
++                agent_path: Some(legacy_path.clone()),
++                agent_nickname: None,
++                agent_role: Some("worker".to_string()),
++            })),
++        )
++        .await
++        .expect("spawn with legacy path should succeed");
++
++    let child_thread = harness
++        .manager
++        .get_thread(child_thread_id)
++        .await
++        .expect("child thread should exist");
++    persist_thread_for_tree_resume(&child_thread, "persist before resume").await;
++    let _ = harness
++        .control
++        .shutdown_live_agent(child_thread_id)
++        .await
++        .expect("child shutdown should succeed");
++
++    let resumed_thread_id = harness
++        .control
++        .resume_agent_from_rollout(
++            harness.config.clone(),
++            child_thread_id,
++            // As the tree resume does for children: no explicit path, so the
++            // stored legacy path is parsed and restored.
++            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                parent_thread_id,
++                depth: 1,
++                agent_path: None,
++                agent_nickname: None,
++                agent_role: None,
++            }),
++        )
++        .await
++        .expect("resume with legacy overlong path should succeed");
++    assert_eq!(resumed_thread_id, child_thread_id);
++    let resumed_thread = harness
++        .manager
++        .get_thread(resumed_thread_id)
++        .await
++        .expect("resumed child thread should exist");
++    assert_eq!(
++        resumed_thread.session_source.get_agent_path(),
++        Some(legacy_path)
++    );
++
++    let _ = harness
++        .control
++        .shutdown_live_agent(child_thread_id)
++        .await
++        .expect("resumed child shutdown should succeed");
++}
++
+ #[tokio::test]
+ async fn resume_agent_from_paginated_rollout_loads_model_context() {
+     let harness = AgentControlHarness::new().await;
+@@ -5640,3 +5712,66 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails()
          .await
          .expect("tree shutdown after partial subtree resume should succeed");
  }
@@ -510,6 +589,236 @@ index 8f63fbbd3ba1f730b54d309131705d4f16ac1227..494f4fc97dc610b4f8abf04123a595ef
      pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
          self.io.shutdown_and_wait().await
      }
+diff --git a/codex-rs/core/src/context/inter_agent_interrupted_message.rs b/codex-rs/core/src/context/inter_agent_interrupted_message.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..02fc936aa13101e6f8bf94c9cc86fd0d3b29ce34
+--- /dev/null
++++ b/codex-rs/core/src/context/inter_agent_interrupted_message.rs
+@@ -0,0 +1,98 @@
++use codex_protocol::AgentPath;
++use codex_utils_string::take_bytes_at_char_boundary;
++
++use super::ContextualUserFragment;
++use codex_protocol::models::ContentItemKind;
++
++/// Maximum rendered bytes kept from each agent path before truncation.
++///
++/// `AgentPath` bounds segment and total length where paths are created; this
++/// truncation stays as defense in depth, so the rendered notice keeps its
++/// fixed upper bound in [`INTERRUPTED_MESSAGE_MAX_BYTES`] however the input
++/// paths were produced.
++const INTERRUPTED_PATH_MAX_BYTES: usize = 64;
++
++/// Marker appended when a path exceeds [`INTERRUPTED_PATH_MAX_BYTES`].
++const TRUNCATED_PATH_MARKER: &str = "…[truncated]";
++
++/// Fixed notice prose around the two interpolated paths.
++const BODY_PREFIX: &str = "Message Type: INTERRUPTED\nTask name: ";
++const BODY_MIDDLE: &str = "\nSender: ";
++const BODY_SUFFIX: &str = "\nPayload:\nAgent interrupted. Its turn ended without a final answer; resend work if still needed.";
++
++/// Hard upper bound on the rendered notice body in bytes: fixed prose plus
++/// two truncated paths of at most [`INTERRUPTED_PATH_MAX_BYTES`] bytes each,
++/// with the truncation marker appended when truncated.
++const INTERRUPTED_MESSAGE_MAX_BYTES: usize = BODY_PREFIX.len()
++    + BODY_MIDDLE.len()
++    + BODY_SUFFIX.len()
++    + 2 * (INTERRUPTED_PATH_MAX_BYTES + TRUNCATED_PATH_MARKER.len());
++
++/// Hard cap for the whole plaintext interrupted item: author and recipient
++/// display strings plus all content text. For byte-level BPE tokenizers,
++/// tokens <= UTF-8 bytes, so this also bounds the item to at most 1000 tokens.
++/// Routing identities remain unchanged; only the body's display copies use
++/// the smaller path cap. The envelope uses `AgentPath`'s existing display cap
++/// and the same truncation marker.
++const INTERRUPTED_ITEM_MAX_BYTES: usize = 1000;
++const _: () = assert!(
++    INTERRUPTED_MESSAGE_MAX_BYTES
++        + 2 * (AgentPath::MODEL_DISPLAY_MAX_BYTES + TRUNCATED_PATH_MARKER.len())
++        <= INTERRUPTED_ITEM_MAX_BYTES
++);
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct InterAgentInterruptedMessage {
++    task_name: AgentPath,
++    sender: AgentPath,
++}
++
++impl InterAgentInterruptedMessage {
++    pub(crate) fn new(task_name: AgentPath, sender: AgentPath) -> Self {
++        Self { task_name, sender }
++    }
++}
++
++/// Renders an agent path for model-visible text, truncating it to
++/// [`INTERRUPTED_PATH_MAX_BYTES`] bytes with a marker when over the cap.
++/// Paths at or under the cap render byte-identical.
++fn truncate_path(path: &AgentPath) -> String {
++    let rendered = path.as_str();
++    if rendered.len() <= INTERRUPTED_PATH_MAX_BYTES {
++        return rendered.to_string();
++    }
++    format!(
++        "{}{TRUNCATED_PATH_MARKER}",
++        take_bytes_at_char_boundary(rendered, INTERRUPTED_PATH_MAX_BYTES)
++    )
++}
++
++impl ContextualUserFragment for InterAgentInterruptedMessage {
++    fn content_kind(&self) -> ContentItemKind {
++        ContentItemKind("multi_agent.inter_agent_interrupted_message".to_string())
++    }
++
++    fn role(&self) -> &'static str {
++        "assistant"
++    }
++
++    fn markers(&self) -> (&'static str, &'static str) {
++        Self::type_markers()
++    }
++
++    fn type_markers() -> (&'static str, &'static str) {
++        ("", "")
++    }
++
++    fn body(&self) -> String {
++        let task_name = truncate_path(&self.task_name);
++        let sender = truncate_path(&self.sender);
++        let body = format!("{BODY_PREFIX}{task_name}{BODY_MIDDLE}{sender}{BODY_SUFFIX}");
++        debug_assert!(body.len() <= INTERRUPTED_MESSAGE_MAX_BYTES);
++        body
++    }
++}
++
++#[cfg(test)]
++#[path = "inter_agent_interrupted_message_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/context/inter_agent_interrupted_message_tests.rs b/codex-rs/core/src/context/inter_agent_interrupted_message_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..29deff4a406800115afd6647ce8f9a60de679799
+--- /dev/null
++++ b/codex-rs/core/src/context/inter_agent_interrupted_message_tests.rs
+@@ -0,0 +1,100 @@
++use codex_protocol::AgentPath;
++use codex_protocol::models::AgentMessageInputContent;
++use codex_protocol::models::ResponseItem;
++use codex_protocol::protocol::InterAgentCommunication;
++use pretty_assertions::assert_eq;
++
++use super::INTERRUPTED_ITEM_MAX_BYTES;
++use super::INTERRUPTED_MESSAGE_MAX_BYTES;
++use super::INTERRUPTED_PATH_MAX_BYTES;
++use super::InterAgentInterruptedMessage;
++use crate::context::ContextualUserFragment;
++
++#[test]
++fn interrupted_fragment_renders_exact_notice_body() {
++    let fragment = InterAgentInterruptedMessage::new(
++        AgentPath::root(),
++        AgentPath::try_from("/root/worker").expect("valid agent path"),
++    );
++    assert_eq!(
++        fragment.render(),
++        "Message Type: INTERRUPTED\nTask name: /root\nSender: /root/worker\nPayload:\nAgent interrupted. Its turn ended without a final answer; resend work if still needed."
++    );
++}
++
++#[test]
++fn inter_agent_interrupted_dense_item_fits_byte_bound() {
++    let legacy_parent = AgentPath::try_from(format!("/root/{}", "a1".repeat(150)))
++        .expect("legacy identity remains valid");
++    let new_parent = AgentPath::root()
++        .join_new(&"a1".repeat(64))
++        .expect("first segment at cap")
++        .join_new(&"b2".repeat(64))
++        .expect("second segment at cap");
++    for parent in [legacy_parent, new_parent] {
++        let child = parent.join_new("worker").expect("worker identity");
++        // Same formatter and plaintext envelope as terminal-turn delivery.
++        let communication = InterAgentCommunication::new(
++            child.clone(),
++            parent.clone(),
++            Vec::new(),
++            crate::session_prefix::format_inter_agent_interrupted_message(&parent, &child),
++            /*trigger_turn*/ false,
++        );
++        let ResponseItem::AgentMessage {
++            author,
++            recipient,
++            content,
++            ..
++        } = communication.to_model_input_item()
++        else {
++            panic!("interrupted communication must render an agent message");
++        };
++        let text_bytes: usize = content
++            .iter()
++            .map(|part| match part {
++                AgentMessageInputContent::InputText { text } => text.len(),
++                AgentMessageInputContent::EncryptedContent { .. } => {
++                    panic!("interrupted delivery must be plaintext")
++                }
++            })
++            .sum();
++        let item_bytes = author.len() + recipient.len() + text_bytes;
++        assert!(
++            item_bytes <= INTERRUPTED_ITEM_MAX_BYTES,
++            "interrupted item exceeds byte/token bound: {item_bytes}"
++        );
++        assert_eq!(
++            item_bytes, 838,
++            "dense fixtures attain the worst-case bound"
++        );
++        assert_eq!(
++            (communication.author, communication.recipient),
++            (child, parent)
++        );
++    }
++}
++
++#[test]
++fn interrupted_fragment_truncates_overlong_paths_to_hard_cap() {
++    // Valid at the source (segments <= 128 bytes, path <= 1024 bytes),
++    // yet longer than the fragment's per-path cap.
++    let task_rendered = format!("/root/{}", vec!["t".repeat(100); 9].join("/"));
++    let sender_rendered = format!("/root/{}", vec!["s".repeat(100); 9].join("/"));
++    let fragment = InterAgentInterruptedMessage::new(
++        AgentPath::try_from(task_rendered.as_str()).expect("valid agent path"),
++        AgentPath::try_from(sender_rendered.as_str()).expect("valid agent path"),
++    );
++    let rendered = fragment.render();
++    let expected = format!(
++        "Message Type: INTERRUPTED\nTask name: {}…[truncated]\nSender: {}…[truncated]\nPayload:\nAgent interrupted. Its turn ended without a final answer; resend work if still needed.",
++        &task_rendered[..INTERRUPTED_PATH_MAX_BYTES],
++        &sender_rendered[..INTERRUPTED_PATH_MAX_BYTES],
++    );
++    assert_eq!(rendered, expected);
++    assert!(
++        rendered.len() <= INTERRUPTED_MESSAGE_MAX_BYTES,
++        "rendered notice exceeds hard cap: {} > {INTERRUPTED_MESSAGE_MAX_BYTES}",
++        rendered.len()
++    );
++}
+diff --git a/codex-rs/core/src/context/mod.rs b/codex-rs/core/src/context/mod.rs
+index 5ebef28491a81034859185f7c94f69b21521855e..a174de307fc1cf47e8333909ebab30e19a6940a0 100644
+--- a/codex-rs/core/src/context/mod.rs
++++ b/codex-rs/core/src/context/mod.rs
+@@ -30,6 +30,7 @@ mod guardian_tool_descriptions;
+ mod hook_additional_context;
+ mod image_resize_notice;
+ mod inter_agent_completion_message;
++mod inter_agent_interrupted_message;
+ mod inter_agent_message;
+ mod internal_model_context;
+ mod legacy_apply_patch_exec_command_warning;
+@@ -103,6 +104,7 @@ pub(crate) use image_resize_notice::ImageResizeNotice;
+ pub(crate) use image_resize_notice::ImageResizeNoticeSource;
+ pub(crate) use image_resize_notice::ResizedImage;
+ pub(crate) use inter_agent_completion_message::InterAgentCompletionMessage;
++pub(crate) use inter_agent_interrupted_message::InterAgentInterruptedMessage;
+ pub(crate) use inter_agent_message::InterAgentMessage;
+ pub(crate) use inter_agent_message::InterAgentMessageType;
+ pub use internal_model_context::InternalContextSource;
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
 index 757830de8c1b35c0bd6719c0d472eff1e902114a..b01b7660f5f9adac3d9121faf9754bcdc4866db1 100644
 --- a/codex-rs/core/src/lib.rs
@@ -524,7 +833,7 @@ index 757830de8c1b35c0bd6719c0d472eff1e902114a..b01b7660f5f9adac3d9121faf9754bcd
  pub use agent::types::AgentMessage;
  pub use agent::types::AgentMetadata;
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index d3fecd3ab4ac94f696408478d9951166f21c5465..0564666046501cec000ec71eb8a7c54570614b99 100644
+index d333fdc1a69e3c1b7d38e285205689008393caca..4d3e8cebf9424535c97d13de749ae4114ec5b7d4 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -2441,7 +2441,11 @@ impl Session {
@@ -541,10 +850,18 @@ index d3fecd3ab4ac94f696408478d9951166f21c5465..0564666046501cec000ec71eb8a7c545
          }
  
 diff --git a/codex-rs/core/src/session_prefix.rs b/codex-rs/core/src/session_prefix.rs
-index 315ef1cabfb12c76f6ed5ae14f7f250015befa91..88c939fb107fccc3b6e93eb36e0be1560b3a3f99 100644
+index 315ef1cabfb12c76f6ed5ae14f7f250015befa91..eab87364f0e90f82d5c6357ef69f07bcf9035d60 100644
 --- a/codex-rs/core/src/session_prefix.rs
 +++ b/codex-rs/core/src/session_prefix.rs
-@@ -35,6 +35,21 @@ pub(crate) fn format_inter_agent_completion_message(
+@@ -5,6 +5,7 @@ use codex_utils_output_truncation::truncate_text;
+ 
+ use crate::context::ContextualUserFragment;
+ use crate::context::InterAgentCompletionMessage;
++use crate::context::InterAgentInterruptedMessage;
+ 
+ const COMPLETION_MESSAGE_MAX_TOKENS: usize = 1_000;
+ const COMPLETION_MESSAGE_ENVELOPE_TOKEN_RESERVE: usize = 100;
+@@ -35,6 +36,19 @@ pub(crate) fn format_inter_agent_completion_message(
      Some(InterAgentCompletionMessage::new(task_name, sender, payload).render())
  }
  
@@ -558,9 +875,7 @@ index 315ef1cabfb12c76f6ed5ae14f7f250015befa91..88c939fb107fccc3b6e93eb36e0be156
 +    task_name: &AgentPath,
 +    sender: &AgentPath,
 +) -> String {
-+    format!(
-+        "Message Type: INTERRUPTED\nTask name: {task_name}\nSender: {sender}\nPayload:\nAgent interrupted. Its turn ended without a final answer; resend work if still needed."
-+    )
++    InterAgentInterruptedMessage::new(task_name.clone(), sender.clone()).render()
 +}
 +
  #[cfg(test)]
@@ -610,12 +925,124 @@ index 6a658ce8526c096aecac8fa1787d9a504b6f186f..ccb9ac2e6397cf6a4ae8d4032380cd46
 +    assert!(!message.to_lowercase().contains("success"));
 +    assert!(approx_token_count(&message) < COMPLETION_MESSAGE_MAX_TOKENS);
 +}
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_common.rs b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
+index be17be61b3ff46afc4053ffccd35a23f6905fe8a..110c8779a0e52f923eb2a36ff3ad9c47dbd4c2fc 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_common.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_common.rs
+@@ -143,7 +143,7 @@ pub(crate) fn thread_spawn_source(
+             parent_session_source
+                 .get_agent_path()
+                 .unwrap_or_else(AgentPath::root)
+-                .join(task_name)
++                .join_new(task_name)
+                 .map_err(FunctionCallError::RespondToModel)
+         })
+         .transpose()?;
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+index 63b307c25026dd1c8b7bcacede1a6f41c40da491..174db1a23250260acce313d7859883e56e54efb9 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+@@ -501,6 +501,94 @@ async fn multi_agent_v2_spawn_fork_turns_all_applies_agent_type_override() {
+         .expect("fork_turns=all should apply agent_type overrides");
+ }
+ 
++#[tokio::test]
++async fn spawn_agent_v2_rejects_overlong_task_name() {
++    let (mut session, turn) = make_session_and_context().await;
++    let manager = thread_manager();
++    let root = manager
++        .start_thread(StartThreadOptions::new((*turn.config).clone()))
++        .await
++        .expect("root thread should start");
++    set_agent_control(&mut session, manager.agent_control());
++    session.thread_id = root.thread_id;
++    let mut config = (*turn.config).clone();
++    config
++        .features
++        .enable(Feature::MultiAgentV2)
++        .expect("test config should allow feature update");
++    let mut turn = turn;
++    turn.config = Arc::new(config);
++    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
++
++    let overlong = "a".repeat(AgentPath::MAX_SEGMENT_BYTES + 1);
++    let overlong_len = overlong.len();
++    let threads_before = manager.list_thread_ids().await;
++    let err = SpawnAgentHandlerV2::default()
++        .handle(invocation(
++            Arc::new(session),
++            Arc::new(turn),
++            "spawn_agent",
++            function_payload(json!({
++                "message": "do slow work",
++                "task_name": overlong,
++                "fork_turns": "none"
++            })),
++        ))
++        .await
++        .err()
++        .expect("over-long task_name should be refused");
++
++    assert_eq!(
++        err,
++        FunctionCallError::RespondToModel(format!(
++            "agent_name must be at most {} bytes, got {overlong_len}",
++            AgentPath::MAX_SEGMENT_BYTES
++        ))
++    );
++    // Refusal happens before any spawn: no child thread exists.
++    assert_eq!(manager.list_thread_ids().await, threads_before);
++}
++
++#[tokio::test]
++async fn spawn_agent_v2_accepts_task_name_at_cap() {
++    let (mut session, turn) = make_session_and_context().await;
++    let manager = thread_manager();
++    let root = manager
++        .start_thread(StartThreadOptions::new((*turn.config).clone()))
++        .await
++        .expect("root thread should start");
++    set_agent_control(&mut session, manager.agent_control());
++    session.thread_id = root.thread_id;
++    let mut config = (*turn.config).clone();
++    config
++        .features
++        .enable(Feature::MultiAgentV2)
++        .expect("test config should allow feature update");
++    let mut turn = turn;
++    turn.config = Arc::new(config);
++    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
++
++    let at_cap = "a".repeat(AgentPath::MAX_SEGMENT_BYTES);
++    let threads_before = manager.list_thread_ids().await;
++    SpawnAgentHandlerV2::default()
++        .handle(invocation(
++            Arc::new(session),
++            Arc::new(turn),
++            "spawn_agent",
++            function_payload(json!({
++                "message": "do slow work",
++                "task_name": at_cap,
++                "fork_turns": "none"
++            })),
++        ))
++        .await
++        .expect("task_name at cap should spawn");
++    assert_eq!(
++        manager.list_thread_ids().await.len(),
++        threads_before.len() + 1
++    );
++}
++
+ fn service_tier_test_catalog() -> codex_protocol::openai_models::ModelsResponse {
+     let mut catalog = codex_models_manager::bundled_models_response().expect("bundled models");
+     let mut model = catalog
 diff --git a/codex-rs/core/tests/suite/goal_native_wait.rs b/codex-rs/core/tests/suite/goal_native_wait.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd1076ddaa882
+index 0000000000000000000000000000000000000000..192e2c7bc40e73f588f476dc7c58d64ac367b60c
 --- /dev/null
 +++ b/codex-rs/core/tests/suite/goal_native_wait.rs
-@@ -0,0 +1,728 @@
+@@ -0,0 +1,1468 @@
 +//! Goal-owned durable-sleep lease for native subagent waits.
 +//!
 +//! Production entry points: `GoalExtension::on_thread_idle` ->
@@ -626,7 +1053,9 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +//! completion mail wakes via the marker (`has_outstanding_durable_sleep`).
 +//! Removal is conditional (`remove_goal_wait_sleep`) on turn start, clear,
 +//! disable, stop, and release. `Interrupted` notices are queue-only, once per
-+//! transition, without redefining `is_final`.
++//! transition, without redefining `is_final`. Real interruption is driven via
++//! `Op::Interrupt` on the child thread (the app-server/TUI entry point),
++//! which emits `TurnAborted(Interrupted)` through `turn_finished`.
 +//!
 +//! The goal is set after the parent spawns its child (not before the user
 +//! turn): an external set on an idle thread without pending work would start
@@ -661,12 +1090,17 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +use codex_goal_extension::SystemCheckInClock;
 +use codex_goal_extension::has_goal_wait_sleep;
 +use codex_goal_extension::install_with_backend_and_clock;
++use codex_protocol::AgentPath;
 +use codex_protocol::ThreadId;
++use codex_protocol::protocol::AgentStatus;
 +use codex_protocol::protocol::EventMsg;
++use codex_protocol::protocol::MultiAgentVersion;
++use codex_protocol::protocol::Op;
 +use codex_protocol::protocol::SessionSource;
 +use codex_protocol::user_input::UserInput;
 +use core_test_support::responses;
 +use core_test_support::test_codex::TestCodex;
++use core_test_support::test_codex::TestCodexBuilder;
 +use core_test_support::test_codex::test_codex;
 +use core_test_support::wait_for_event;
 +use pretty_assertions::assert_eq;
@@ -709,6 +1143,7 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +        |c: &Config| codex_goal_extension::GoalExtensionConfig {
 +            enabled: c.features.enabled(Feature::Goals),
 +            max_goal_token_budget: c.max_goal_token_budget,
++            continuation_pacing: c.features.enabled(Feature::GoalContinuationPacing),
 +        },
 +        Arc::new(SystemCheckInClock),
 +    );
@@ -726,6 +1161,7 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +
 +async fn fixture(
 +    server: &wiremock::MockServer,
++    builder: TestCodexBuilder,
 +) -> Result<(TestCodex, Arc<codex_state::StateRuntime>, Arc<GoalService>)> {
 +    let home = Arc::new(TempDir::new()?);
 +    let mut config = core_test_support::load_default_config_for_test(&home).await;
@@ -736,7 +1172,7 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +    let service = Arc::new(GoalService::new());
 +    let mut registry = ExtensionRegistryBuilder::<Config>::new();
 +    install_goal(&mut registry, &db, &service, Weak::new());
-+    let test = test_codex()
++    let test = builder
 +        .with_home(home)
 +        .with_extensions(Arc::new(registry.build()))
 +        .with_config(|c| {
@@ -745,7 +1181,11 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +                .expect("feature");
 +            c.features.enable(Feature::Collab).expect("feature");
 +            c.features.enable(Feature::MultiAgentV2).expect("feature");
++            c.features
++                .enable(Feature::GoalContinuationPacing)
++                .expect("feature");
 +            c.sleep_tool_mode = SleepToolMode::AlwaysOn;
++            c.agent_max_depth = 3;
 +        })
 +        .build_with_auto_env(server)
 +        .await?;
@@ -827,6 +1267,34 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +    )
 +}
 +
++/// Returns the directly owned native child once it is observably `Running`.
++///
++/// Interrupting before the child's turn starts emits no `TurnAborted` and no
++/// notice, so both interruption tests synchronize on `Running` first. Bounded
++/// with a clear failure message: nothing here may hang the harness.
++async fn running_owned_child_id(thread: &codex_core::CodexThread, context: &str) -> ThreadId {
++    let mut inspections = Vec::new();
++    let result = tokio::time::timeout(Duration::from_secs(10), async {
++        loop {
++            inspections = thread
++                .inspect_directly_owned_native_children()
++                .await
++                .expect("owned-children inspection should succeed");
++            let running = inspections
++                .iter()
++                .find(|inspection| matches!(inspection.status(), Some(AgentStatus::Running)));
++            if let Some(running) = running {
++                break running.thread_id();
++            }
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await;
++    result.unwrap_or_else(|error| {
++        panic!("{context}: child never reached Running: {error}; owned children: {inspections:?}")
++    })
++}
++
 +/// AC1 (+AC6, +AC8 inherited settings): a Running native child registers the
 +/// owned marker at idle; its queue-only completion wakes with a real model
 +/// request. Storing the marker emits no sleep UI, no history item, and no
@@ -895,7 +1363,7 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +    )
 +    .await;
 +
-+    let (test, db, service) = fixture(&server).await?;
++    let (test, db, service) = fixture(&server, test_codex().with_model("gpt-5.5")).await?;
 +    let thread_id = test.session_configured.thread_id;
 +
 +    submit_user_input(&test.codex, "wait for native worker").await;
@@ -1038,18 +1506,34 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +    )
 +    .await;
 +
-+    let (test, db, service) = fixture(&server).await?;
++    let (test, db, service) = fixture(&server, test_codex().with_model("gpt-5.5")).await?;
 +    let thread_id = test.session_configured.thread_id;
 +
 +    let gate = test
 +        .codex
 +        .thread_extension_data()
 +        .get_or_init(codex_goal_extension::TestNativeWaitRegistrationGate::new);
++    // No runtime leases are used here, so this existing hook only observes
++    // the initial turn's teardown scheduler; it cannot pause a wake.
++    let initial_teardown = test.codex.test_arm_wake_lease_gate().await;
 +    submit_user_input(&test.codex, "latch worker").await;
 +    wait_for_event(&test.codex, |event| {
 +        matches!(event, EventMsg::TurnComplete(_))
 +    })
 +    .await;
++
++    // TurnComplete precedes the automatic idle callback. Let that callback
++    // finish while there is no goal, otherwise it can acquire the goal permit
++    // and consume the gate's release ahead of set_goal's own idle pass. Wait
++    // through the teardown scheduler too: a delayed extra mail check could
++    // otherwise mask the insert-after-mail-check mutant.
++    tokio::time::timeout(
++        Duration::from_secs(10),
++        initial_teardown.wait_scheduler_done(),
++    )
++    .await
++    .expect("initial parent teardown must finish before setting its goal");
++    test.codex.test_disarm_wake_lease_gate().await;
 +
 +    // The set itself runs `continue_if_idle`, which pauses at the gate after
 +    // observing Running work. Bounded: a missed gate, or a set that sails
@@ -1085,14 +1569,19 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +        "timed out waiting for the fast child's completion mail before releasing the registration gate",
 +    );
 +    gate.release();
-+    // The gate served its single latch purpose: later idles must not pause
-+    // (the slow child stays Running, so a retained gate would stall them).
-+    test.codex
-+        .thread_extension_data()
-+        .remove::<codex_goal_extension::TestNativeWaitRegistrationGate>();
++    // Keep the gate installed through the wake-turn assertions below. The
++    // post-wake idle would otherwise reinsert the marker (the slow child is
++    // still Running) before the test observes the queued `TurnStarted`,
++    // flaking the removal assert. A retained gate pauses that idle at
++    // registration instead, so the absence below proves turn-start removal.
++    // It is removed right after the assert.
 +    tokio::time::timeout(Duration::from_secs(10), set_goal_fut)
 +        .await
 +        .expect("goal set hung after the registration gate was released")?;
++    assert!(
++        !test.codex.test_has_pending_mailbox_mail().await,
++        "the post-insert recheck must consume the fast child's queued completion"
++    );
 +
 +    // No explicit idle emit here: the set's own `continue_if_idle` is the
 +    // single registration attempt under test. A second idle pass would
@@ -1121,9 +1610,17 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +        "timed out waiting for the parent wake turn: the post-insert recheck \
 +         should start a mail-wake turn for the fast child's completion mail",
 +    );
-+    // Admitted turn start removes the owned marker (asserted while the wake
-+    // turn runs, before any later idle can reinsert it).
++    // Admitted turn start removes the owned marker. Removal runs in the
++    // `BeforeTaskRegistration` lifecycle, strictly before `TurnStarted` is
++    // emitted, and the retained gate blocks post-wake idle reinsertion, so
++    // this absence is deterministic rather than a race with the reinsert.
 +    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++    // The gate served its latch purpose: remove first so no later idle can
++    // pause, then release to wake the waiter (if any) holding its clone.
++    test.codex
++        .thread_extension_data()
++        .remove::<codex_goal_extension::TestNativeWaitRegistrationGate>();
++    gate.release();
 +    tokio::time::timeout(Duration::from_secs(15), async {
 +        while parent_wake.requests().len() != 1 {
 +            tokio::time::sleep(Duration::from_millis(25)).await;
@@ -1262,7 +1759,7 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +    )
 +    .await;
 +
-+    let (test, db, service) = fixture(&server).await?;
++    let (test, db, service) = fixture(&server, test_codex().with_model("gpt-5.5")).await?;
 +    let thread_id = test.session_configured.thread_id;
 +
 +    let foreign = SleepItem {
@@ -1309,7 +1806,7 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +#[tokio::test(flavor = "current_thread")]
 +async fn goal_wait_removed_on_clear_release_and_resume() -> Result<()> {
 +    let server = responses::start_mock_server().await;
-+    let (test, db, service) = fixture(&server).await?;
++    let (test, db, service) = fixture(&server, test_codex().with_model("gpt-5.5")).await?;
 +    let thread_id = test.session_configured.thread_id;
 +    set_goal(&service, &db, thread_id).await?;
 +
@@ -1344,14 +1841,684 @@ index 0000000000000000000000000000000000000000..0ea4c8b742a59e008e9f8fb8fd9bd107
 +    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
 +    Ok(())
 +}
++
++/// AC7: interrupting a real Running native child of a goal parent that holds
++/// the marker delivers exactly one queue-only INTERRUPTED notice and one wake
++/// model request for that transition, without claiming success. The child's
++/// global `is_final` is unchanged (`Interrupted` stays non-final).
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn goal_wait_registered_parent_gets_single_interrupted_notice() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let parent_initial = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "supervise native worker")
++                && !has_function_call_output(request, "call-int-spawn")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-int-spawn"),
++            spawn_call("call-int-spawn"),
++            responses::ev_completed("resp-int-spawn"),
++        ]),
++    )
++    .await;
++    let parent_after_spawn = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            has_function_call_output(request, "call-int-spawn")
++                && !body_contains(request, "Message Type: INTERRUPTED")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-int-idle"),
++            responses::ev_assistant_message("resp-int-idle", "parent ending turn"),
++            responses::ev_completed("resp-int-idle"),
++        ]),
++    )
++    .await;
++    let child_sleep = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "do slow work")
++                && !body_contains(request, "supervise native worker")
++                && !has_function_call_output(request, "call-int-sleep")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-int-child-sleep"),
++            sleep_call("call-int-sleep", 60_000),
++            responses::ev_completed("resp-int-child-sleep"),
++        ]),
++    )
++    .await;
++    let parent_wake = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| body_contains(request, "Message Type: INTERRUPTED"),
++        responses::sse(vec![
++            responses::ev_response_created("resp-int-wake"),
++            responses::ev_assistant_message("resp-int-wake", "parent saw interruption"),
++            responses::ev_completed("resp-int-wake"),
++        ]),
++    )
++    .await;
++
++    let (test, db, service) = fixture(&server, test_codex().with_model("gpt-5.5")).await?;
++    let thread_id = test.session_configured.thread_id;
++
++    submit_user_input(&test.codex, "supervise native worker").await;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++    set_goal(&service, &db, thread_id).await?;
++    test.codex
++        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
++        .await;
++
++    assert!(has_goal_wait_sleep(test.codex.thread_extension_data()));
++
++    let child_thread_id = running_owned_child_id(&test.codex, "root parent").await;
++    // `Running` (TurnStarted) precedes sampling: wait for the child's sleep
++    // prompt request to reach the mock before asserting counts and
++    // interrupting. Bounded: a missing request fails here, not in a hang.
++    tokio::time::timeout(Duration::from_secs(10), async {
++        while child_sleep.requests().len() != 1 {
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await
++    .expect("timed out waiting for the child's sleep request before interrupting");
++    assert_eq!(parent_initial.requests().len(), 1);
++    assert_eq!(parent_after_spawn.requests().len(), 1);
++    assert_eq!(child_sleep.requests().len(), 1);
++    let child = test
++        .thread_manager
++        .get_thread(child_thread_id)
++        .await
++        .expect("child thread should be loaded");
++
++    // Real production interrupt entry point: the same `Op` the app-server and
++    // the TUI submit. It aborts the child's sleep turn with `TurnAborted` for
++    // `Interrupted`, which reaches `turn_finished` as a gated queue-only mail.
++    child.submit(Op::Interrupt).await.expect("interrupt child");
++    wait_for_event(&child, |event| matches!(event, EventMsg::TurnAborted(_))).await;
++
++    // The child's `TurnAborted` is emitted after parent delivery completes
++    // (`send_event` awaits the terminal-turn notify), so the notice mail is
++    // already enqueued here; the wake turn follows via the marker.
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnStarted(_)) && parent_wake.requests().len() == 1
++    })
++    .await;
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++    let wakes: Vec<_> = parent_wake
++        .requests()
++        .into_iter()
++        .filter(|request| request.body_contains_text("Message Type: INTERRUPTED"))
++        .collect();
++    assert_eq!(
++        wakes.len(),
++        1,
++        "expected exactly one parent wake request, got {:?}",
++        parent_wake.requests()
++    );
++    // Scope notice assertions to inter-agent message items, not the whole
++    // serialized body: the request instructions always mention `FINAL_ANSWER`
++    // as a message type (`prompts/src/model_messages/multi_agent.rs`), so a
++    // whole-body check cannot prove this child's notice claims no success.
++    let agent_texts: Vec<String> = wakes[0]
++        .inputs_of_type("agent_message")
++        .iter()
++        .filter_map(|item| {
++            item.get("content").and_then(|content| {
++                content.as_array().map(|spans| {
++                    spans
++                        .iter()
++                        .filter_map(|span| span.get("text").and_then(|text| text.as_str()))
++                        .collect::<Vec<_>>()
++                        .join("\n")
++                })
++            })
++        })
++        .collect();
++    assert_eq!(
++        agent_texts
++            .iter()
++            .filter(|text| text.contains("Message Type: INTERRUPTED"))
++            .count(),
++        1,
++        "expected exactly one interrupted notice in the wake request: {agent_texts:?}"
++    );
++    assert!(
++        agent_texts
++            .iter()
++            .any(|text| text.contains("without a final answer")),
++        "interrupted notice must not claim a final answer: {agent_texts:?}"
++    );
++    assert!(
++        !agent_texts
++            .iter()
++            .any(|text| text.contains("Message Type: FINAL_ANSWER")),
++        "interrupted notice must not be a success completion: {agent_texts:?}"
++    );
++    assert!(
++        !agent_texts
++            .iter()
++            .any(|text| text.contains("completed successfully")),
++        "interrupted notice must not claim success: {agent_texts:?}"
++    );
++
++    // The envelope identities are the spawn-created paths: new names are
++    // length-gated at spawn (`join_new`), and `author`/`recipient` render
++    // truncated display copies, so legacy resumed paths cannot smuggle
++    // unbounded model-visible bytes past the notice body cap.
++    let interrupted_envelopes: Vec<_> = wakes[0]
++        .inputs_of_type("agent_message")
++        .into_iter()
++        .filter(|item| {
++            item.get("content")
++                .and_then(|content| content.as_array())
++                .is_some_and(|spans| {
++                    spans.iter().any(|span| {
++                        span.get("text")
++                            .and_then(|text| text.as_str())
++                            .is_some_and(|text| text.contains("Message Type: INTERRUPTED"))
++                    })
++                })
++        })
++        .collect();
++    assert_eq!(
++        interrupted_envelopes.len(),
++        1,
++        "expected exactly one interrupted envelope: {agent_texts:?}"
++    );
++    let author = interrupted_envelopes[0]
++        .get("author")
++        .and_then(|author| author.as_str())
++        .expect("interrupted envelope carries an author");
++    let recipient = interrupted_envelopes[0]
++        .get("recipient")
++        .and_then(|recipient| recipient.as_str())
++        .expect("interrupted envelope carries a recipient");
++    assert_eq!(author, "/root/worker");
++    assert_eq!(recipient, "/root");
++    assert!(
++        author.len() <= AgentPath::MAX_PATH_BYTES,
++        "author must fit the path cap: {author}"
++    );
++    assert!(
++        recipient.len() <= AgentPath::MAX_PATH_BYTES,
++        "recipient must fit the path cap: {recipient}"
++    );
++
++    // The child's runtime status is `Interrupted`; the global `is_final`
++    // stays unchanged (`Interrupted` non-final), pinned by the in-crate
++    // unit test `agent::status_tests::interrupted_stays_non_final`.
++    let child_status = child.agent_status().await;
++    assert_eq!(child_status, AgentStatus::Interrupted);
++    Ok(())
++}
++
++/// AC7 negative: interrupting a Running native child of an ordinary parent
++/// (no goal, no marker) enqueues no notice and starts no wake turn. The
++/// child's global `is_final` is unchanged.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn goal_wait_ordinary_parent_stays_quiet_on_child_interrupt() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let parent_initial = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "ordinary worker")
++                && !has_function_call_output(request, "call-quiet-spawn")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-quiet-spawn"),
++            spawn_call("call-quiet-spawn"),
++            responses::ev_completed("resp-quiet-spawn"),
++        ]),
++    )
++    .await;
++    let parent_after_spawn = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            has_function_call_output(request, "call-quiet-spawn")
++                && !body_contains(request, "Message Type: INTERRUPTED")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-quiet-idle"),
++            responses::ev_assistant_message("resp-quiet-idle", "parent ending turn"),
++            responses::ev_completed("resp-quiet-idle"),
++        ]),
++    )
++    .await;
++    let child_sleep = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "do slow work")
++                && !body_contains(request, "ordinary worker")
++                && !has_function_call_output(request, "call-quiet-sleep")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("resp-quiet-child-sleep"),
++            sleep_call("call-quiet-sleep", 60_000),
++            responses::ev_completed("resp-quiet-child-sleep"),
++        ]),
++    )
++    .await;
++    // No wake mock: any parent wake request would have no responder.
++
++    let (test, _db, _service) = fixture(&server, test_codex().with_model("gpt-5.5")).await?;
++
++    // No goal is set: this parent is ordinary and registers no marker.
++    submit_user_input(&test.codex, "ordinary worker").await;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++    test.codex
++        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
++        .await;
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++
++    let child_thread_id = running_owned_child_id(&test.codex, "root parent").await;
++    // `Running` precedes sampling: wait for the child's sleep prompt request
++    // before interrupting, or the abort lands before any request exists.
++    // Bounded with a clear failure message.
++    tokio::time::timeout(Duration::from_secs(10), async {
++        while child_sleep.requests().len() != 1 {
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await
++    .expect("timed out waiting for the child's sleep request before interrupting");
++    let child = test
++        .thread_manager
++        .get_thread(child_thread_id)
++        .await
++        .expect("child thread should be loaded");
++    child.submit(Op::Interrupt).await.expect("interrupt child");
++    wait_for_event(&child, |event| matches!(event, EventMsg::TurnAborted(_))).await;
++
++    // The gated delivery returns before sending, so no notice mail is
++    // enqueued, and no wake turn starts within the silence window.
++    assert!(!test.codex.test_has_pending_mailbox_mail().await);
++    assert!(
++        tokio::time::timeout(Duration::from_secs(1), test.codex.next_event())
++            .await
++            .is_err(),
++        "ordinary parent must stay quiet after a child interrupt"
++    );
++    assert_eq!(parent_initial.requests().len(), 1);
++    assert_eq!(parent_after_spawn.requests().len(), 1);
++    assert_eq!(child_sleep.requests().len(), 1);
++
++    // `Interrupted` here too; `is_final` non-finality is pinned by
++    // `agent::status_tests::interrupted_stays_non_final`.
++    let child_status = child.agent_status().await;
++    assert_eq!(child_status, AgentStatus::Interrupted);
++    Ok(())
++}
++
++/// A depth-three native spawn makes both envelope paths exceed the display
++/// cap. The real interrupt/wake request must obey the whole-item byte bound,
++/// even with dense names that cannot use a bytes/4 token estimate.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn goal_wait_dense_paths_interrupted_item_bound() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    // Pin V2 metadata on a direct-tool model, as in multi_agent_tool_descriptions.
++    // Descendants require V2 metadata; gpt-6-sol also selects code_mode_only,
++    // which hides the direct spawn tool used by this scripted conversation.
++    let builder = test_codex().with_model_info_override("gpt-5.5", |model| {
++        model.multi_agent_version = Some(MultiAgentVersion::V2);
++    });
++    let (test, db, service) = fixture(&server, builder).await?;
++    let mut parent = Arc::clone(&test.codex);
++    let mut parent_id = test.session_configured.thread_id;
++    let mut worker = Arc::clone(&test.codex);
++    for (depth, task_name) in ["a1".repeat(64), "b2".repeat(64), "worker".to_string()]
++        .into_iter()
++        .enumerate()
++    {
++        let prompt = format!("dense level {depth} parent start");
++        let child_prompt = format!("dense level {depth} child start");
++        let call_id = format!("dense-spawn-{depth}");
++        let sleep_id = format!("dense-sleep-{depth}");
++        let initial = responses::mount_sse_once_match(
++            &server,
++            {
++                let prompt = prompt.clone();
++                let call_id = call_id.clone();
++                move |request: &wiremock::Request| {
++                    body_contains(request, &prompt) && !has_function_call_output(request, &call_id)
++                }
++            },
++            responses::sse(vec![
++                responses::ev_response_created("dense-spawn"),
++                spawn_call_with_message(&call_id, &child_prompt, &task_name),
++                responses::ev_completed("dense-spawn"),
++            ]),
++        )
++        .await;
++        let idle = responses::mount_sse_once_match(
++            &server,
++            {
++                let call_id = call_id.clone();
++                move |request: &wiremock::Request| has_function_call_output(request, &call_id)
++            },
++            responses::sse(vec![
++                responses::ev_response_created("dense-idle"),
++                responses::ev_assistant_message("dense-idle", "waiting for worker"),
++                responses::ev_completed("dense-idle"),
++            ]),
++        )
++        .await;
++        let child_sleep = responses::mount_sse_once_match(
++            &server,
++            {
++                let prompt = prompt.clone();
++                let child_prompt = child_prompt.clone();
++                move |request: &wiremock::Request| {
++                    body_contains(request, &child_prompt) && !body_contains(request, &prompt)
++                }
++            },
++            responses::sse(vec![
++                responses::ev_response_created("dense-child"),
++                sleep_call(&sleep_id, 60_000),
++                responses::ev_completed("dense-child"),
++            ]),
++        )
++        .await;
++        submit_user_input(&parent, &prompt).await;
++        wait_for_event(&parent, |event| matches!(event, EventMsg::TurnComplete(_))).await;
++        assert!(
++            initial
++                .single_request()
++                .tool_by_name(MULTI_AGENT_V2_NAMESPACE, "spawn_agent")
++                .is_some(),
++            "depth {depth}: the parent model must expose native V2 spawning"
++        );
++        // Assert the real spawn result before waiting for its status: an
++        // unavailable tool or rejected name must report its error here,
++        // rather than looking like an indefinitely PendingInit child.
++        let output = idle
++            .function_call_output_text(&call_id)
++            .unwrap_or_else(|| panic!("depth {depth}: missing spawn output for {call_id}"));
++        let output: serde_json::Value = serde_json::from_str(&output)
++            .unwrap_or_else(|error| panic!("depth {depth}: spawn failed: {output}; {error}"));
++        let expected_child_path = parent
++            .config_snapshot()
++            .await
++            .session_source
++            .get_agent_path()
++            .unwrap_or_else(AgentPath::root)
++            .join_new(&task_name)
++            .expect("valid dense child identity");
++        assert_eq!(
++            output["task_name"],
++            json!(expected_child_path.as_str()),
++            "depth {depth}: unexpected spawn result"
++        );
++        let child_id = running_owned_child_id(&parent, &format!("dense depth {}", depth + 1)).await;
++        worker = test.thread_manager.get_thread(child_id).await?;
++        tokio::time::timeout(Duration::from_secs(10), async {
++            while child_sleep.requests().is_empty() {
++                tokio::time::sleep(Duration::from_millis(25)).await;
++            }
++        })
++        .await
++        .expect("dense child must sample before interruption");
++        assert_eq!(initial.requests().len(), 1);
++        // The recorder sees evaluated requests even when the custom matcher
++        // rejects them: count only this parent's spawn output request.
++        assert_eq!(
++            idle.requests()
++                .iter()
++                .filter(|request| request.function_call_output_text(&call_id).is_some())
++                .count(),
++            1
++        );
++        assert_eq!(child_sleep.requests().len(), 1);
++        if depth < 2 {
++            // Build the next level only after its ancestor is idle, so no
++            // completion can race an ancestor's sampling or contaminate mocks.
++            worker.submit(Op::Interrupt).await?;
++            wait_for_event(&worker, |event| matches!(event, EventMsg::TurnAborted(_))).await;
++            parent = Arc::clone(&worker);
++            parent_id = child_id;
++        }
++    }
++    // Keep the wake turn open until assertions finish, so no later goal
++    // continuation can repeat the notice in historical context.
++    let parent_wake = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| body_contains(request, "Message Type: INTERRUPTED"),
++        responses::sse(vec![
++            responses::ev_response_created("dense-wake"),
++            sleep_call("dense-wake-sleep", 60_000),
++            responses::ev_completed("dense-wake"),
++        ]),
++    )
++    .await;
++    // As in fixture(), rebind the goal runtime to this test's live manager
++    // and explicitly persistent host before setting a goal on the parent.
++    parent.thread_extension_data().remove::<GoalRuntimeHandle>();
++    parent
++        .thread_extension_data()
++        .insert(AsyncNotificationSupport::Available);
++    let mut bound = ExtensionRegistryBuilder::<Config>::new();
++    install_goal(
++        &mut bound,
++        &db,
++        &service,
++        Arc::downgrade(&test.thread_manager),
++    );
++    for contributor in bound.build().thread_lifecycle_contributors() {
++        contributor
++            .on_thread_start(ThreadStartInput {
++                config: &*parent.config().await,
++                session_source: &SessionSource::Cli,
++                persistent_thread_state_available: true,
++                environments: &[],
++                mcp_resource_client: None,
++                extension_metrics: None,
++                session_store: &ExtensionData::new(test.session_configured.session_id.to_string()),
++                thread_store: parent.thread_extension_data(),
++            })
++            .await;
++    }
++    set_goal(&service, &db, parent_id).await?;
++    parent
++        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
++        .await;
++    assert!(has_goal_wait_sleep(parent.thread_extension_data()));
++    let runtime = parent
++        .thread_extension_data()
++        .get::<GoalRuntimeHandle>()
++        .expect("goal runtime");
++    assert!(runtime.background_wait_state().is_pacing_enabled());
++    assert!(codex_extension_api::read_pending_work(parent.thread_extension_data())?.is_empty());
++    let (deadline, _) = runtime
++        .background_wait_state()
++        .armed_deadline()
++        .expect("native check-in armed");
++    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
++    assert!(
++        deadline.saturating_sub(now) > Duration::from_secs(60),
++        "native work must use check-ins rather than the pacing floor"
++    );
++    assert!(parent_wake.requests().is_empty());
++    worker.submit(Op::Interrupt).await?;
++    wait_for_event(&worker, |event| matches!(event, EventMsg::TurnAborted(_))).await;
++    tokio::time::timeout(Duration::from_secs(10), async {
++        while parent_wake.requests().is_empty() {
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await
++    .expect("dense goal parent must sample the interruption");
++    let request = parent_wake.single_request();
++    let messages = request.inputs_of_type("agent_message");
++    let notices: Vec<_> = messages
++        .iter()
++        .filter(|item| {
++            item["content"]
++                .as_array()
++                .expect("agent content")
++                .iter()
++                .any(|part| {
++                    part["text"]
++                        .as_str()
++                        .is_some_and(|text| text.contains("Message Type: INTERRUPTED"))
++                })
++        })
++        .collect();
++    assert_eq!(notices.len(), 1);
++    let notice = notices[0];
++    let author = notice["author"].as_str().expect("author");
++    let recipient = notice["recipient"].as_str().expect("recipient");
++    let content_bytes: usize = notice["content"]
++        .as_array()
++        .expect("content")
++        .iter()
++        .map(|part| {
++            part["text"]
++                .as_str()
++                .expect("plaintext interrupted notice")
++                .len()
++        })
++        .sum();
++    let item_bytes = author.len() + recipient.len() + content_bytes;
++    assert!(
++        item_bytes <= 1000,
++        "dense interrupted item exceeds byte/token bound: {item_bytes}"
++    );
++    assert_eq!(item_bytes, 838);
++    let expected_parent = AgentPath::root()
++        .join_new(&"a1".repeat(64))
++        .expect("first segment")
++        .join_new(&"b2".repeat(64))
++        .expect("second segment");
++    assert_eq!(recipient, expected_parent.truncated_for_display());
++    assert_eq!(
++        author,
++        expected_parent
++            .join_new("worker")
++            .expect("worker segment")
++            .truncated_for_display()
++    );
++    assert_eq!(worker.agent_status().await, AgentStatus::Interrupted);
++    assert!(!has_goal_wait_sleep(parent.thread_extension_data()));
++    service.clear_thread_goal(&db, parent_id).await?;
++    parent.submit(Op::Interrupt).await?;
++    wait_for_event(&parent, |event| matches!(event, EventMsg::TurnAborted(_))).await;
++    Ok(())
++}
++
++/// With the background gate disabled, a live native child must not grant
++/// durable sleep. The first continuation still runs, then pacing arms through
++/// the production idle path with an empty exec snapshot.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn goal_wait_pacing_without_background_gate_has_no_native_marker() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let _initial = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "pace native worker")
++                && !has_function_call_output(request, "pace-native-spawn")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("pace-native-spawn"),
++            spawn_call("pace-native-spawn"),
++            responses::ev_completed("pace-native-spawn"),
++        ]),
++    )
++    .await;
++    let _idle = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            has_function_call_output(request, "pace-native-spawn")
++                && !body_contains(request, "wait for native worker")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("pace-native-idle"),
++            responses::ev_assistant_message("pace-native-idle", "waiting"),
++            responses::ev_completed("pace-native-idle"),
++        ]),
++    )
++    .await;
++    let child_sleep = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            body_contains(request, "do slow work") && !body_contains(request, "pace native worker")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("pace-native-child"),
++            sleep_call("pace-native-sleep", 60_000),
++            responses::ev_completed("pace-native-child"),
++        ]),
++    )
++    .await;
++    let continuation = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            has_function_call_output(request, "pace-native-spawn")
++                && body_contains(request, "wait for native worker")
++        },
++        responses::sse_completed("pace-native-continuation"),
++    )
++    .await;
++    let (test, db, service) = fixture(&server, test_codex().with_model("gpt-5.5")).await?;
++    submit_user_input(&test.codex, "pace native worker").await;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++    let child_id = running_owned_child_id(&test.codex, "root parent").await;
++    tokio::time::timeout(Duration::from_secs(10), async {
++        while child_sleep.requests().is_empty() {
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await
++    .expect("native child must sample before pacing is tested");
++    let runtime = test
++        .codex
++        .thread_extension_data()
++        .get::<GoalRuntimeHandle>()
++        .expect("goal runtime");
++    assert!(runtime.background_wait_state().is_pacing_enabled());
++    runtime.background_wait_state().disable();
++    set_goal(&service, &db, test.session_configured.thread_id).await?;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnComplete(_))
++    })
++    .await;
++    tokio::time::timeout(Duration::from_secs(10), async {
++        while runtime.background_wait_state().armed_deadline().is_none() {
++            tokio::time::sleep(Duration::from_millis(25)).await;
++        }
++    })
++    .await
++    .expect("production idle must arm pacing despite native child work");
++    assert_eq!(continuation.requests().len(), 1);
++    assert_eq!(runtime.background_wait_state().pacing_streak(), 1);
++    assert!(!has_goal_wait_sleep(test.codex.thread_extension_data()));
++    assert!(codex_extension_api::read_pending_work(test.codex.thread_extension_data())?.is_empty());
++    let child = test.thread_manager.get_thread(child_id).await?;
++    assert_eq!(child.agent_status().await, AgentStatus::Running);
++    service
++        .clear_thread_goal(&db, test.session_configured.thread_id)
++        .await?;
++    child.submit(Op::Interrupt).await?;
++    wait_for_event(&child, |event| matches!(event, EventMsg::TurnAborted(_))).await;
++    Ok(())
++}
 diff --git a/codex-rs/core/tests/suite/mod.rs b/codex-rs/core/tests/suite/mod.rs
-index 4eb6e4994e94c111e935732530a8e1b142e8ae67..f041de49518db0094c516f0422bc7d2003248cbe 100644
+index e3181684c674b76ab6d4107786b08e1de53e17d7..8bc4e0ce8c2b6e31a0c27172b5217853fdcd222e 100644
 --- a/codex-rs/core/tests/suite/mod.rs
 +++ b/codex-rs/core/tests/suite/mod.rs
-@@ -87,6 +87,7 @@ mod git_enrichment;
- #[path = "goal_activity_tests.rs"]
+@@ -88,6 +88,7 @@ mod git_enrichment;
  mod goal_activity;
  mod goal_background_wait;
+ mod goal_continuation_pacing;
 +mod goal_native_wait;
  mod guardian_authorization;
  mod guardian_authorization_refresh;
@@ -1423,10 +2590,10 @@ index d1d5f75074581c92a587eed75cb3bf1d21637934..912710ddf1611dfc3fdf98e516f91473
  codex-prompts = { workspace = true }
  codex-protocol = { workspace = true }
 diff --git a/codex-rs/ext/goal/src/background_wait.rs b/codex-rs/ext/goal/src/background_wait.rs
-index 8647c6005bf6131884dc395aa59914d1be4a2182..e958ac8303ae5c621abc2a90805b405e82f663db 100644
+index 185d2042b7d392d9794d9a25fd21ad76b5eacc56..f798a9b7d4257e5545ed585d6701a2bd6e6160bf 100644
 --- a/codex-rs/ext/goal/src/background_wait.rs
 +++ b/codex-rs/ext/goal/src/background_wait.rs
-@@ -276,9 +276,30 @@ impl BackgroundWaitState {
+@@ -314,9 +314,30 @@ impl BackgroundWaitState {
          status: GoalWaitStatus,
          snapshot: Result<PendingWorkSnapshot, PendingWorkReadError>,
          now: Duration,
@@ -1458,28 +2625,28 @@ index 8647c6005bf6131884dc395aa59914d1be4a2182..e958ac8303ae5c621abc2a90805b405e
      }
  
      fn evaluate_locked(
-@@ -287,6 +308,7 @@ impl BackgroundWaitState {
+@@ -325,6 +346,7 @@ impl BackgroundWaitState {
          goal_id: &str,
          status: GoalWaitStatus,
          snapshot: Result<PendingWorkSnapshot, PendingWorkReadError>,
 +        native_pending: bool,
          now: Duration,
      ) -> BackgroundWaitEvaluation {
-         if !state.enabled || status == GoalWaitStatus::InactiveOrBudgetLimited {
-@@ -311,7 +333,7 @@ impl BackgroundWaitState {
+         if status == GoalWaitStatus::InactiveOrBudgetLimited {
+@@ -352,7 +374,7 @@ impl BackgroundWaitState {
                  return BackgroundWaitEvaluation::WaitOnReadFailure { error };
              }
          };
 -        if snapshot.is_empty() {
 +        if snapshot.is_empty() && !native_pending {
              state.wait_started_at = None;
-             state.pending_deadline = None;
-             state.admission_attempt = Some(AdmissionAttempt {
+             if !state.pacing_enabled {
+                 state.pending_deadline = None;
 diff --git a/codex-rs/ext/goal/src/extension.rs b/codex-rs/ext/goal/src/extension.rs
-index dfb73b6661cde2813b1aaad581fd2b529c4ee6ac..b0dc76e9dee4d2c9c164d5b73f3fd08b1f9f7724 100644
+index 08d49099c6bfc503195475926f10f0b2906f4246..ddb3b78e8b72a1a79e58ccbd09dbc7836f16054a 100644
 --- a/codex-rs/ext/goal/src/extension.rs
 +++ b/codex-rs/ext/goal/src/extension.rs
-@@ -262,6 +262,10 @@ where
+@@ -275,6 +275,10 @@ where
              let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                  return;
              };
@@ -1491,10 +2658,10 @@ index dfb73b6661cde2813b1aaad581fd2b529c4ee6ac..b0dc76e9dee4d2c9c164d5b73f3fd08b
              if !runtime.is_enabled() {
                  return;
 diff --git a/codex-rs/ext/goal/src/lib.rs b/codex-rs/ext/goal/src/lib.rs
-index 3960e21be83116283908ea9e9add2231221430dc..4449e14a8a9b72e21b2d61ee0c7b3a8a40edd558 100644
+index ffc58372e0b93bd125364f1c27f4049e86c35ded..e017e0259fb8e3fdb3b6960474c82f210ca5ec03 100644
 --- a/codex-rs/ext/goal/src/lib.rs
 +++ b/codex-rs/ext/goal/src/lib.rs
-@@ -9,6 +9,7 @@ mod check_in_clock;
+@@ -10,6 +10,7 @@ mod continuation_schedule;
  mod events;
  mod extension;
  mod metrics;
@@ -1502,7 +2669,7 @@ index 3960e21be83116283908ea9e9add2231221430dc..4449e14a8a9b72e21b2d61ee0c7b3a8a
  mod runtime;
  mod spec;
  mod steering;
-@@ -34,6 +35,11 @@ pub use extension::GoalExtension;
+@@ -40,6 +41,11 @@ pub use extension::GoalExtension;
  pub use extension::GoalExtensionConfig;
  pub use extension::install_with_backend;
  pub use extension::install_with_backend_and_clock;
@@ -1636,7 +2803,7 @@ index 0000000000000000000000000000000000000000..306dc678cadb1e9b311867e4e08f9a44
 +    }
 +}
 diff --git a/codex-rs/ext/goal/src/runtime.rs b/codex-rs/ext/goal/src/runtime.rs
-index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e87109f1f87a 100644
+index 03da9c00eb413d5b7d7a33bf85d6f3131a9998d2..de51f5b201a66a8290b967bc3aeaed6c022f6de0 100644
 --- a/codex-rs/ext/goal/src/runtime.rs
 +++ b/codex-rs/ext/goal/src/runtime.rs
 @@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
@@ -1688,7 +2855,7 @@ index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e871
      /// Goal-owned background waiting policy for this thread.
      pub fn background_wait_state(&self) -> Arc<BackgroundWaitState> {
          Arc::clone(&self.inner.background_wait)
-@@ -396,12 +420,16 @@ impl GoalRuntimeHandle {
+@@ -419,12 +443,16 @@ impl GoalRuntimeHandle {
                  if self.inner.accounting_state.current_turn_id().is_none() {
                      self.inner.accounting_state.clear_active_goal();
                  }
@@ -1705,8 +2872,8 @@ index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e871
              }
          }
          Ok(())
-@@ -418,6 +446,8 @@ impl GoalRuntimeHandle {
-         if committed.is_none() {
+@@ -446,6 +474,8 @@ impl GoalRuntimeHandle {
+             }
              self.inner.accounting_state.clear_active_goal();
          }
 +        drop(permit);
@@ -1714,7 +2881,7 @@ index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e871
          Ok(())
      }
  
-@@ -551,6 +581,8 @@ impl GoalRuntimeHandle {
+@@ -579,6 +609,8 @@ impl GoalRuntimeHandle {
              Some(turn_id.to_string()),
              goal,
          );
@@ -1723,7 +2890,7 @@ index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e871
          Ok(())
      }
  
-@@ -558,6 +590,11 @@ impl GoalRuntimeHandle {
+@@ -586,6 +618,11 @@ impl GoalRuntimeHandle {
          let permit = self.goal_state_permit().await?;
          let goal = self.reconcile_live_activity(&permit).await?;
          self.inner.background_wait.note_resume();
@@ -1735,7 +2902,7 @@ index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e871
          if !self.is_enabled() {
              return Ok(());
          }
-@@ -616,6 +653,7 @@ impl GoalRuntimeHandle {
+@@ -644,6 +681,7 @@ impl GoalRuntimeHandle {
      pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
          if !self.tools_available() {
              self.inner.accounting_state.clear_active_goal();
@@ -1743,7 +2910,7 @@ index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e871
              return Ok(());
          }
          // Hold this through the read/start window so external set/clear cannot
-@@ -645,21 +683,84 @@ impl GoalRuntimeHandle {
+@@ -673,22 +711,84 @@ impl GoalRuntimeHandle {
  
          let Some(goal) = goal else {
              self.inner.accounting_state.clear_active_goal();
@@ -1755,7 +2922,8 @@ index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e871
 +            crate::native_wait::remove_goal_wait_sleep(thread.thread_extension_data());
              return Ok(());
          }
--        if self.inner.background_wait.is_enabled() {
+-        if self.inner.background_wait.is_enabled() || self.inner.background_wait.is_pacing_enabled()
+-        {
 +        // Native subagent wait: only on a persistent host (background-wait
 +        // enabled). Non-goal, unloaded, and unknown work gets no marker;
 +        // failed inspection propagates instead of looking empty.
@@ -1813,7 +2981,7 @@ index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e871
 +            crate::native_wait::remove_goal_wait_sleep(thread.thread_extension_data());
 +            false
 +        };
-+        if wait_enabled {
++        if wait_enabled || self.inner.background_wait.is_pacing_enabled() {
              let snapshot = codex_extension_api::read_pending_work(thread.thread_extension_data());
              let now = self.inner.check_in_timer.clock().now();
 -            match self.inner.background_wait.evaluate_continuation(
@@ -1832,15 +3000,15 @@ index ba8e5bff095a15da01bbb502c1d6325f40f943db..f2785760dd0c4004455f7c2710a4e871
 +                    native_pending,
 +                    now,
 +                ) {
-                 BackgroundWaitEvaluation::ProceedWithoutGate
-                 | BackgroundWaitEvaluation::ProceedNormal { .. }
-                 | BackgroundWaitEvaluation::ProceedWithTicket { .. } => {
+                 BackgroundWaitEvaluation::ProceedWithoutGate => {
+                     // No gate engaged: drop any previously published checker
+                     // so Core admits without consulting stale state.
 diff --git a/codex-rs/ext/goal/tests/native_wait.rs b/codex-rs/ext/goal/tests/native_wait.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..58a56d74e4f6735185c2a79d9ce0db09ca9d866d
+index 0000000000000000000000000000000000000000..1aee81c8d2286e67601aac32e260da4a8138f271
 --- /dev/null
 +++ b/codex-rs/ext/goal/tests/native_wait.rs
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,249 @@
 +//! Goal-owned durable-sleep lease tests.
 +//!
 +//! Drives the production lease helpers (`try_register_goal_wait_sleep`,
@@ -2033,6 +3201,63 @@ index 0000000000000000000000000000000000000000..58a56d74e4f6735185c2a79d9ce0db09
 +        }
 +    );
 +}
++
++#[test]
++fn native_pending_supersedes_pacing_with_checkins() {
++    let state = BackgroundWaitState::new();
++    state.enable();
++    state.enable_pacing();
++    state.note_turn_completed(
++        "auto-1", /*is_goal_continuation*/ true, /*had_state_change*/ false,
++    );
++    let start = minutes(1000);
++    assert_eq!(
++        state.evaluate_continuation_with_native_pending(
++            "goal-1",
++            GoalWaitStatus::Active,
++            Ok(PendingWorkSnapshot::empty(1)),
++            /*native_pending*/ false,
++            start,
++        ),
++        BackgroundWaitEvaluation::Wait {
++            next_check_in: Some(start + Duration::from_secs(60)),
++            emit_warning: false,
++        }
++    );
++    let (_, pacing_generation) = state.armed_deadline().expect("pacing timer armed");
++    assert_eq!(
++        state.evaluate_continuation_with_native_pending(
++            "goal-1",
++            GoalWaitStatus::Active,
++            Ok(PendingWorkSnapshot::empty(1)),
++            /*native_pending*/ true,
++            start,
++        ),
++        BackgroundWaitEvaluation::Wait {
++            next_check_in: Some(start + minutes(30)),
++            emit_warning: false,
++        }
++    );
++    assert!(!state.claim_due_deadline(
++        start + Duration::from_secs(60),
++        pacing_generation,
++        start + Duration::from_secs(60)
++    ));
++    assert!(matches!(
++        state.evaluate_continuation_with_native_pending(
++            "goal-1",
++            GoalWaitStatus::Active,
++            Ok(PendingWorkSnapshot::empty(1)),
++            /*native_pending*/ true,
++            start + minutes(30),
++        ),
++        BackgroundWaitEvaluation::ProceedWithTicket { .. }
++    ));
++    assert_eq!(
++        state.check_admission(Ok(PendingWorkSnapshot::empty(1))),
++        codex_extension_api::GoalAdmissionDecision::Allow
++    );
++}
 diff --git a/codex-rs/ext/items/src/sleep.rs b/codex-rs/ext/items/src/sleep.rs
 index 4cca51e16e27619ceb459e4b85e6519f480ea069..d169d96ceb60243d8a60a4f6814fa2816cf0e3e0 100644
 --- a/codex-rs/ext/items/src/sleep.rs
@@ -2060,3 +3285,420 @@ index 4cca51e16e27619ceb459e4b85e6519f480ea069..d169d96ceb60243d8a60a4f6814fa281
 +pub fn is_goal_wait_sleep_id(id: &str) -> bool {
 +    id.starts_with(GOAL_WAIT_SLEEP_ID_PREFIX)
 +}
+diff --git a/codex-rs/protocol/src/agent_path.rs b/codex-rs/protocol/src/agent_path.rs
+index c0ad8b734a94baedc96e93186ce6d8cc3d588ce3..e895e14e212655239fab391ff9c36234fabca14f 100644
+--- a/codex-rs/protocol/src/agent_path.rs
++++ b/codex-rs/protocol/src/agent_path.rs
+@@ -1,3 +1,4 @@
++use codex_utils_string::take_bytes_at_char_boundary;
+ use schemars::JsonSchema;
+ use serde::Deserialize;
+ use serde::Serialize;
+@@ -19,6 +20,29 @@ impl AgentPath {
+     pub const MORPHEUS: &str = "/morpheus";
+     const ROOT_SEGMENT: &str = "root";
+ 
++    /// Maximum length of a single path segment in bytes for NEWLY MINTED
++    /// child identities.
++    ///
++    /// Enforced only by [`AgentPath::join_new`], which the V2 spawn entry
++    /// uses for model-supplied task names. Parsing and deserialization
++    /// ([`AgentPath::from_string`], `TryFrom`, `FromStr`, serde) stay
++    /// grammar-only so previously persisted identities keep working
++    /// byte-identically on resume. Longer names are rejected instead of
++    /// silently truncated: the path is an identity used for routing.
++    pub const MAX_SEGMENT_BYTES: usize = 128;
++
++    /// Maximum length of a full absolute agent path in bytes for NEWLY
++    /// MINTED child identities (see [`AgentPath::MAX_SEGMENT_BYTES`]).
++    pub const MAX_PATH_BYTES: usize = 1024;
++
++    /// Maximum bytes of an agent path rendered into model-visible display
++    /// text before truncation (see [`AgentPath::truncated_for_display`]).
++    ///
++    /// Legacy over-cap identities can still reach model input through
++    /// resume, so the envelope render truncates for display only; the
++    /// stored routing identity is never changed.
++    pub const MODEL_DISPLAY_MAX_BYTES: usize = 256;
++
+     pub fn root() -> Self {
+         Self(Self::ROOT.to_string())
+     }
+@@ -56,6 +80,36 @@ impl AgentPath {
+         Self::from_string(format!("{self}/{agent_name}"))
+     }
+ 
++    /// Joins a NEW child identity, enforcing the new-identity length caps
++    /// ([`AgentPath::MAX_SEGMENT_BYTES`], [`AgentPath::MAX_PATH_BYTES`]).
++    ///
++    /// This is the only constructor that rejects over-long names: the V2
++    /// spawn entry mints child paths through here so model-supplied task
++    /// names get a clear tool error before any thread exists. An existing
++    /// (possibly legacy over-cap) parent keeps its identity; only the new
++    /// segment and the resulting total length are bounded.
++    pub fn join_new(&self, agent_name: &str) -> Result<Self, String> {
++        validate_new_agent_name(agent_name)?;
++        let joined = format!("{self}/{agent_name}");
++        validate_new_path_length(joined.as_str())?;
++        Self::from_string(joined)
++    }
++
++    /// Renders this path for model-visible text, truncating it to
++    /// [`AgentPath::MODEL_DISPLAY_MAX_BYTES`] bytes with a marker when over
++    /// the cap. Paths at or under the cap render byte-identical. Display
++    /// only: the stored routing identity is unchanged.
++    pub fn truncated_for_display(&self) -> String {
++        let rendered = self.as_str();
++        if rendered.len() <= Self::MODEL_DISPLAY_MAX_BYTES {
++            return rendered.to_string();
++        }
++        format!(
++            "{}{TRUNCATED_DISPLAY_MARKER}",
++            take_bytes_at_char_boundary(rendered, Self::MODEL_DISPLAY_MAX_BYTES)
++        )
++    }
++
+     pub fn resolve(&self, reference: &str) -> Result<Self, String> {
+         if reference.is_empty() {
+             return Err("agent path must not be empty".to_string());
+@@ -122,6 +176,9 @@ impl fmt::Display for AgentPath {
+     }
+ }
+ 
++/// Marker appended when display rendering truncates an agent path.
++const TRUNCATED_DISPLAY_MARKER: &str = "…[truncated]";
++
+ fn validate_agent_name(agent_name: &str) -> Result<(), String> {
+     if agent_name.is_empty() {
+         return Err("agent_name must not be empty".to_string());
+@@ -180,6 +237,32 @@ fn validate_relative_reference(reference: &str) -> Result<(), String> {
+     Ok(())
+ }
+ 
++/// Validates a model-supplied segment for a NEW child identity: the shared
++/// grammar plus the new-identity segment cap.
++fn validate_new_agent_name(agent_name: &str) -> Result<(), String> {
++    let name_len = agent_name.len();
++    if name_len > AgentPath::MAX_SEGMENT_BYTES {
++        return Err(format!(
++            "agent_name must be at most {} bytes, got {name_len}",
++            AgentPath::MAX_SEGMENT_BYTES
++        ));
++    }
++    validate_agent_name(agent_name)
++}
++
++/// Validates the total length of a NEWLY MINTED absolute path. Only the
++/// total is bounded here: an existing legacy parent keeps its identity.
++fn validate_new_path_length(path: &str) -> Result<(), String> {
++    let path_len = path.len();
++    if path_len > AgentPath::MAX_PATH_BYTES {
++        return Err(format!(
++            "absolute agent path must be at most {} bytes, got {path_len}",
++            AgentPath::MAX_PATH_BYTES
++        ));
++    }
++    Ok(())
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::AgentPath;
+@@ -237,4 +320,103 @@ mod tests {
+             Err("agent_name `..` is reserved".to_string())
+         );
+     }
++
++    #[test]
++    fn agent_path_join_new_rejects_overlong_segment() {
++        let overlong = "a".repeat(AgentPath::MAX_SEGMENT_BYTES + 1);
++        assert_eq!(
++            AgentPath::root().join_new(&overlong),
++            Err(format!(
++                "agent_name must be at most {} bytes, got {}",
++                AgentPath::MAX_SEGMENT_BYTES,
++                overlong.len()
++            ))
++        );
++    }
++
++    #[test]
++    fn agent_path_join_new_accepts_segment_at_cap() {
++        let at_cap = "a".repeat(AgentPath::MAX_SEGMENT_BYTES);
++        let child = AgentPath::root()
++            .join_new(&at_cap)
++            .expect("segment at cap should be accepted");
++        assert_eq!(child.as_str(), format!("/root/{at_cap}"));
++    }
++
++    #[test]
++    fn agent_path_join_new_rejects_path_over_total_cap() {
++        // Seven 128-byte segments: "/root" (5) + 7 * 129 == 908. A new
++        // 120-byte segment is under the segment cap, but the joined total
++        // (908 + 1 + 120 == 1029) exceeds the path cap.
++        let segments = vec!["a".repeat(AgentPath::MAX_SEGMENT_BYTES); 7];
++        let parent_str = format!("/root/{}", segments.join("/"));
++        let parent = AgentPath::try_from(parent_str.as_str()).expect("parent under total cap");
++        let segment = "b".repeat(120);
++        let joined_len = parent.as_str().len() + 1 + segment.len();
++        assert!(joined_len > AgentPath::MAX_PATH_BYTES);
++        assert_eq!(
++            parent.join_new(&segment),
++            Err(format!(
++                "absolute agent path must be at most {} bytes, got {joined_len}",
++                AgentPath::MAX_PATH_BYTES
++            ))
++        );
++    }
++
++    #[test]
++    fn agent_path_accepts_legacy_overlong_segment() {
++        // Valid under the pre-cap grammar: parsing, joining and serde
++        // round-trip must preserve it byte-identically for resume.
++        let legacy = format!("/root/{}", "l".repeat(AgentPath::MAX_SEGMENT_BYTES + 1));
++        let parsed = AgentPath::try_from(legacy.as_str()).expect("legacy segment parses");
++        assert_eq!(parsed.as_str(), legacy);
++        let joined = AgentPath::root()
++            .join(&"l".repeat(AgentPath::MAX_SEGMENT_BYTES + 1))
++            .expect("legacy segment joins");
++        assert_eq!(joined, parsed);
++        let round_tripped: AgentPath =
++            serde_json::from_value(serde_json::to_value(&parsed).expect("serialize"))
++                .expect("legacy segment deserializes");
++        assert_eq!(round_tripped, parsed);
++    }
++
++    #[test]
++    fn agent_path_accepts_legacy_path_over_total_cap() {
++        let path = format!("/root/{}", vec!["a"; 600].join("/"));
++        assert!(path.len() > AgentPath::MAX_PATH_BYTES);
++        let parsed = AgentPath::try_from(path.as_str()).expect("legacy long path parses");
++        assert_eq!(parsed.as_str(), path);
++        let round_tripped: AgentPath =
++            serde_json::from_value(serde_json::to_value(&parsed).expect("serialize"))
++                .expect("legacy long path deserializes");
++        assert_eq!(round_tripped, parsed);
++    }
++
++    #[test]
++    fn agent_path_accepts_absolute_path_at_total_cap() {
++        // "/root" (5) + 7 segments of 128 (7 * 129) + one segment of 115
++        // (116) == 1024.
++        let mut segments = vec!["a".repeat(AgentPath::MAX_SEGMENT_BYTES); 7];
++        segments.push("b".repeat(115));
++        let path = format!("/root/{}", segments.join("/"));
++        assert_eq!(path.len(), AgentPath::MAX_PATH_BYTES);
++        let parsed = AgentPath::try_from(path.as_str()).expect("path at total cap");
++        assert_eq!(parsed.as_str(), path);
++    }
++
++    #[test]
++    fn agent_path_display_truncates_overlong_path() {
++        let short = AgentPath::try_from("/root/worker").expect("short path");
++        assert_eq!(short.truncated_for_display(), "/root/worker");
++        // Well past the display cap (and the new-spawn segment cap), so the
++        // render truncates with a marker. ASCII keeps the slice boundary safe.
++        let legacy = format!("/root/{}", "l".repeat(300));
++        assert!(legacy.len() > AgentPath::MODEL_DISPLAY_MAX_BYTES);
++        let parsed = AgentPath::try_from(legacy.as_str()).expect("legacy path parses");
++        let expected = format!(
++            "{}…[truncated]",
++            &legacy[..AgentPath::MODEL_DISPLAY_MAX_BYTES]
++        );
++        assert_eq!(parsed.truncated_for_display(), expected);
++    }
+ }
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index abc4e90847636bfe51e6275ede528a13616c8573..ee82818c193d7e9c45ad6768fb4f4de6d2e32cf0 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -881,6 +881,12 @@ impl InterAgentCommunication {
+     }
+ 
+     pub fn to_model_input_item(&self) -> ResponseItem {
++        // The envelope is model-visible and counted in context accounting,
++        // while the stored `author`/`recipient` identities stay full: legacy
++        // over-cap paths can reach here through resume, so render truncated
++        // display copies (byte-identical for short paths).
++        let author = self.author.truncated_for_display();
++        let recipient = self.recipient.truncated_for_display();
+         let content = match &self.encrypted_content {
+             Some(encrypted_content) => {
+                 let message_type = if self.trigger_turn {
+@@ -891,8 +897,7 @@ impl InterAgentCommunication {
+                 vec![
+                     AgentMessageInputContent::InputText {
+                         text: format!(
+-                            "Message Type: {message_type}\nTask name: {}\nSender: {}\nPayload:\n",
+-                            self.recipient, self.author
++                            "Message Type: {message_type}\nTask name: {recipient}\nSender: {author}\nPayload:\n"
+                         ),
+                     },
+                     AgentMessageInputContent::EncryptedContent {
+@@ -906,8 +911,8 @@ impl InterAgentCommunication {
+         };
+         ResponseItem::AgentMessage {
+             id: self.id.clone(),
+-            author: self.author.to_string(),
+-            recipient: self.recipient.to_string(),
++            author,
++            recipient,
+             content,
+             internal_chat_message_metadata_passthrough: self
+                 .internal_chat_message_metadata_passthrough
+@@ -4774,6 +4779,75 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn agent_message_envelope_truncates_legacy_paths_for_display() {
++        // Legacy identities (valid pre-cap grammar, over the new-spawn cap)
++        // keep their full routing identity in storage, but the model-visible
++        // envelope renders truncated display copies.
++        // Past the display cap (and the new-spawn segment cap), so the
++        // envelope truncates. ASCII keeps the expected slices boundary-safe.
++        let legacy_author = format!("/root/{}", "a".repeat(300));
++        let legacy_recipient = format!("/root/{}", "b".repeat(300));
++        assert!(legacy_author.len() > AgentPath::MODEL_DISPLAY_MAX_BYTES);
++        let expected_author = format!(
++            "{}…[truncated]",
++            &legacy_author[..AgentPath::MODEL_DISPLAY_MAX_BYTES]
++        );
++        let expected_recipient = format!(
++            "{}…[truncated]",
++            &legacy_recipient[..AgentPath::MODEL_DISPLAY_MAX_BYTES]
++        );
++        let communication = InterAgentCommunication::new(
++            AgentPath::try_from(legacy_author.as_str()).expect("legacy author parses"),
++            AgentPath::try_from(legacy_recipient.as_str()).expect("legacy recipient parses"),
++            Vec::new(),
++            "notice body".to_string(),
++            /*trigger_turn*/ false,
++        );
++        assert_eq!(
++            communication.to_model_input_item(),
++            ResponseItem::AgentMessage {
++                id: None,
++                author: expected_author.clone(),
++                recipient: expected_recipient.clone(),
++                content: vec![AgentMessageInputContent::InputText {
++                    text: "notice body".to_string(),
++                }],
++                internal_chat_message_metadata_passthrough: None,
++            }
++        );
++        // The stored routing identities are unchanged.
++        assert_eq!(communication.author.as_str(), legacy_author);
++        assert_eq!(communication.recipient.as_str(), legacy_recipient);
++
++        let encrypted = InterAgentCommunication::new_encrypted(
++            AgentPath::try_from(legacy_author.as_str()).expect("legacy author parses"),
++            AgentPath::try_from(legacy_recipient.as_str()).expect("legacy recipient parses"),
++            Vec::new(),
++            "encrypted payload".to_string(),
++            /*trigger_turn*/ false,
++        );
++        assert_eq!(
++            encrypted.to_model_input_item(),
++            ResponseItem::AgentMessage {
++                id: None,
++                author: expected_author.clone(),
++                recipient: expected_recipient.clone(),
++                content: vec![
++                    AgentMessageInputContent::InputText {
++                        text: format!(
++                            "Message Type: MESSAGE\nTask name: {expected_recipient}\nSender: {expected_author}\nPayload:\n"
++                        ),
++                    },
++                    AgentMessageInputContent::EncryptedContent {
++                        encrypted_content: "encrypted payload".to_string(),
++                    },
++                ],
++                internal_chat_message_metadata_passthrough: None,
++            }
++        );
++    }
++
+     #[test]
+     fn session_source_from_startup_arg_normalizes_custom_values() {
+         assert_eq!(
+diff --git a/codex-rs/rollout/src/recorder_tests.rs b/codex-rs/rollout/src/recorder_tests.rs
+index af55bf6ddf03d822f650184b42fd4367a71b6942..cc0d48a3a9549967aab6c46d17d8945186e106eb 100644
+--- a/codex-rs/rollout/src/recorder_tests.rs
++++ b/codex-rs/rollout/src/recorder_tests.rs
+@@ -343,6 +343,75 @@ async fn load_rollout_items_defaults_legacy_session_id() -> std::io::Result<()>
+     Ok(())
+ }
+ 
++#[tokio::test]
++async fn get_rollout_history_preserves_legacy_agent_path() -> std::io::Result<()> {
++    let home = TempDir::new().expect("temp dir");
++    let rollout_path = home.path().join("rollout.jsonl");
++    let mut file = File::create(&rollout_path)?;
++    let thread_id = ThreadId::new();
++    let parent_thread_id = ThreadId::new();
++    let ts = "2025-01-03T12:00:00Z";
++    // Valid under the pre-cap grammar (129-byte segment), over the
++    // new-spawn cap: a legacy rollout must still decode byte-identically,
++    // with zero parse errors and its thread id intact.
++    let legacy_path = format!("/root/{}", "l".repeat(129));
++
++    writeln!(
++        file,
++        "{}",
++        serde_json::json!({
++            "timestamp": ts,
++            "type": "session_meta",
++            "payload": {
++                "id": thread_id,
++                "timestamp": ts,
++                "cwd": ".",
++                "originator": "test_originator",
++                "cli_version": "test_version",
++                "source": {
++                    "subagent": {
++                        "thread_spawn": {
++                            "parent_thread_id": parent_thread_id,
++                            "depth": 1,
++                            "agent_path": legacy_path,
++                            "agent_nickname": null,
++                            "agent_role": "worker",
++                        }
++                    }
++                },
++                "agent_path": legacy_path,
++                "model_provider": "test-provider",
++            },
++        })
++    )?;
++
++    let (items, loaded_thread_id, parse_errors) =
++        RolloutRecorder::load_rollout_items(&rollout_path).await?;
++    assert_eq!(loaded_thread_id, Some(thread_id));
++    assert_eq!(parse_errors, 0);
++    assert_eq!(items.len(), 1);
++    let RolloutItem::SessionMeta(session_meta) = &items[0] else {
++        panic!("expected session metadata");
++    };
++    assert_eq!(session_meta.meta.id, thread_id);
++    assert_eq!(
++        session_meta.meta.agent_path.as_deref(),
++        Some(legacy_path.as_str())
++    );
++    assert_eq!(
++        session_meta.meta.source.get_agent_path().as_deref(),
++        Some(legacy_path.as_str())
++    );
++
++    let history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
++    let InitialHistory::Resumed(resumed) = history else {
++        panic!("expected resumed history");
++    };
++    assert_eq!(resumed.conversation_id, thread_id);
++
++    Ok(())
++}
++
+ #[tokio::test]
+ async fn load_rollout_items_ignores_unknown_fork_source_history_mode() -> std::io::Result<()> {
+     let home = TempDir::new().expect("temp dir");

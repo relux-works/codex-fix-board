@@ -1,0 +1,42 @@
+[
+  {
+    "name": "v1_direct_inject",
+    "patch": "--- a/codex-rs/core/src/codex_thread.rs\n+++ b/codex-rs/core/src/codex_thread.rs\n@@ -1225,11 +1225,7 @@\n \n     /// Queues runtime context; only existing mailbox wake policy may start a turn.\n     pub(crate) async fn queue_runtime_fragment(&self, fragment: impl ContextualUserFragment) {\n-        self.session\n-            .input_queue\n-            .enqueue_runtime_fragment(ContextualUserFragment::into(fragment).into())\n-            .await;\n-        self.session.maybe_start_turn_for_pending_work().await;\n+        self.session.inject_no_new_turn(vec![ContextualUserFragment::into(fragment)], /*current_turn_context*/ None).await;\n     }\n \n     /// Records an explicit user goal mutation without scheduling a model response.\n"
+  },
+  {
+    "name": "v1_ordinary_wake",
+    "patch": "--- a/codex-rs/core/src/session/input_queue.rs\n+++ b/codex-rs/core/src/session/input_queue.rs\n@@ -199,7 +199,10 @@\n \n impl PendingMailboxCommunication {\n     fn triggers_turn(&self) -> bool {\n-        matches!(&self.payload, MailboxPayload::InterAgent(mail) if mail.trigger_turn)\n+        match &self.payload {\n+            MailboxPayload::InterAgent(mail) => mail.trigger_turn,\n+            MailboxPayload::RuntimeFragment(_) | MailboxPayload::RecordedRuntimeFragment => true,\n+        }\n     }\n }\n \n"
+  },
+  {
+    "name": "v1_interrupt_without_goal",
+    "patch": "--- a/codex-rs/core/src/agent/control.rs\n+++ b/codex-rs/core/src/agent/control.rs\n@@ -445,9 +445,6 @@\n                     while let Some(Ok(snapshot)) = updates.next().await {\n                         if snapshot.status() != previous_status.as_ref()\n                             && matches!(snapshot.status(), Some(AgentStatus::Interrupted))\n-                            && control\n-                                .parent_holds_goal_wait_marker(parent_thread_id)\n-                                .await\n                             && let Ok(state) = control.runtime.upgrade()\n                             && let Ok(parent) = state.get_thread(parent_thread_id).await\n                         {\n"
+  },
+  {
+    "name": "v1_drop_midturn",
+    "patch": "--- a/codex-rs/core/src/codex_thread.rs\n+++ b/codex-rs/core/src/codex_thread.rs\n@@ -1225,6 +1225,9 @@\n \n     /// Queues runtime context; only existing mailbox wake policy may start a turn.\n     pub(crate) async fn queue_runtime_fragment(&self, fragment: impl ContextualUserFragment) {\n+        if self.session.active_turn.lock().await.as_ref().is_some_and(|turn| turn.task.is_some()) {\n+            return;\n+        }\n         self.session\n             .input_queue\n             .enqueue_runtime_fragment(ContextualUserFragment::into(fragment).into())\n"
+  },
+  {
+    "name": "v1_fabricated_path",
+    "patch": "--- a/codex-rs/core/src/agent/control.rs\n+++ b/codex-rs/core/src/agent/control.rs\n@@ -453,7 +453,7 @@\n                         {\n                             parent\n                                 .queue_runtime_fragment(SubagentNotification::new(\n-                                    child_reference.as_str(),\n+                                    \"/root/worker\",\n                                     AgentStatus::Interrupted,\n                                 ))\n                                 .await;\n@@ -528,7 +528,7 @@\n                 return;\n             };\n             parent_thread\n-                .queue_runtime_fragment(SubagentNotification::new(child_reference.as_str(), status))\n+                .queue_runtime_fragment(SubagentNotification::new(\"/root/worker\", status))\n                 .await;\n         });\n     }\n"
+  },
+  {
+    "name": "v1_unbounded_error",
+    "patch": "--- a/codex-rs/core/src/context/subagent_notification.rs\n+++ b/codex-rs/core/src/context/subagent_notification.rs\n@@ -16,7 +16,7 @@\n         let errored = matches!(status, AgentStatus::Errored(_));\n         let status = match status {\n             AgentStatus::Completed(Some(text)) | AgentStatus::Errored(text) => {\n-                let mut bounded: String = text.chars().take(384).collect();\n+                let mut bounded: String = text.chars().take(if errored { usize::MAX } else { 384 }).collect();\n                 if bounded.len() < text.len() {\n                     bounded.push_str(\"\\n[truncated]\");\n                 }\n"
+  },
+  {
+    "name": "v1_duplicate_fragment",
+    "patch": "--- a/codex-rs/core/src/codex_thread.rs\n+++ b/codex-rs/core/src/codex_thread.rs\n@@ -1225,10 +1225,9 @@\n \n     /// Queues runtime context; only existing mailbox wake policy may start a turn.\n     pub(crate) async fn queue_runtime_fragment(&self, fragment: impl ContextualUserFragment) {\n-        self.session\n-            .input_queue\n-            .enqueue_runtime_fragment(ContextualUserFragment::into(fragment).into())\n-            .await;\n+        let item = ContextualUserFragment::into(fragment);\n+        self.session.input_queue.enqueue_runtime_fragment(item.clone().into()).await;\n+        self.session.input_queue.enqueue_runtime_fragment(item.into()).await;\n         self.session.maybe_start_turn_for_pending_work().await;\n     }\n \n"
+  },
+  {
+    "name": "v2_result_wakes_ordinary",
+    "patch": "--- a/codex-rs/core/src/agent/control/completion.rs\n+++ b/codex-rs/core/src/agent/control/completion.rs\n@@ -115,7 +115,7 @@\n             parent_agent_path,\n             Vec::new(),\n             message,\n-            /*trigger_turn*/ false,\n+            /*trigger_turn*/ true,\n         );\n         let context =\n             AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);\n"
+  },
+  {
+    "name": "v1_drop_without_wait",
+    "patch": "--- a/codex-rs/core/src/codex_thread.rs\n+++ b/codex-rs/core/src/codex_thread.rs\n@@ -1225,6 +1225,9 @@\n \n     /// Queues runtime context; only existing mailbox wake policy may start a turn.\n     pub(crate) async fn queue_runtime_fragment(&self, fragment: impl ContextualUserFragment) {\n+        if !self.session.has_outstanding_durable_sleep() {\n+            return;\n+        }\n         self.session\n             .input_queue\n             .enqueue_runtime_fragment(ContextualUserFragment::into(fragment).into())\n"
+  },
+  {
+    "name": "v1_idle_fragment_reappended",
+    "patch": "--- a/codex-rs/core/src/session/input_queue.rs\n+++ b/codex-rs/core/src/session/input_queue.rs\n@@ -467,7 +467,7 @@\n         for mail in pending.iter_mut() {\n             if let MailboxPayload::RuntimeFragment(fragment) = &mail.payload {\n                 fragments.push((**fragment).clone());\n-                mail.payload = MailboxPayload::RecordedRuntimeFragment;\n+                mail.payload = MailboxPayload::RuntimeFragment(fragment.clone());\n             }\n         }\n         fragments\n"
+  }
+]

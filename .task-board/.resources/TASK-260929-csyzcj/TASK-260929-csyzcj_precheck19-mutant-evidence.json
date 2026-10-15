@@ -1,0 +1,178 @@
+{
+  "mutant-1": {
+    "sha": "4ede9d468bff608a7c9492835c872de82edfef68",
+    "failed": [
+      "context::inter_agent_interrupted_message::tests::inter_agent_interrupted_dense_item_fits_byte_bound",
+      "protocol::tests::agent_message_envelope_truncates_legacy_paths_for_display",
+      "suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant envelope_author_display_uncapped on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-2": {
+    "sha": "85fea2f27871d0ce3fff850858fe74ff49a3908c",
+    "failed": [
+      "empty_exec_with_native_pending_waits_and_uses_checkins",
+      "native_pending_exhausts_checkins_then_waits_without_deadline",
+      "native_pending_supersedes_pacing_with_checkins",
+      "suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound",
+      "suite::goal_native_wait::goal_wait_preserves_foreign_sleep_across_register_and_turn_start",
+      "suite::goal_native_wait::goal_wait_registered_parent_gets_single_interrupted_notice",
+      "suite::goal_native_wait::goal_wait_registers_marker_and_wakes_on_child_completion"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant ignore_native_pending on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-5": {
+    "sha": "b306f69faa8b30a80f5563bea051a95b5256825c",
+    "failed": [
+      "context::inter_agent_interrupted_message::tests::inter_agent_interrupted_dense_item_fits_byte_bound",
+      "context::inter_agent_interrupted_message::tests::interrupted_fragment_truncates_overlong_paths_to_hard_cap",
+      "suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant interrupted_body_path_cap_256 on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-3": {
+    "sha": "714e76dd1574124169dd1cb0b27522e7a5224fe7",
+    "failed": [
+      "suite::goal_native_wait::goal_wait_latch_closes_completion_before_registration"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant insert_after_mail_check on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-4": {
+    "sha": "3ccce368b831be808d08505bb1578671fc3f0582",
+    "failed": [
+      "register_never_clobbers_foreign_sleep",
+      "suite::goal_native_wait::goal_wait_preserves_foreign_sleep_across_register_and_turn_start"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant insert_clobbers_one_foreign on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-6": {
+    "sha": "999d6a0f811960f31ae9a6a113af864b2d932004",
+    "failed": [
+      "context::inter_agent_interrupted_message::tests::inter_agent_interrupted_dense_item_fits_byte_bound",
+      "context::inter_agent_interrupted_message::tests::interrupted_fragment_renders_exact_notice_body",
+      "context::inter_agent_interrupted_message::tests::interrupted_fragment_truncates_overlong_paths_to_hard_cap",
+      "session_prefix::tests::interrupted_notice_is_queue_only_without_claiming_success",
+      "suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound",
+      "suite::goal_native_wait::goal_wait_registered_parent_gets_single_interrupted_notice"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant interrupted_claims_success on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-7": {
+    "sha": "969d2f51ee397d793f941603b2e4b8ba108194e7",
+    "failed": [
+      "suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound",
+      "suite::goal_native_wait::goal_wait_registered_parent_gets_single_interrupted_notice"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant interrupted_notice_delivered_twice on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-8": {
+    "sha": "99f078aa403306db7f705b6984a5b682d4755f30",
+    "failed": [
+      "context::inter_agent_interrupted_message::tests::inter_agent_interrupted_dense_item_fits_byte_bound",
+      "context::inter_agent_interrupted_message::tests::interrupted_fragment_truncates_overlong_paths_to_hard_cap",
+      "suite::goal_native_wait::goal_wait_dense_paths_interrupted_item_bound"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant interrupted_sender_path_uncapped on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-9": {
+    "sha": "52d3da44f7b3bac0f4314a4aeb8a67a1927ec9b9",
+    "failed": [
+      "agent_path::tests::agent_path_accepts_legacy_path_over_total_cap"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant legacy_long_path_rejected_by_shared_parser on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-10": {
+    "sha": "f99c85cb71876eaaeef854dc3e378348a92c59e8",
+    "failed": [
+      "agent::control::tests::resume_agent_preserves_legacy_overlong_path",
+      "agent_path::tests::agent_path_accepts_legacy_overlong_segment",
+      "agent_path::tests::agent_path_display_truncates_overlong_path",
+      "context::inter_agent_interrupted_message::tests::inter_agent_interrupted_dense_item_fits_byte_bound",
+      "protocol::tests::agent_message_envelope_truncates_legacy_paths_for_display",
+      "recorder::tests::get_rollout_history_preserves_legacy_agent_path"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant legacy_paths_rejected_by_shared_parser on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-11": {
+    "sha": "cb3f19d1bd407fbbb7324fdc780cab4485a8cdef",
+    "failed": [
+      "conditional_remove_only_removes_owned_id"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant owned_generation_seven_not_removed on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-12": {
+    "sha": "ccca17d9fed9f47c098b4a59d66c7e0cfade2e8f",
+    "failed": [
+      "suite::goal_native_wait::goal_wait_registers_marker_and_wakes_on_child_completion"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant single_child_registration_records_history on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-14": {
+    "sha": "a7c1753749b57a3775544370a278c6675eac49c1",
+    "failed": [
+      "agent_path::tests::agent_path_join_new_rejects_overlong_segment",
+      "tools::handlers::multi_agents::tests::spawn_agent_v2_rejects_overlong_task_name"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant spawn_task_name_length_unchecked on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-15": {
+    "sha": "344027db4c0b8959e95dfd1c6bb5a1a7d98c7afa",
+    "failed": [
+      "conditional_remove_only_removes_owned_id",
+      "suite::goal_native_wait::goal_wait_preserves_foreign_sleep_across_register_and_turn_start"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant unconditional_remove on wip-19 (never landed; expected to fail)"
+  },
+  "mutant-13": {
+    "sha": "7edc9da759845e4fb2ccfad2d53b6dbf82988591",
+    "failed": [
+      "agent::control::tests::owned_children_inspection_propagates_failed_lookups"
+    ],
+    "codes": [
+      "100"
+    ],
+    "commit_title": "ci: TASK-260929-csyzcj mutant skip_failed_lookups on wip-19 (never landed; expected to fail)"
+  }
+}

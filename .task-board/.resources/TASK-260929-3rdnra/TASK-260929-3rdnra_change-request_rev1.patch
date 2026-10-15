@@ -1,0 +1,1164 @@
+diff --git a/codex-rs/core/src/agent/control.rs b/codex-rs/core/src/agent/control.rs
+index 565d36519aa5be4fbd9fc4a6d3fc2336f2856a05..bae3a66c9a4830cc28e23005a2f13596d1fc5651 100644
+--- a/codex-rs/core/src/agent/control.rs
++++ b/codex-rs/core/src/agent/control.rs
+@@ -441,7 +441,24 @@ impl LocalAgentControl {
+             let status = match control.subscribe_status(child_thread_id).await {
+                 Ok(mut updates) => {
+                     let mut final_status = None;
++                    let mut previous_status = None;
+                     while let Some(Ok(snapshot)) = updates.next().await {
++                        if snapshot.status() != previous_status.as_ref()
++                            && matches!(snapshot.status(), Some(AgentStatus::Interrupted))
++                            && control
++                                .parent_holds_goal_wait_marker(parent_thread_id)
++                                .await
++                            && let Ok(state) = control.runtime.upgrade()
++                            && let Ok(parent) = state.get_thread(parent_thread_id).await
++                        {
++                            parent
++                                .queue_runtime_fragment(SubagentNotification::new(
++                                    child_reference.as_str(),
++                                    AgentStatus::Interrupted,
++                                ))
++                                .await;
++                        }
++                        previous_status = snapshot.status().cloned();
+                         if let Some(status) = snapshot.status()
+                             && is_final(status)
+                         {
+@@ -511,10 +528,7 @@ impl LocalAgentControl {
+                 return;
+             };
+             parent_thread
+-                .inject_fragment_without_turn(SubagentNotification::new(
+-                    child_reference.as_str(),
+-                    status,
+-                ))
++                .queue_runtime_fragment(SubagentNotification::new(child_reference.as_str(), status))
+                 .await;
+         });
+     }
+diff --git a/codex-rs/core/src/agent/control/completion.rs b/codex-rs/core/src/agent/control/completion.rs
+index 3a1b6ad7a7257c61f5355c260c3323b5b026c859..c3fa5fadb007996470918ef61e49577de25f62a0 100644
+--- a/codex-rs/core/src/agent/control/completion.rs
++++ b/codex-rs/core/src/agent/control/completion.rs
+@@ -148,7 +148,7 @@ impl LocalAgentControl {
+     ///
+     /// Missing manager or parent is quiet (`false`): interrupted notices are
+     /// best effort for registered waits only.
+-    async fn parent_holds_goal_wait_marker(&self, parent_thread_id: ThreadId) -> bool {
++    pub(super) async fn parent_holds_goal_wait_marker(&self, parent_thread_id: ThreadId) -> bool {
+         let Ok(manager) = self.runtime.upgrade() else {
+             return false;
+         };
+diff --git a/codex-rs/core/src/agent/control_bridge_tests.rs b/codex-rs/core/src/agent/control_bridge_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ecc78a76331d5d3a9f010ef900b9bc62124a3e5e
+--- /dev/null
++++ b/codex-rs/core/src/agent/control_bridge_tests.rs
+@@ -0,0 +1,238 @@
++//! Status-matrix tests drive the production watcher (V1) and terminal router (V2).
++use super::*;
++use crate::agent::api::AgentTurnOutcome;
++use crate::session::TurnInput;
++use codex_extension_items::sleep::SleepItem;
++use codex_rollout_trace::ThreadTraceContext;
++use pretty_assertions::assert_eq;
++use test_case::test_case;
++
++#[test_case(MultiAgentVersion::V1, AgentStatus::Completed(Some("answer".into())); "v1_completed")]
++#[test_case(MultiAgentVersion::V1, AgentStatus::Errored("failure".into()); "v1_error")]
++#[test_case(MultiAgentVersion::V1, AgentStatus::Shutdown; "v1_closed")]
++#[test_case(MultiAgentVersion::V1, AgentStatus::Interrupted; "v1_interrupted")]
++#[test_case(MultiAgentVersion::V2, AgentStatus::Completed(Some("answer".into())); "v2_completed")]
++#[test_case(MultiAgentVersion::V2, AgentStatus::Errored("failure".into()); "v2_error")]
++#[test_case(MultiAgentVersion::V2, AgentStatus::Shutdown; "v2_closed")]
++#[test_case(MultiAgentVersion::V2, AgentStatus::Interrupted; "v2_interrupted")]
++#[tokio::test]
++async fn native_status_mailbox_fragment(version: MultiAgentVersion, status: AgentStatus) {
++    let harness = AgentControlHarness::new().await;
++    let (parent_id, parent) = harness.start_thread().await;
++    let (child_id, child) = harness.start_thread().await;
++    // Keep the scheduler from issuing a model request: this matrix inspects
++    // queue data. Integration tests separately assert actual request counts.
++    *parent.session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
++    parent.thread_extension_data().insert(SleepItem {
++        id: codex_extension_items::sleep::goal_wait_sleep_id(1),
++        duration_ms: 0,
++    });
++    let child_path = AgentPath::root().join("worker").expect("fixture");
++    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++        parent_thread_id: parent_id,
++        depth: 1,
++        agent_path: (version == MultiAgentVersion::V2).then(|| child_path.clone()),
++        agent_nickname: None,
++        agent_role: None,
++    });
++    match version {
++        MultiAgentVersion::Disabled => unreachable!("native version required"),
++        MultiAgentVersion::V1 => {
++            harness.control.maybe_start_completion_watcher(
++                child_id,
++                Some(source),
++                child_id.to_string(),
++                /*child_agent_path*/ None,
++            );
++            let turn = child.session.new_default_turn().await;
++            let event = match &status {
++                AgentStatus::Completed(message) => EventMsg::TurnComplete(TurnCompleteEvent {
++                    turn_id: turn.sub_id.clone(),
++                    started_at: None,
++                    last_agent_message: message.clone(),
++                    error: None,
++                    completed_at: None,
++                    duration_ms: None,
++                    time_to_first_token_ms: None,
++                }),
++                AgentStatus::Errored(message) => EventMsg::Error(ErrorEvent {
++                    message: message.clone(),
++                    codex_error_info: None,
++                    misalignment: None,
++                }),
++                AgentStatus::Shutdown => EventMsg::ShutdownComplete,
++                AgentStatus::Interrupted => EventMsg::TurnAborted(TurnAbortedEvent {
++                    turn_id: Some(turn.sub_id.clone()),
++                    reason: TurnAbortReason::Interrupted,
++                    error: None,
++                    started_at: None,
++                    completed_at: None,
++                    duration_ms: None,
++                }),
++                AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::NotFound => {
++                    unreachable!()
++                }
++            };
++            child.session.send_event(&turn, event).await;
++        }
++        MultiAgentVersion::V2 => {
++            harness
++                .control
++                .notify_parent_of_terminal_turn(
++                    AgentTurnOutcome {
++                        thread_id: child_id,
++                        turn_id: "terminal".into(),
++                        source,
++                        parent_turn_id: None,
++                        initiating_agent_path: None,
++                        status: status.clone(),
++                    },
++                    &ThreadTraceContext::disabled(),
++                )
++                .await;
++        }
++    }
++    timeout(Duration::from_secs(10), async {
++        while !parent.session.input_queue.has_pending_mailbox_items().await {
++            sleep(Duration::from_millis(10)).await;
++        }
++    })
++    .await
++    .expect("native status must reach the mailbox");
++    assert!(!has_subagent_notification(
++        parent.session.clone_history().await.raw_items()
++    ));
++    assert!(
++        !parent
++            .session
++            .input_queue
++            .has_trigger_turn_mailbox_items()
++            .await
++    );
++    let (items, _) = parent.session.input_queue.drain_mailbox_input_items().await;
++    match version {
++        MultiAgentVersion::Disabled => unreachable!("native version required"),
++        MultiAgentVersion::V1 => {
++            assert_eq!(
++                items,
++                vec![TurnInput::ResponseItem(
++                    ContextualUserFragment::into(SubagentNotification::new(
++                        child_id.to_string(),
++                        status
++                    ))
++                    .into(),
++                )]
++            );
++            assert!(
++                harness
++                    .manager
++                    .captured_ops()
++                    .iter()
++                    .all(|(_, op)| !matches!(op, Op::InterAgentCommunication { .. }))
++            );
++        }
++        MultiAgentVersion::V2 => {
++            let message = if matches!(status, AgentStatus::Interrupted) {
++                crate::session_prefix::format_inter_agent_interrupted_message(
++                    &AgentPath::root(),
++                    &child_path,
++                )
++            } else {
++                crate::session_prefix::format_inter_agent_completion_message(
++                    AgentPath::root(),
++                    child_path.clone(),
++                    &status,
++                )
++                .expect("fixture")
++            };
++            assert_eq!(
++                items,
++                vec![TurnInput::InterAgentCommunication(
++                    InterAgentCommunication::new(
++                        child_path,
++                        AgentPath::root(),
++                        Vec::new(),
++                        message,
++                        /*trigger_turn*/ false,
++                    )
++                )]
++            );
++        }
++    }
++    assert!(!parent.session.input_queue.has_pending_mailbox_items().await);
++}
++
++#[test_case(AgentStatus::Completed(Some("\u{0001}".repeat(10000))); "completed_escaped")]
++#[test_case(AgentStatus::Errored("🦀".repeat(10000)); "error_unicode")]
++#[test_case(AgentStatus::Errored("\\\"".repeat(10000)); "error_escaped")]
++fn native_v1_fragment_bounds_payload(status: AgentStatus) {
++    let rendered = SubagentNotification::new("x".repeat(10000), status).render();
++    assert!(rendered.len() < 3072, "{} bytes", rendered.len());
++    assert!(rendered.contains("[truncated]"));
++    let body = rendered
++        .strip_prefix("<subagent_notification>")
++        .expect("fixture")
++        .strip_suffix("</subagent_notification>")
++        .expect("fixture")
++        .trim();
++    let parsed: serde_json::Value = serde_json::from_str(body).expect("fixture");
++    assert_eq!(parsed["agent_path"], "x".repeat(64));
++}
++
++#[tokio::test]
++async fn native_runtime_fragment_records_idle_history_once_and_retains_wake() {
++    let harness = AgentControlHarness::new().await;
++    let (_, parent) = harness.start_thread().await;
++    let fragment =
++        SubagentNotification::new("child", AgentStatus::Completed(Some("result".into())));
++    let item = ContextualUserFragment::into(fragment.clone());
++    let before = parent.session.clone_history().await;
++    parent.queue_runtime_fragment(fragment).await;
++    let after = parent.session.clone_history().await;
++    let mut expected = before.raw_items().cloned().collect::<Vec<_>>();
++    let recorded = after.raw_items().cloned().collect::<Vec<_>>();
++    assert_eq!(recorded.len(), expected.len() + 1);
++    assert_eq!(&recorded[..expected.len()], expected.as_slice());
++    let ResponseItem::Message {
++        role,
++        content,
++        phase,
++        ..
++    } = recorded.last().expect("new fragment")
++    else {
++        panic!("runtime fragment must be a message");
++    };
++    let ResponseItem::Message {
++        role: expected_role,
++        content: expected_content,
++        phase: expected_phase,
++        ..
++    } = item
++    else {
++        panic!("fixture must be a message");
++    };
++    assert_eq!(
++        (role, content, phase),
++        (&expected_role, &expected_content, &expected_phase)
++    );
++    // Normal history recording supplies item ID, turn ID and creation time.
++    // Subsequent reads must preserve that exact stamped item, once only.
++    expected.push(recorded.last().expect("new fragment").clone());
++    assert!(parent.session.active_turn.lock().await.is_none());
++    // Keep mailbox presence for G1's completion-before-registration recheck.
++    assert!(parent.session.input_queue.has_pending_mailbox_items().await);
++    parent.session.maybe_start_turn_for_pending_work().await;
++    assert_eq!(
++        parent
++            .session
++            .clone_history()
++            .await
++            .raw_items()
++            .cloned()
++            .collect::<Vec<_>>(),
++        expected
++    );
++    let (input, _) = parent.session.input_queue.drain_mailbox_input_items().await;
++    assert!(input.is_empty(), "recorded mail must not be appended twice");
++    assert!(!parent.session.input_queue.has_pending_mailbox_items().await);
++}
+diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
+index c4c57dcb8c21d0a5a1abe1a0ada2d99a136acec4..76350117557670fcf22dbf0200ce7f4854052cbf 100644
+--- a/codex-rs/core/src/agent/control_tests.rs
++++ b/codex-rs/core/src/agent/control_tests.rs
+@@ -1,3 +1,6 @@
++#[path = "control_bridge_tests.rs"]
++mod bridge;
++
+ use super::*;
+ use crate::CodexThread;
+ use crate::StateDbHandle;
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index 494f4fc97dc610b4f8abf04123a595ef5d924e8c..b3c814f46aea41b881e2660a2c696230db92a99f 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -1223,12 +1223,13 @@ impl CodexThread {
+         self.session.token_usage_info().await
+     }
+ 
+-    /// Records a context fragment without creating a new user turn boundary.
+-    pub(crate) async fn inject_fragment_without_turn(&self, fragment: impl ContextualUserFragment) {
+-        let item = ContextualUserFragment::into(fragment);
++    /// Queues runtime context; only existing mailbox wake policy may start a turn.
++    pub(crate) async fn queue_runtime_fragment(&self, fragment: impl ContextualUserFragment) {
+         self.session
+-            .inject_no_new_turn(vec![item], /*current_turn_context*/ None)
++            .input_queue
++            .enqueue_runtime_fragment(ContextualUserFragment::into(fragment).into())
+             .await;
++        self.session.maybe_start_turn_for_pending_work().await;
+     }
+ 
+     /// Records an explicit user goal mutation without scheduling a model response.
+diff --git a/codex-rs/core/src/context/subagent_notification.rs b/codex-rs/core/src/context/subagent_notification.rs
+index b243cea5ad01dd73906cc66bb91700e3a5c527c7..57846a44cdbe422777a698f760e4f3216440bf85 100644
+--- a/codex-rs/core/src/context/subagent_notification.rs
++++ b/codex-rs/core/src/context/subagent_notification.rs
+@@ -11,8 +11,31 @@ pub(crate) struct SubagentNotification {
+ 
+ impl SubagentNotification {
+     pub(crate) fn new(agent_reference: impl Into<String>, status: AgentStatus) -> Self {
++        // JSON escapes each scalar to at most six bytes (non-ASCII scalars
++        // remain UTF-8). These limits keep the entire fragment below 3 KiB.
++        let errored = matches!(status, AgentStatus::Errored(_));
++        let status = match status {
++            AgentStatus::Completed(Some(text)) | AgentStatus::Errored(text) => {
++                let mut bounded: String = text.chars().take(384).collect();
++                if bounded.len() < text.len() {
++                    bounded.push_str("\n[truncated]");
++                }
++                // Preserve the terminal classification while bounding its payload.
++                if errored {
++                    AgentStatus::Errored(bounded)
++                } else {
++                    AgentStatus::Completed(Some(bounded))
++                }
++            }
++            status @ (AgentStatus::PendingInit
++            | AgentStatus::Running
++            | AgentStatus::Completed(None)
++            | AgentStatus::Interrupted
++            | AgentStatus::Shutdown
++            | AgentStatus::NotFound) => status,
++        };
+         Self {
+-            agent_reference: agent_reference.into(),
++            agent_reference: agent_reference.into().chars().take(64).collect(),
+             status,
+         }
+     }
+diff --git a/codex-rs/core/src/session/input_queue.rs b/codex-rs/core/src/session/input_queue.rs
+index 8c28bc04f193853b088053a6eb935ec2afb3c03b..81b6e27002f3bf658688b1737e9942bf83c0f572 100644
+--- a/codex-rs/core/src/session/input_queue.rs
++++ b/codex-rs/core/src/session/input_queue.rs
+@@ -184,11 +184,25 @@ pub(crate) struct InputQueue {
+ }
+ 
+ struct PendingMailboxCommunication {
+-    communication: InterAgentCommunication,
++    payload: MailboxPayload,
+     start_options: TurnStartOptions,
+     _diagnostics_guard: GaugeGuard,
+ }
+ 
++/// Runtime fragments share the ordinary mailbox's delivery phase and ordering,
++/// but carry neither agent lineage nor permission to start an idle turn.
++enum MailboxPayload {
++    InterAgent(Box<InterAgentCommunication>),
++    RuntimeFragment(Box<ResponseItemEnvelope>),
++    RecordedRuntimeFragment,
++}
++
++impl PendingMailboxCommunication {
++    fn triggers_turn(&self) -> bool {
++        matches!(&self.payload, MailboxPayload::InterAgent(mail) if mail.trigger_turn)
++    }
++}
++
+ impl InputQueue {
+     #[cfg(test)]
+     pub(crate) fn new() -> Self {
+@@ -303,13 +317,26 @@ impl InputQueue {
+             .lock()
+             .await
+             .push_back(PendingMailboxCommunication {
+-                communication,
++                payload: MailboxPayload::InterAgent(Box::new(communication)),
+                 start_options,
+                 _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+             });
+         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+     }
+ 
++    /// Queues native runtime context without an inter-agent event or wake authority.
++    pub(crate) async fn enqueue_runtime_fragment(&self, fragment: ResponseItemEnvelope) {
++        self.mailbox_pending_mails
++            .lock()
++            .await
++            .push_back(PendingMailboxCommunication {
++                payload: MailboxPayload::RuntimeFragment(Box::new(fragment)),
++                start_options: TurnStartOptions::default(),
++                _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
++            });
++        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
++    }
++
+     /// Enqueues an internal runtime notification for an exec completion.
+     ///
+     /// Returns `false` without duplicating when the receipt is already
+@@ -429,21 +456,38 @@ impl InputQueue {
+         self.runtime_notifications.lock().await.has_pending()
+     }
+ 
++    /// Claims native runtime data for idle recording, retaining its mailbox
++    /// presence so a subsequently registered sleep can still wake. A normal
++    /// drain retires recorded entries without appending their history twice.
++    pub(crate) async fn take_runtime_fragments_for_idle_recording(
++        &self,
++    ) -> Vec<ResponseItemEnvelope> {
++        let mut pending = self.mailbox_pending_mails.lock().await;
++        let mut fragments = Vec::new();
++        for mail in pending.iter_mut() {
++            if let MailboxPayload::RuntimeFragment(fragment) = &mail.payload {
++                fragments.push((**fragment).clone());
++                mail.payload = MailboxPayload::RecordedRuntimeFragment;
++            }
++        }
++        fragments
++    }
++
+     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
+         if self
+             .mailbox_pending_mails
+             .lock()
+             .await
+             .iter()
+-            .any(|mail| mail.communication.trigger_turn)
++            .any(PendingMailboxCommunication::triggers_turn)
+         {
+             return true;
+         }
+         self.runtime_notifications.lock().await.has_trigger()
+     }
+ 
+-    /// Drains inter-agent mail, removing entries. Runtime notifications are
+-    /// leased separately via [`Self::lease_runtime_notifications`] and stay
++    /// Drains inter-agent mail and queue-only runtime fragments, removing entries.
++    /// Exec completion notifications are leased separately via [`Self::lease_runtime_notifications`] and stay
+     /// until acknowledged or cancelled.
+     pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, TurnStartOptions) {
+         let pending_mails = self
+@@ -456,18 +500,18 @@ impl InputQueue {
+         let mut start_options = pending_mails
+             .iter()
+             .rev()
+-            .find(|mail| mail.communication.trigger_turn)
++            .find(|mail| mail.triggers_turn())
+             .map(|mail| mail.start_options.clone())
+             .unwrap_or_default();
+         start_options.parent_turn_id = pending_mails
+             .iter()
+-            .filter(|mail| mail.communication.trigger_turn)
++            .filter(|mail| mail.triggers_turn())
+             .map(|mail| mail.start_options.parent_turn_id.as_deref())
+             .reduce(|expected, candidate| expected.filter(|id| candidate == Some(*id)))
+             .and_then(|id| id.filter(|id| !id.trim().is_empty()).map(str::to_string));
+         start_options.root_turn_id = pending_mails
+             .iter()
+-            .find(|mail| mail.communication.trigger_turn)
++            .find(|mail| mail.triggers_turn())
+             .and_then(|mail| {
+                 mail.start_options
+                     .parent_turn_id
+@@ -479,7 +523,15 @@ impl InputQueue {
+             .map(str::to_string);
+         let items = pending_mails
+             .into_iter()
+-            .map(|mail| TurnInput::InterAgentCommunication(mail.communication))
++            .filter_map(|mail| match mail.payload {
++                MailboxPayload::InterAgent(communication) => {
++                    Some(TurnInput::InterAgentCommunication(*communication))
++                }
++                MailboxPayload::RuntimeFragment(fragment) => {
++                    Some(TurnInput::ResponseItem(*fragment))
++                }
++                MailboxPayload::RecordedRuntimeFragment => None,
++            })
+             .collect();
+         (items, start_options)
+     }
+@@ -643,7 +695,7 @@ impl InputQueue {
+ 
+     /// Reports whether input drainable by the current turn is pending.
+     ///
+-    /// In-turn follow-up only: runtime notifications are idle-wake work leased
++    /// In-turn follow-up only: exec notifications are idle-wake work leased
+     /// exclusively by `maybe_start_turn_for_pending_work`. They must not count
+     /// here, or a turn that leaves a capped remainder behind (or observes a
+     /// mid-turn arrival) would keep re-sampling without consuming it: the
+diff --git a/codex-rs/core/src/tasks/mailbox.rs b/codex-rs/core/src/tasks/mailbox.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc3897a5bd8661d7ad4030ec7e0fe8329ec5b3f6
+--- /dev/null
++++ b/codex-rs/core/src/tasks/mailbox.rs
+@@ -0,0 +1,27 @@
++use crate::session::session::Session;
++
++impl Session {
++    /// Queue-only runtime data remains visible to history readers even when it
++    /// cannot wake the model. Active turns consume it through the normal drain.
++    #[expect(
++        clippy::await_holding_invalid_type,
++        reason = "idle history recording must precede any concurrent turn admission"
++    )]
++    pub(super) async fn record_idle_runtime_fragments(&self) {
++        let active = self.active_turn.lock().await;
++        if active.is_some() {
++            return;
++        }
++        let fragments = self
++            .input_queue
++            .take_runtime_fragments_for_idle_recording()
++            .await;
++        if fragments.is_empty() {
++            return;
++        }
++        let context = self.new_inject_items_context().await;
++        self.record_annotated_conversation_items(&context, context.model_info(), fragments)
++            .await;
++        drop(active);
++    }
++}
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index b627dbba54d51e77dbc2175ed1a604bfa0dcbe0f..1457afb658fa6324d295dd0425975702cb488570 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -1,5 +1,6 @@
+ mod compact;
+ mod lifecycle;
++mod mailbox;
+ mod regular;
+ mod review;
+ mod user_shell;
+@@ -552,10 +553,13 @@ impl Session {
+         self: &Arc<Self>,
+         sub_id: String,
+     ) {
+-        if !self.input_queue.has_pending_mailbox_items().await
+-            || (!self.input_queue.has_trigger_turn_mailbox_items().await
+-                && !self.has_outstanding_durable_sleep())
++        if !self.input_queue.has_pending_mailbox_items().await {
++            return;
++        }
++        if !self.input_queue.has_trigger_turn_mailbox_items().await
++            && !self.has_outstanding_durable_sleep()
+         {
++            self.record_idle_runtime_fragments().await;
+             return;
+         }
+ 
+diff --git a/codex-rs/core/tests/suite/goal_background_wait.rs b/codex-rs/core/tests/suite/goal_background_wait.rs
+index bfc0f0923af4f108e593522fb61d12a58cfbbf35..853732d79d4ce8ea934d84cdc335565cfec6838e 100644
+--- a/codex-rs/core/tests/suite/goal_background_wait.rs
++++ b/codex-rs/core/tests/suite/goal_background_wait.rs
+@@ -6,7 +6,7 @@
+ //! (`runtime.rs` Wait arm, `continue_if_idle` -> Core `start_turn_if_idle`)
+ //! re-entry starts real turns marked automatic at 30/60/120 minutes, then the
+ //! production warning fires once. No manual per-check-in
+-//! evaluate/claim/admit calls; no real sleeps.
++//! evaluate/claim/admit calls. Await timer registration before advancing time.
+ 
+ use std::future::Future;
+ use std::pin::Pin;
+@@ -76,6 +76,7 @@ impl CheckInClock for PausedClock {
+ #[derive(Default)]
+ struct RecordingWarningSink {
+     warnings: Mutex<Vec<String>>,
++    warning: tokio::sync::Notify,
+ }
+ 
+ impl RecordingWarningSink {
+@@ -95,6 +96,7 @@ impl ExtensionEventSink for RecordingWarningSink {
+             .lock()
+             .unwrap_or_else(PoisonError::into_inner)
+             .push(warning.message);
++        self.warning.notify_one();
+     }
+ }
+ 
+@@ -255,64 +257,57 @@ async fn scheduled_checkins_fire_through_production_runtime_under_paused_time()
+         .expect("goal creation should succeed");
+     outcome.apply_runtime_effects(&service).await;
+ 
+-    tokio::time::pause();
+-    test.codex
+-        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+-        .await;
+     assert_eq!(mock.requests().len(), 0);
+     assert_eq!(runtime.background_wait_state().check_ins_used(), 0);
+     assert!(runtime.test_marked_goal_continuations().is_empty());
+ 
+-    tokio::time::advance(Duration::from_secs(30 * 60)).await;
+-    tokio::time::resume();
+-    wait_for_event(&test.codex, |event| {
+-        matches!(event, EventMsg::TurnComplete(_))
+-    })
+-    .await;
+-    assert_eq!(runtime.background_wait_state().check_ins_used(), 1);
+-    assert_eq!(runtime.test_marked_goal_continuations().len(), 1);
+-
+-    tokio::time::pause();
+-    test.codex
+-        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+-        .await;
+-    tokio::time::advance(Duration::from_secs(30 * 60)).await;
+-    tokio::time::resume();
+-    wait_for_event(&test.codex, |event| {
+-        matches!(event, EventMsg::TurnComplete(_))
+-    })
+-    .await;
+-    assert_eq!(runtime.background_wait_state().check_ins_used(), 2);
+-    assert_eq!(runtime.test_marked_goal_continuations().len(), 2);
+-
+-    tokio::time::pause();
+-    test.codex
+-        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
++    let wait_started = runtime
++        .background_wait_state()
++        .wait_started_at()
++        .expect("armed wait");
++    for (check_in, minutes) in [(1u8, 30), (2, 60), (3, 120)] {
++        // TurnComplete precedes active-turn cleanup and the idle callback.
++        // Wait for that callback to register the next real deadline before
++        // advancing time; an early advance can race teardown and admission.
++        let deadline = tokio::time::timeout(Duration::from_secs(10), async {
++            loop {
++                if let Some((deadline, _)) = runtime.background_wait_state().armed_deadline() {
++                    break deadline;
++                }
++                tokio::time::sleep(Duration::from_millis(10)).await;
++            }
++        })
++        .await
++        .expect("idle callback must arm the next check-in");
++        assert_eq!(deadline, wait_started + Duration::from_secs(minutes * 60));
++        tokio::time::pause();
++        tokio::time::advance(deadline.saturating_sub(clock.now())).await;
++        tokio::time::resume();
++        wait_for_event(&test.codex, |event| {
++            matches!(event, EventMsg::TurnComplete(_))
++        })
+         .await;
+-    tokio::time::advance(Duration::from_secs(60 * 60)).await;
+-    tokio::time::resume();
+-    wait_for_event(&test.codex, |event| {
+-        matches!(event, EventMsg::TurnComplete(_))
+-    })
+-    .await;
+-    assert_eq!(runtime.background_wait_state().check_ins_used(), 3);
+-    assert_eq!(runtime.test_marked_goal_continuations().len(), 3);
+-
+-    for _ in 0..1000 {
+-        if sink.warnings().len() == 1 {
+-            break;
+-        }
+-        tokio::task::yield_now().await;
++        assert_eq!(runtime.background_wait_state().check_ins_used(), check_in);
++        assert_eq!(
++            runtime.test_marked_goal_continuations().len(),
++            usize::from(check_in)
++        );
+     }
++    // The third TurnComplete also precedes the idle warning. Wait for its
++    // actual emission, not an arbitrary number of executor yields.
++    tokio::time::timeout(Duration::from_secs(10), sink.warning.notified())
++        .await
++        .expect("idle callback must emit the stopped-check-ins warning");
+     assert_eq!(sink.warnings(), vec![CHECK_INS_STOPPED_WARNING.to_string()]);
+     assert!(runtime.background_wait_state().warning_emitted());
+ 
+     tokio::time::pause();
+     tokio::time::advance(Duration::from_secs(60 * 60)).await;
+     tokio::time::resume();
+-    for _ in 0..100 {
+-        tokio::task::yield_now().await;
+-    }
++    test.codex
++        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
++        .await;
++    assert_eq!(runtime.background_wait_state().armed_deadline(), None);
+     assert_eq!(runtime.background_wait_state().check_ins_used(), 3);
+     assert_eq!(runtime.test_marked_goal_continuations().len(), 3);
+     assert_eq!(sink.warnings().len(), 1);
+diff --git a/codex-rs/core/tests/suite/pending_input.rs b/codex-rs/core/tests/suite/pending_input.rs
+index 0df8b4a20b7ab94625f10bb3635ce7e30e96234f..fe2e308f284b2866fa9fc6a42058f7b93e1a99f4 100644
+--- a/codex-rs/core/tests/suite/pending_input.rs
++++ b/codex-rs/core/tests/suite/pending_input.rs
+@@ -1,3 +1,6 @@
++#[path = "pending_input_subagent_bridge.rs"]
++mod subagent_bridge;
++
+ use core_test_support::test_codex::local_selections;
+ use std::sync::Arc;
+ 
+diff --git a/codex-rs/core/tests/suite/pending_input_subagent_bridge.rs b/codex-rs/core/tests/suite/pending_input_subagent_bridge.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..abd8c1d1534186c331e29e5cad165dd1cb42cd00
+--- /dev/null
++++ b/codex-rs/core/tests/suite/pending_input_subagent_bridge.rs
+@@ -0,0 +1,436 @@
++//! Native completion delivery through the real spawn, child input and parent sampling paths.
++use super::*;
++use codex_features::SleepToolMode;
++use codex_protocol::protocol::AgentStatus;
++use codex_protocol::protocol::MultiAgentVersion;
++use pretty_assertions::assert_eq;
++use std::time::Duration;
++use test_case::test_case;
++
++fn contains(request: &Request, text: &str) -> bool {
++    String::from_utf8_lossy(&request.body).contains(text)
++}
++
++fn is_thread(request: &Request, id: codex_protocol::ThreadId) -> bool {
++    request.body_json::<Value>().expect("model request JSON")["client_metadata"]["thread_id"]
++        == id.to_string()
++}
++
++// ResponseMock records before its custom matcher runs; count server-captured
++// requests by thread instead so nonmatching requests cannot inflate evidence.
++async fn request_bodies(
++    server: &wiremock::MockServer,
++    thread: codex_protocol::ThreadId,
++) -> Vec<Value> {
++    let requests = server.received_requests().await.expect("captured requests");
++    requests
++        .iter()
++        .filter(|r| r.url.path().ends_with("/responses") && is_thread(r, thread))
++        .map(|r| r.body_json::<Value>().expect("model request JSON"))
++        .collect()
++}
++
++fn transcript(items: &[RolloutItem]) -> Vec<&ResponseItem> {
++    items
++        .iter()
++        .filter_map(|item| match item {
++            RolloutItem::ResponseItem(envelope) => Some(&envelope.item),
++            _ => None,
++        })
++        .collect()
++}
++
++async fn bridge_fixture(
++    version: MultiAgentVersion,
++    workers: usize,
++) -> (TestCodex, wiremock::MockServer) {
++    let server = responses::start_mock_server().await;
++    let test = test_codex()
++        .with_model("gpt-5.4")
++        .with_config(move |config| {
++            config.features.enable(Feature::Collab).expect("fixture");
++            match version {
++                MultiAgentVersion::Disabled => unreachable!("native version required"),
++                MultiAgentVersion::V1 => config
++                    .features
++                    .disable(Feature::MultiAgentV2)
++                    .expect("fixture"),
++                MultiAgentVersion::V2 => config
++                    .features
++                    .enable(Feature::MultiAgentV2)
++                    .expect("fixture"),
++            }
++            config
++                .features
++                .disable(Feature::CurrentTimeReminder)
++                .expect("fixture");
++            config
++                .features
++                .disable(Feature::EnableRequestCompression)
++                .expect("plain JSON request matching");
++            config.sleep_tool_mode = SleepToolMode::AlwaysOn;
++        })
++        .build_with_auto_env(&server)
++        .await
++        .expect("fixture");
++    let parent_id = test.session_configured.thread_id;
++    let mut events = vec![ev_response_created("spawn")];
++    for index in 0..workers {
++        let call_id = format!("spawn-worker-{index}");
++        events.push(match version {
++            MultiAgentVersion::Disabled => unreachable!("native version required"),
++            MultiAgentVersion::V1 => ev_function_call_with_namespace(
++                &call_id, "multi_agent_v1", "spawn_agent", r#"{"message":"bridge-child","fork_context":false}"#,
++            ),
++            MultiAgentVersion::V2 => ev_function_call_with_namespace(
++                &call_id, "collaboration", "spawn_agent",
++                &json!({"message":"bridge-child", "task_name":format!("worker{index}"), "fork_turns":"none"}).to_string(),
++            ),
++        });
++    }
++    events.push(ev_completed("spawn"));
++    responses::mount_sse_once_match(
++        &server,
++        move |r: &Request| is_thread(r, parent_id) && !contains(r, "spawn-worker"),
++        responses::sse(events),
++    )
++    .await;
++    responses::mount_sse_once_match(
++        &server,
++        move |r: &Request| is_thread(r, parent_id) && contains(r, "spawn-worker"),
++        responses::sse_completed("parent-idle"),
++    )
++    .await;
++    for _ in 0..workers {
++        responses::mount_sse_once_match(
++            &server,
++            move |r: &Request| !is_thread(r, parent_id),
++            responses::sse(vec![
++                ev_response_created("child-wait"),
++                ev_function_call_with_namespace(
++                    "child-sleep",
++                    "clock",
++                    "sleep",
++                    r#"{"duration_ms":60000}"#,
++                ),
++                ev_completed("child-wait"),
++            ]),
++        )
++        .await;
++    }
++    submit_user_input(&test.codex, "bridge-parent").await;
++    wait_for_successful_turn(&test.codex).await;
++    (test, server)
++}
++
++async fn sleeping_children(
++    test: &TestCodex,
++    count: usize,
++) -> Vec<(codex_protocol::ThreadId, Arc<CodexThread>)> {
++    let ids = tokio::time::timeout(Duration::from_secs(10), async {
++        loop {
++            let children = test
++                .codex
++                .inspect_directly_owned_native_children()
++                .await
++                .expect("fixture");
++            if children.len() == count
++                && children
++                    .iter()
++                    .all(|child| matches!(child.status(), Some(AgentStatus::Running)))
++            {
++                break children
++                    .into_iter()
++                    .map(|child| child.thread_id())
++                    .collect::<Vec<_>>();
++            }
++            tokio::time::sleep(Duration::from_millis(10)).await;
++        }
++    })
++    .await
++    .expect("spawn must create running children");
++    let mut children = Vec::new();
++    for id in ids {
++        let child = test.thread_manager.get_thread(id).await.expect("fixture");
++        wait_for_sleep_item_started(&child, "child-sleep", 60000).await;
++        children.push((id, child));
++    }
++    children
++}
++
++fn notification_items(body: &Value, version: MultiAgentVersion) -> Vec<Value> {
++    body["input"]
++        .as_array()
++        .expect("fixture")
++        .iter()
++        .filter(|item| match version {
++            MultiAgentVersion::Disabled => unreachable!("native version required"),
++            MultiAgentVersion::V1 => item.to_string().contains("<subagent_notification>"),
++            MultiAgentVersion::V2 => item["type"] == "agent_message",
++        })
++        .cloned()
++        .collect()
++}
++
++#[test_case(MultiAgentVersion::V1, false; "v1_without_wait")]
++#[test_case(MultiAgentVersion::V1, true; "v1_registered_wait")]
++#[test_case(MultiAgentVersion::V2, false; "v2_without_wait")]
++#[test_case(MultiAgentVersion::V2, true; "v2_registered_wait")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn native_completion_mailbox_history_and_wake(version: MultiAgentVersion, registered: bool) {
++    let (test, server) = bridge_fixture(version, /*workers*/ 1).await;
++    let (child_id, child) = sleeping_children(&test, /*count*/ 1).await.remove(0);
++    let before = test
++        .codex
++        .load_history(/*include_archived*/ true)
++        .await
++        .expect("fixture");
++    let initial = json!({"input": transcript(&before.items)});
++    assert!(notification_items(&initial, version).is_empty());
++    if registered {
++        test.codex.thread_extension_data().insert(SleepItem {
++            id: codex_extension_items::sleep::goal_wait_sleep_id(1),
++            duration_ms: 0,
++        });
++    }
++    let parent_id = test.session_configured.thread_id;
++    responses::mount_sse_once_match(
++        &server,
++        move |r: &Request| is_thread(r, child_id),
++        responses::sse(vec![
++            ev_response_created("child-done"),
++            responses::ev_assistant_message("child-answer", "bridge-result"),
++            ev_completed("child-done"),
++        ]),
++    )
++    .await;
++    // start_task queues V2 mail behind fresh user input; it is sampled on
++    // the following step, as before the V1 bridge. This is an explicit turn,
++    // not permission for an idle wake.
++    let deferred_mail = version == MultiAgentVersion::V2 && !registered;
++    responses::mount_sse_once_match(
++        &server,
++        move |r: &Request| {
++            deferred_mail
++                && is_thread(r, parent_id)
++                && contains(r, "read queued result")
++                && !contains(r, "bridge-result")
++        },
++        responses::sse_completed("user-input-before-mail"),
++    )
++    .await;
++    responses::mount_sse_once_match(
++        &server,
++        move |r: &Request| is_thread(r, parent_id) && contains(r, "bridge-result"),
++        responses::sse_completed("wake"),
++    )
++    .await;
++    submit_user_input(&child, "release-child").await;
++    wait_for_successful_turn(&child).await;
++    assert_eq!(request_bodies(&server, child_id).await.len(), 2);
++    if registered {
++        wait_for_successful_turn(&test.codex).await;
++    } else {
++        tokio::time::sleep(Duration::from_millis(200)).await;
++        assert_eq!(
++            request_bodies(&server, parent_id).await.len(),
++            2,
++            "queue-only mail cannot wake an ordinary parent"
++        );
++        let queued = tokio::time::timeout(Duration::from_secs(10), async {
++            loop {
++                let history = test
++                    .codex
++                    .load_history(/*include_archived*/ true)
++                    .await
++                    .expect("history");
++                if version == MultiAgentVersion::V2
++                    || transcript(&history.items).len() > transcript(&before.items).len()
++                {
++                    break history;
++                }
++                tokio::time::sleep(Duration::from_millis(10)).await;
++            }
++        })
++        .await
++        .expect("idle V1 runtime data must remain visible in history");
++        let prior = transcript(&before.items);
++        let current = transcript(&queued.items);
++        assert_eq!(&current[..prior.len()], prior.as_slice());
++        assert_eq!(
++            current.len() - prior.len(),
++            usize::from(version == MultiAgentVersion::V1)
++        );
++        if version == MultiAgentVersion::V1 {
++            assert!(
++                serde_json::to_string(current.last().expect("idle notification"))
++                    .expect("JSON")
++                    .contains("<subagent_notification>")
++            );
++        }
++        assert_eq!(
++            request_bodies(&server, parent_id).await.len(),
++            2,
++            "history delivery must not sample"
++        );
++        submit_user_input(&test.codex, "read queued result").await;
++        wait_for_successful_turn(&test.codex).await;
++    }
++    let requests = request_bodies(&server, parent_id).await;
++    assert_eq!(requests.len(), 3 + usize::from(deferred_mail));
++    if deferred_mail {
++        assert!(notification_items(&requests[2], version).is_empty());
++    }
++    let request = requests.last().expect("parent delivery request");
++    let notifications = notification_items(request, version);
++    assert_eq!(notifications.len(), 1, "one delivered completion");
++    assert!(notifications[0].to_string().contains("bridge-result"));
++    if version == MultiAgentVersion::V1 {
++        assert_eq!(notifications[0]["role"], "user");
++        let text = notifications[0]["content"][0]["text"]
++            .as_str()
++            .expect("fixture");
++        assert!(text.contains(&child_id.to_string()));
++        assert!(!text.contains("/root"), "V1 must not fabricate a path");
++        let after = test
++            .codex
++            .load_history(/*include_archived*/ true)
++            .await
++            .expect("fixture");
++        assert_eq!(
++            notification_items(&json!({"input": transcript(&after.items)}), version).len(),
++            1
++        );
++    }
++    tokio::time::sleep(Duration::from_millis(100)).await;
++    assert_eq!(
++        request_bodies(&server, parent_id).await.len(),
++        3 + usize::from(version == MultiAgentVersion::V2 && !registered)
++    );
++    child.submit(Op::Shutdown {}).await.expect("fixture");
++}
++
++#[test_case(MultiAgentVersion::V1, true; "v1_registered")]
++#[test_case(MultiAgentVersion::V2, true; "v2_registered")]
++#[test_case(MultiAgentVersion::V1, false; "v1_unregistered")]
++#[test_case(MultiAgentVersion::V2, false; "v2_unregistered")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn native_interrupted_wait_wakes_once(version: MultiAgentVersion, registered: bool) {
++    let (test, server) = bridge_fixture(version, /*workers*/ 1).await;
++    let (_, child) = sleeping_children(&test, /*count*/ 1).await.remove(0);
++    if registered {
++        test.codex.thread_extension_data().insert(SleepItem {
++            id: codex_extension_items::sleep::goal_wait_sleep_id(2),
++            duration_ms: 0,
++        });
++    }
++    let parent_id = test.session_configured.thread_id;
++    responses::mount_sse_once_match(
++        &server,
++        move |r: &Request| is_thread(r, parent_id),
++        responses::sse_completed("interrupted-wake"),
++    )
++    .await;
++    child.submit(Op::Interrupt).await.expect("fixture");
++    if !registered {
++        wait_for_event(&child, |event| matches!(event, EventMsg::TurnAborted(_))).await;
++        tokio::time::sleep(Duration::from_millis(200)).await;
++        assert_eq!(request_bodies(&server, parent_id).await.len(), 2);
++        submit_user_input(&test.codex, "continue without a goal wait").await;
++    }
++    wait_for_successful_turn(&test.codex).await;
++    let requests = request_bodies(&server, parent_id).await;
++    assert_eq!(requests.len(), 3);
++    let notifications = notification_items(requests.last().expect("parent turn"), version);
++    assert_eq!(notifications.len(), usize::from(registered));
++    if registered {
++        assert!(
++            notifications[0]
++                .to_string()
++                .to_lowercase()
++                .contains("interrupt")
++        );
++    }
++    tokio::time::sleep(Duration::from_millis(100)).await;
++    assert_eq!(request_bodies(&server, parent_id).await.len(), 3);
++    test.codex.thread_extension_data().remove::<SleepItem>();
++    child.submit(Op::Shutdown {}).await.expect("fixture");
++}
++
++#[test_case(MultiAgentVersion::V1; "v1")]
++#[test_case(MultiAgentVersion::V2; "v2")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn native_second_child_finishes_mid_turn_once(version: MultiAgentVersion) {
++    let (test, server) = bridge_fixture(version, /*workers*/ 2).await;
++    let children = sleeping_children(&test, /*count*/ 2).await;
++    test.codex.thread_extension_data().insert(SleepItem {
++        id: codex_extension_items::sleep::goal_wait_sleep_id(3),
++        duration_ms: 0,
++    });
++    let parent_id = test.session_configured.thread_id;
++    for (index, (child_id, _)) in children.iter().enumerate() {
++        let child_id = *child_id;
++        responses::mount_sse_once_match(
++            &server,
++            move |r: &Request| is_thread(r, child_id),
++            responses::sse(vec![
++                ev_response_created("child-done"),
++                responses::ev_assistant_message("answer", &format!("result-{index}")),
++                ev_completed("child-done"),
++            ]),
++        )
++        .await;
++    }
++    responses::mount_sse_once_match(
++        &server,
++        move |r: &Request| is_thread(r, parent_id) && !contains(r, "parent-sleep"),
++        responses::sse(vec![
++            ev_response_created("parent-working"),
++            ev_function_call_with_namespace(
++                "parent-sleep",
++                "clock",
++                "sleep",
++                r#"{"duration_ms":60000}"#,
++            ),
++            ev_completed("parent-working"),
++        ]),
++    )
++    .await;
++    responses::mount_sse_once_match(
++        &server,
++        move |r: &Request| is_thread(r, parent_id) && contains(r, "parent-sleep"),
++        responses::sse_completed("both-delivered"),
++    )
++    .await;
++    submit_user_input(&children[0].1, "release-0").await;
++    wait_for_successful_turn(&children[0].1).await;
++    wait_for_sleep_item_started(&test.codex, "parent-sleep", 60000).await;
++    let requests = request_bodies(&server, parent_id).await;
++    assert_eq!(requests.len(), 3);
++    assert_eq!(
++        notification_items(requests.last().expect("first wake"), version).len(),
++        1
++    );
++    submit_user_input(&children[1].1, "release-1").await;
++    wait_for_successful_turn(&children[1].1).await;
++    wait_for_successful_turn(&test.codex).await;
++    let requests = request_bodies(&server, parent_id).await;
++    assert_eq!(requests.len(), 4);
++    let notifications = notification_items(requests.last().expect("second sampling step"), version);
++    assert_eq!(notifications.len(), 2);
++    for index in 0..2 {
++        assert_eq!(
++            notifications
++                .iter()
++                .filter(|item| item.to_string().contains(&format!("result-{index}")))
++                .count(),
++            1
++        );
++    }
++    tokio::time::sleep(Duration::from_millis(100)).await;
++    assert_eq!(request_bodies(&server, parent_id).await.len(), 4);
++    test.codex.thread_extension_data().remove::<SleepItem>();
++    for (_, child) in children {
++        child.submit(Op::Shutdown {}).await.expect("fixture");
++    }
++}
