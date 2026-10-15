@@ -1,5 +1,5 @@
 ## Status
-to-review
+done
 
 ## Review
 required
@@ -246,6 +246,7 @@ Recording rev4 verification: published candidate replay and worktree snapshot bo
 Rev4 accept_cr refused exit 1: change_request_acceptance_unauthorized; RUN-261010-e17d93 is developer/implementer and only reviewer-archetype runs record acceptance. Verbatim output attached as TASK-261007-3v81ko_rev4-acceptance-refusal.md. Verification checks all green, no source changes. Handing off under the actual developer role; authorized recording reviewer must accept rev4 next.
 agent completed: [implementer] developer (codex) (exit=0)
 spawn run completed: codex (run=RUN-261010-e17d93, pid=55524, exit=0)
+ORCH CLOSE (ivan-codex-fix, 2026-10-15): code landed on ivanopcode/codex relux/main as signed e0eff057 via PR #14 (MERGED); ancestor of trunk eebdbb3. Mini recording reviews accepted rev3 (panels A/B/delta + recording RUN-261010-95d489) and rev4 (delta TASK-261010-3cmjct); landed review rev4 accept (TASK-261007-3v81ko_landed-review-rev4.md): landed tree bde782b8 equals the rev4 candidate, post-landing relux-ci run 38045370015 green. The CR store stayed on the mini, so close-landed reports landed_close_not_applicable and names set_status as the close path.
 
 ## Precondition Resources
 - [final-plan.md](file://TASK-261007-3v81ko/final-plan.md)
@@ -322,7 +323,7 @@ spawn run completed: codex (run=RUN-261010-e17d93, pid=55524, exit=0)
 2026-10-07T19:16:25Z
 
 ## Last Update
-2026-10-10T18:11:12Z
+2026-10-15T08:45:44Z
 
 ## Assigned To
 [implementer] developer (codex)
