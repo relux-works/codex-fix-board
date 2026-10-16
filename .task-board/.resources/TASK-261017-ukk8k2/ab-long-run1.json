@@ -1,0 +1,146 @@
+{
+  "base-long": {
+    "requests": 88,
+    "input_tokens": 1966018,
+    "cached_input_tokens": 1901696,
+    "uncached_input_tokens": 64322,
+    "output_tokens": 4602,
+    "total_tokens": 1970620,
+    "tool_calls": 87,
+    "rollouts": 1,
+    "parent_wall_seconds": 6170.714,
+    "tool_names": {
+      "exec": 44,
+      "wait": 43
+    },
+    "per_rollout": [
+      {
+        "rollout": "/Users/iv/.codex-base/sessions/2026/10/17/rollout-2026-10-17T00-08-31-01a14654-97ba-7361-8e60-34a32160abc3.jsonl",
+        "source": "cli",
+        "requests": 88,
+        "total_tokens": 1970620,
+        "uncached_input_tokens": 64322,
+        "wall_seconds": 6170.714
+      }
+    ]
+  },
+  "base-sub": {
+    "requests": 88,
+    "input_tokens": 1746087,
+    "cached_input_tokens": 1694720,
+    "uncached_input_tokens": 51367,
+    "output_tokens": 3340,
+    "total_tokens": 1749427,
+    "tool_calls": 86,
+    "rollouts": 2,
+    "parent_wall_seconds": 2777.885,
+    "tool_names": {
+      "spawn_agent": 1,
+      "wait_agent": 27,
+      "exec": 23,
+      "send_message": 18,
+      "wait": 17
+    },
+    "per_rollout": [
+      {
+        "rollout": "/Users/iv/.codex-base/sessions/2026/10/17/rollout-2026-10-17T00-08-31-01a14654-97b7-7ef0-9c6f-f5f3175d58be.jsonl",
+        "source": "cli",
+        "requests": 30,
+        "total_tokens": 581357,
+        "uncached_input_tokens": 19258,
+        "wall_seconds": 2777.885
+      },
+      {
+        "rollout": "/Users/iv/.codex-base/sessions/2026/10/17/rollout-2026-10-17T00-08-47-01a14654-d548-7263-985d-28e973fa8cdc.jsonl",
+        "source": {
+          "subagent": {
+            "thread_spawn": {
+              "parent_thread_id": "01a14654-97b7-7ef0-9c6f-f5f3175d58be",
+              "depth": 1,
+              "agent_path": "/root/run_sub_job",
+              "agent_nickname": "Hypatia",
+              "agent_role": null
+            }
+          }
+        },
+        "requests": 58,
+        "total_tokens": 1168070,
+        "uncached_input_tokens": 32109,
+        "wall_seconds": 2768.363
+      }
+    ]
+  },
+  "relux-long": {
+    "requests": 49,
+    "input_tokens": 1048635,
+    "cached_input_tokens": 992896,
+    "uncached_input_tokens": 55739,
+    "output_tokens": 3354,
+    "total_tokens": 1051989,
+    "tool_calls": 48,
+    "rollouts": 1,
+    "parent_wall_seconds": 6167.774,
+    "tool_names": {
+      "exec": 43,
+      "sleep": 3,
+      "wait": 2
+    },
+    "per_rollout": [
+      {
+        "rollout": "/Users/iv/.codex-relux/sessions/2026/10/17/rollout-2026-10-17T00-08-31-01a14654-97a3-79f3-937f-c18c5891ebe6.jsonl",
+        "source": "cli",
+        "requests": 49,
+        "total_tokens": 1051989,
+        "uncached_input_tokens": 55739,
+        "wall_seconds": 6167.774
+      }
+    ]
+  },
+  "relux-sub": {
+    "requests": 57,
+    "input_tokens": 1144323,
+    "cached_input_tokens": 1092352,
+    "uncached_input_tokens": 51971,
+    "output_tokens": 2749,
+    "total_tokens": 1147072,
+    "tool_calls": 53,
+    "rollouts": 2,
+    "parent_wall_seconds": 2788.095,
+    "tool_names": {
+      "exec": 23,
+      "send_message": 2,
+      "wait": 19,
+      "list_agents": 1,
+      "spawn_agent": 1,
+      "wait_agent": 7
+    },
+    "per_rollout": [
+      {
+        "rollout": "/Users/iv/.codex-relux/sessions/2026/10/17/rollout-2026-10-17T00-08-50-01a14654-e243-72e3-914e-9b9b6c581ba3.jsonl",
+        "source": {
+          "subagent": {
+            "thread_spawn": {
+              "parent_thread_id": "01a14654-97a3-78b0-880c-4318c87dc361",
+              "depth": 1,
+              "agent_path": "/root/sub_job",
+              "agent_nickname": "Poincare",
+              "agent_role": null
+            }
+          }
+        },
+        "requests": 43,
+        "total_tokens": 881389,
+        "uncached_input_tokens": 29744,
+        "wall_seconds": 2768.693
+      },
+      {
+        "rollout": "/Users/iv/.codex-relux/sessions/2026/10/17/rollout-2026-10-17T00-08-31-01a14654-97a3-78b0-880c-4318c87dc361.jsonl",
+        "source": "cli",
+        "requests": 14,
+        "total_tokens": 265683,
+        "uncached_input_tokens": 22227,
+        "wall_seconds": 2788.095
+      }
+    ]
+  }
+}
