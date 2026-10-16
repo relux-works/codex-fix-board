@@ -1,0 +1,34 @@
+[
+  {
+    "rollout": "/Users/iv/.codex-relux/sessions/2026/10/16/rollout-2026-10-16T05-41-33-01a1425f-22a9-7922-93fa-53dde96d61ce.jsonl",
+    "requests": 14,
+    "input_tokens": 263982,
+    "cached_input_tokens": 222848,
+    "uncached_input_tokens": 41134,
+    "output_tokens": 545,
+    "reasoning_output_tokens": 9,
+    "total_tokens": 264527,
+    "tool_calls": 13,
+    "tool_names": {
+      "exec": 8,
+      "sleep": 5
+    },
+    "wall_seconds": 330.463
+  },
+  {
+    "rollout": "/Users/iv/.codex-base/sessions/2026/10/16/rollout-2026-10-16T05-41-45-01a1425f-4f73-7c70-9a5c-3ca14db1a027.jsonl",
+    "requests": 24,
+    "input_tokens": 450810,
+    "cached_input_tokens": 427136,
+    "uncached_input_tokens": 23674,
+    "output_tokens": 988,
+    "reasoning_output_tokens": 30,
+    "total_tokens": 451798,
+    "tool_calls": 23,
+    "tool_names": {
+      "exec": 11,
+      "wait": 12
+    },
+    "wall_seconds": 314.402
+  }
+]
