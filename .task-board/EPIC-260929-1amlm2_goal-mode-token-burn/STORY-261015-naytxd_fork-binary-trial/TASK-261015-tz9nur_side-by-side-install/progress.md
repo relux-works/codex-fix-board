@@ -1,5 +1,5 @@
 ## Status
-backlog
+done
 
 ## Review
 light
@@ -8,7 +8,7 @@ light
 code
 
 ## Estimate
-notEstimated
+estimated(fibonacci(1))
 
 ## Blocked By
 - (none)
@@ -26,10 +26,13 @@ Installed e063784 via impl/trial/install-codex-relux.sh 38763975745: ~/.local/op
 (none)
 
 ## Outcome Resources
-(none)
+- [TASK-261015-tz9nur_install-evidence.md](file://TASK-261015-tz9nur/TASK-261015-tz9nur_install-evidence.md)
 
 ## Created
 2026-10-15T15:50:47Z
 
 ## Last Update
-2026-10-15T16:51:12Z
+2026-10-16T17:54:01Z
+
+## Assigned To
+codex-fix-orchestrator
