@@ -1,0 +1,42 @@
+[
+  {
+    "name": "wait_v1_integer",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs\n+++ b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs\n@@ -860,7 +860,7 @@\n         ),\n         (\n             \"timeout_ms\".to_string(),\n-            JsonSchema::number(Some(format!(\n+            JsonSchema::integer(Some(format!(\n                 \"Timeout in milliseconds. Defaults to {}, min {}, max {}. Prefer longer waits (minutes) to avoid busy polling.\",\n                 options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,\n             ))),\n"
+  },
+  {
+    "name": "wait_v2_integer",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs\n+++ b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs\n@@ -877,7 +877,7 @@\n fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {\n     let properties = BTreeMap::from([(\n         \"timeout_ms\".to_string(),\n-        JsonSchema::number(Some(format!(\n+        JsonSchema::integer(Some(format!(\n             \"Timeout in milliseconds. Defaults to {}, min {}, max {}.\",\n             options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,\n         ))),\n"
+  },
+  {
+    "name": "exec_yield_integer",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/shell_spec.rs\n+++ b/codex-rs/core/src/tools/handlers/shell_spec.rs\n@@ -63,7 +63,7 @@\n         ),\n         (\n             \"yield_time_ms\".to_string(),\n-            JsonSchema::number(Some(yield_time_ms_description.to_string())),\n+            JsonSchema::integer(Some(yield_time_ms_description.to_string())),\n         ),\n         (\n             \"max_output_tokens\".to_string(),\n"
+  },
+  {
+    "name": "stdin_session_integer",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/shell_spec.rs\n+++ b/codex-rs/core/src/tools/handlers/shell_spec.rs\n@@ -144,7 +144,7 @@\n     let properties = BTreeMap::from([\n         (\n             \"session_id\".to_string(),\n-            JsonSchema::number(Some(\n+            JsonSchema::integer(Some(\n                 \"Identifier of the running unified exec session.\".to_string(),\n             )),\n         ),\n"
+  },
+  {
+    "name": "sleep_duration_integer",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/sleep.rs\n+++ b/codex-rs/core/src/tools/handlers/sleep.rs\n@@ -39,7 +39,7 @@\n fn create_sleep_tool() -> ToolSpec {\n     let properties = BTreeMap::from([(\n         \"duration_ms\".to_string(),\n-        JsonSchema::number(Some(format!(\n+        JsonSchema::integer(Some(format!(\n             \"How long to sleep in milliseconds. Must be between 1 and {MAX_SLEEP_DURATION_MS}.\"\n         ))),\n     )]);\n"
+  },
+  {
+    "name": "goal_budget_number",
+    "patch": "--- a/codex-rs/ext/goal/src/spec.rs\n+++ b/codex-rs/ext/goal/src/spec.rs\n@@ -33,7 +33,7 @@\n         ),\n         (\n             \"token_budget\".to_string(),\n-            JsonSchema::integer(Some(\n+            JsonSchema::number(Some(\n                 \"Positive token budget for the new goal. Omit unless explicitly requested.\"\n                     .to_string(),\n             )),\n"
+  },
+  {
+    "name": "stdin_description_word",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/shell_spec.rs\n+++ b/codex-rs/core/src/tools/handlers/shell_spec.rs\n@@ -145,7 +145,7 @@\n         (\n             \"session_id\".to_string(),\n             JsonSchema::number(Some(\n-                \"Identifier of the running unified exec session.\".to_string(),\n+                \"Identifier of the active unified exec session.\".to_string(),\n             )),\n         ),\n         (\n"
+  },
+  {
+    "name": "parser_refuses_integral_decimal",
+    "patch": "--- a/codex-rs/tools/src/arguments.rs\n+++ b/codex-rs/tools/src/arguments.rs\n@@ -271,6 +271,9 @@\n \n fn parse_raw_integer(raw: &str) -> Result<Option<SignMagnitude>, ParseError> {\n     let raw = raw.trim_matches(|character| matches!(character, ' ' | '\\n' | '\\r' | '\\t'));\n+    if raw == \"60000.0\" {\n+        return Err(fractional_number());\n+    }\n     match raw.as_bytes().first().copied() {\n         Some(b'n') if raw == \"null\" => Ok(None),\n         Some(b't') if raw == \"true\" => Err(ParseError::InvalidType(UnexpectedKind::Boolean(true))),\n"
+  },
+  {
+    "name": "parser_admits_rounded_fraction",
+    "patch": "--- a/codex-rs/tools/src/arguments.rs\n+++ b/codex-rs/tools/src/arguments.rs\n@@ -271,6 +271,9 @@\n \n fn parse_raw_integer(raw: &str) -> Result<Option<SignMagnitude>, ParseError> {\n     let raw = raw.trim_matches(|character| matches!(character, ' ' | '\\n' | '\\r' | '\\t'));\n+    if raw == \"1.0000000000000001\" {\n+        return parse_number(b\"1\").map(Some);\n+    }\n     match raw.as_bytes().first().copied() {\n         Some(b'n') if raw == \"null\" => Ok(None),\n         Some(b't') if raw == \"true\" => Err(ParseError::InvalidType(UnexpectedKind::Boolean(true))),\n"
+  },
+  {
+    "name": "oneshot_timeout_integer",
+    "patch": "--- a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs\n+++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs\n@@ -537,7 +537,7 @@\n     properties.remove(\"yield_time_ms\");\n     properties.insert(\n         \"timeout_ms\".to_string(),\n-        JsonSchema::number(Some(\n+        JsonSchema::integer(Some(\n             \"Maximum command runtime. Defaults to 10000 ms.\".to_string(),\n         )),\n     );\n"
+  }
+]

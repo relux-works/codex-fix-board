@@ -1,0 +1,947 @@
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
+index 17cff84f3d6957f51f73364c374785b2e3f21dcd..52c24f8f0611e3015f3ba907c8861c6169a8abd6 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_spec.rs
+@@ -860,7 +860,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
+         ),
+         (
+             "timeout_ms".to_string(),
+-            JsonSchema::integer(Some(format!(
++            JsonSchema::number(Some(format!(
+                 "Timeout in milliseconds. Defaults to {}, min {}, max {}. Prefer longer waits (minutes) to avoid busy polling.",
+                 options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+             ))),
+@@ -877,7 +877,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
+ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
+     let properties = BTreeMap::from([(
+         "timeout_ms".to_string(),
+-        JsonSchema::integer(Some(format!(
++        JsonSchema::number(Some(format!(
+             "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
+             options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+         ))),
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
+index 4f807527667622a9599459f86599e81eff7b3fe1..98b96b909e2eb733d370f3be78ea4cc7a6045aa9 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs
+@@ -460,7 +460,7 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
+     assert!(properties.contains_key("timeout_ms"));
+     assert_eq!(
+         properties["timeout_ms"].schema_type,
+-        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Integer))
++        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Number))
+     );
+     assert!(description.contains(
+         "Does not return the content; returns either a summary of which agents have updates (if any)"
+@@ -481,7 +481,7 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
+ }
+ 
+ #[test]
+-fn wait_agent_tool_v1_timeout_schema_is_integer() {
++fn wait_agent_tool_v1_timeout_schema_is_number() {
+     let parameters = wait_agent_tool_parameters_v1(WaitAgentTimeoutOptions::default());
+     let timeout_schema = parameters
+         .properties
+@@ -490,10 +490,61 @@ fn wait_agent_tool_v1_timeout_schema_is_integer() {
+         .expect("wait_agent v1 should expose timeout_ms");
+     assert_eq!(
+         timeout_schema.schema_type,
+-        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Integer))
++        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Number))
+     );
+ }
+ 
++// Wire-contract pins against upstream 0462dcc: the server rejects reserved tool
++// schema drift. Testing static values is intentional here; changes require a
++// deliberate wire-contract decision, not a snapshot refresh.
++#[test]
++fn wait_agent_v1_reserved_parameters_match_upstream_wire_contract() {
++    let tool = serde_json::to_value(create_wait_agent_tool_v1(WaitAgentTimeoutOptions::default()))
++        .expect("wait_agent v1 should serialize");
++    let parameters = &tool["tools"][0]["parameters"];
++    assert_eq!(
++        parameters,
++        &json!({
++            "type": "object",
++            "properties": {
++                "targets": {
++                    "type": "array",
++                    "items": {"type": "string"},
++                    "description": "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first."
++                },
++                "timeout_ms": {
++                    "type": "number",
++                    "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling."
++                }
++            },
++            "required": ["targets"],
++            "additionalProperties": false
++        })
++    );
++    assert_ne!(parameters["properties"]["timeout_ms"]["type"], "integer");
++}
++
++#[test]
++fn wait_agent_v2_reserved_parameters_match_upstream_wire_contract() {
++    let tool = serde_json::to_value(create_wait_agent_tool_v2(WaitAgentTimeoutOptions::default()))
++        .expect("wait_agent v2 should serialize");
++    let parameters = &tool["parameters"];
++    assert_eq!(
++        parameters,
++        &json!({
++            "type": "object",
++            "properties": {
++                "timeout_ms": {
++                    "type": "number",
++                    "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000."
++                }
++            },
++            "additionalProperties": false
++        })
++    );
++    assert_ne!(parameters["properties"]["timeout_ms"]["type"], "integer");
++}
++
+ #[test]
+ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
+     let ToolSpec::Function(ResponsesApiTool {
+diff --git a/codex-rs/core/src/tools/handlers/shell_spec.rs b/codex-rs/core/src/tools/handlers/shell_spec.rs
+index 0ac4c45eb2bf4dc14ed2219d3b96239b1d8a98c8..605d750fa5fa70d9e7c31ab46077039c9f1002e7 100644
+--- a/codex-rs/core/src/tools/handlers/shell_spec.rs
++++ b/codex-rs/core/src/tools/handlers/shell_spec.rs
+@@ -63,11 +63,11 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
+         ),
+         (
+             "yield_time_ms".to_string(),
+-            JsonSchema::integer(Some(yield_time_ms_description.to_string())),
++            JsonSchema::number(Some(yield_time_ms_description.to_string())),
+         ),
+         (
+             "max_output_tokens".to_string(),
+-            JsonSchema::integer(Some(
++            JsonSchema::number(Some(
+                 "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
+             )),
+         ),
+@@ -144,7 +144,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
+     let properties = BTreeMap::from([
+         (
+             "session_id".to_string(),
+-            JsonSchema::integer(Some(
++            JsonSchema::number(Some(
+                 "Identifier of the running unified exec session.".to_string(),
+             )),
+         ),
+@@ -156,13 +156,13 @@ pub fn create_write_stdin_tool() -> ToolSpec {
+         ),
+         (
+             "yield_time_ms".to_string(),
+-            JsonSchema::integer(Some(
++            JsonSchema::number(Some(
+                 "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.".to_string(),
+             )),
+         ),
+         (
+             "max_output_tokens".to_string(),
+-            JsonSchema::integer(Some(
++            JsonSchema::number(Some(
+                 "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
+             )),
+         ),
+diff --git a/codex-rs/core/src/tools/handlers/shell_spec_tests.rs b/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
+index 1a4ab3ffa0dd24d9fea452c00ce4b65193e0b60c..e6db9b66cc6b4a8bb95728ad38c71e1c8de8eb11 100644
+--- a/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
++++ b/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
+@@ -13,6 +13,111 @@ fn has_parameter(tool: &ToolSpec, parameter_name: &str) -> bool {
+         .is_some()
+ }
+ 
++// Wire-contract pins against upstream 0462dcc: reserved tool schema drift can
++// reject an entire model request. Testing static values is intentional here;
++// changing these literals requires a deliberate decision, not a snapshot refresh.
++// Pin the base host; capable-host notify_on_exit remains a separate contract.
++#[test]
++fn exec_command_reserved_parameters_match_upstream_wire_contract() {
++    let tool = serde_json::to_value(create_exec_command_tool(CommandToolOptions {
++        allow_login_shell: true,
++        exec_permission_approvals_enabled: false,
++        async_notifications_available: false,
++    }))
++    .expect("exec_command should serialize");
++    let yield_description = if cfg!(windows) {
++        "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."
++    } else {
++        "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."
++    };
++    let parameters = &tool["parameters"];
++    assert_eq!(
++        parameters,
++        &serde_json::json!({
++            "type": "object",
++            "properties": {
++                "cmd": {"type": "string", "description": "Shell command to execute."},
++                "workdir": {
++                    "type": "string",
++                    "description": "Working directory for the command. Defaults to the turn cwd."
++                },
++                "shell": {
++                    "type": "string",
++                    "description": "Shell binary to launch. Defaults to the user's default shell."
++                },
++                "tty": {
++                    "type": "boolean",
++                    "description": "True allocates a PTY for the command; false or omitted uses plain pipes."
++                },
++                "yield_time_ms": {"type": "number", "description": yield_description},
++                "max_output_tokens": {
++                    "type": "number",
++                    "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
++                },
++                "login": {
++                    "type": "boolean",
++                    "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
++                },
++                "sandbox_permissions": {
++                    "type": "string",
++                    "enum": ["use_default", "require_escalated"],
++                    "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution."
++                },
++                "justification": {
++                    "type": "string",
++                    "description": "User-facing approval question for `require_escalated`; omit otherwise."
++                },
++                "prefix_rule": {
++                    "type": "array",
++                    "items": {"type": "string"},
++                    "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"]."
++                }
++            },
++            "required": ["cmd"],
++            "additionalProperties": false
++        })
++    );
++    for parameter in ["yield_time_ms", "max_output_tokens"] {
++        assert_ne!(parameters["properties"][parameter]["type"], "integer");
++    }
++}
++
++#[test]
++fn write_stdin_reserved_parameters_match_upstream_wire_contract() {
++    let tool =
++        serde_json::to_value(create_write_stdin_tool()).expect("write_stdin should serialize");
++    let parameters = &tool["parameters"];
++    assert_eq!(
++        parameters,
++        &serde_json::json!({
++            "type": "object",
++            "properties": {
++                "session_id": {
++                    "type": "number",
++                    "description": "Identifier of the running unified exec session."
++                },
++                "chars": {
++                    "type": "string",
++                    "description": "Bytes to write to stdin. Defaults to empty, which polls without writing."
++                },
++                "yield_time_ms": {
++                    "type": "number",
++                    "description": "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."
++                },
++                "max_output_tokens": {
++                    "type": "number",
++                    "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
++                }
++            },
++            "required": ["session_id"],
++            "additionalProperties": false
++        })
++    );
++    for parameter in ["session_id", "yield_time_ms", "max_output_tokens"] {
++        assert_ne!(parameters["properties"][parameter]["type"], "integer");
++    }
++}
++
+ #[test]
+ fn exec_command_tool_matches_expected_spec() {
+     let tool = create_exec_command_tool(CommandToolOptions {
+@@ -63,11 +168,11 @@ fn exec_command_tool_matches_expected_spec() {
+         ),
+         (
+             "yield_time_ms".to_string(),
+-            JsonSchema::integer(Some(yield_time_ms_description.to_string())),
++            JsonSchema::number(Some(yield_time_ms_description.to_string())),
+         ),
+         (
+             "max_output_tokens".to_string(),
+-            JsonSchema::integer(Some(
++            JsonSchema::number(Some(
+                     "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
+                 )),
+         ),
+@@ -123,7 +228,7 @@ fn write_stdin_tool_matches_expected_spec() {
+     let properties = BTreeMap::from([
+         (
+             "session_id".to_string(),
+-            JsonSchema::integer(Some(
++            JsonSchema::number(Some(
+                 "Identifier of the running unified exec session.".to_string(),
+             )),
+         ),
+@@ -135,13 +240,13 @@ fn write_stdin_tool_matches_expected_spec() {
+         ),
+         (
+             "yield_time_ms".to_string(),
+-            JsonSchema::integer(Some(
++            JsonSchema::number(Some(
+                 "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.".to_string(),
+             )),
+         ),
+         (
+             "max_output_tokens".to_string(),
+-            JsonSchema::integer(Some(
++            JsonSchema::number(Some(
+                 "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
+             )),
+         ),
+diff --git a/codex-rs/core/src/tools/handlers/sleep.rs b/codex-rs/core/src/tools/handlers/sleep.rs
+index 83de000d0227f6945f95f63ddae8e9f92011106c..17aeedb70b15250817da249efc5800d03e7755bb 100644
+--- a/codex-rs/core/src/tools/handlers/sleep.rs
++++ b/codex-rs/core/src/tools/handlers/sleep.rs
+@@ -39,7 +39,7 @@ struct SleepArgs {
+ fn create_sleep_tool() -> ToolSpec {
+     let properties = BTreeMap::from([(
+         "duration_ms".to_string(),
+-        JsonSchema::integer(Some(format!(
++        JsonSchema::number(Some(format!(
+             "How long to sleep in milliseconds. Must be between 1 and {MAX_SLEEP_DURATION_MS}."
+         ))),
+     )]);
+@@ -166,3 +166,7 @@ impl CoreToolRuntime for SleepHandler {
+         true
+     }
+ }
++
++#[cfg(test)]
++#[path = "sleep_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/tools/handlers/sleep_tests.rs b/codex-rs/core/src/tools/handlers/sleep_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..47f69bd0264b8afe13b539744b81735b3752e506
+--- /dev/null
++++ b/codex-rs/core/src/tools/handlers/sleep_tests.rs
+@@ -0,0 +1,27 @@
++use super::*;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++
++// Wire-contract pin against upstream 0462dcc: the server rejects reserved tool
++// schema drift. Testing static values is intentional here; changes require a
++// deliberate wire-contract decision, not a snapshot refresh.
++#[test]
++fn sleep_reserved_parameters_match_upstream_wire_contract() {
++    let tool = serde_json::to_value(SleepHandler.spec()).expect("clock.sleep should serialize");
++    let parameters = &tool["tools"][0]["parameters"];
++    assert_eq!(
++        parameters,
++        &json!({
++            "type": "object",
++            "properties": {
++                "duration_ms": {
++                    "type": "number",
++                    "description": "How long to sleep in milliseconds. Must be between 1 and 43200000."
++                }
++            },
++            "required": ["duration_ms"],
++            "additionalProperties": false
++        })
++    );
++    assert_ne!(parameters["properties"]["duration_ms"]["type"], "integer");
++}
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+index f46dde95016fec1d229d6bfe9f6307c8d25f196a..fa759b5933d27fffdb770b64b40bfc0fd6d67bf7 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+@@ -537,7 +537,7 @@ fn one_shot_exec_command_spec(spec: ToolSpec) -> ToolSpec {
+     properties.remove("yield_time_ms");
+     properties.insert(
+         "timeout_ms".to_string(),
+-        JsonSchema::integer(Some(
++        JsonSchema::number(Some(
+             "Maximum command runtime. Defaults to 10000 ms.".to_string(),
+         )),
+     );
+@@ -609,3 +609,7 @@ fn emit_unified_exec_tty_metric(session_telemetry: &SessionTelemetry, tty: bool)
+         &[("tty", if tty { "true" } else { "false" })],
+     );
+ }
++
++#[cfg(test)]
++#[path = "exec_command_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/exec_command_tests.rs b/codex-rs/core/src/tools/handlers/unified_exec/exec_command_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..759164d51ca00172a76f401d799857e744908ed8
+--- /dev/null
++++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command_tests.rs
+@@ -0,0 +1,74 @@
++use super::ExecCommandHandler;
++use super::ExecCommandHandlerOptions;
++use crate::tools::registry::ToolExecutor;
++use codex_extension_api::AsyncNotificationSupport;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++
++// Wire-contract pin against upstream 0462dcc: the server rejects reserved tool
++// schema drift. Testing static values is intentional here; changes require a
++// deliberate wire-contract decision, not a snapshot refresh. Exercise the
++// one-shot handler's advertised spec, including its timeout transformation.
++#[test]
++fn one_shot_exec_command_reserved_parameters_match_upstream_wire_contract() {
++    let handler = ExecCommandHandler::one_shot(ExecCommandHandlerOptions {
++        allow_login_shell: true,
++        allow_tty: true,
++        exec_permission_approvals_enabled: false,
++        include_environment_id: false,
++        include_shell_parameter: true,
++        include_windows_shell_guidance: false,
++        async_notifications: AsyncNotificationSupport::Unavailable,
++    });
++    let tool =
++        serde_json::to_value(handler.spec()).expect("one-shot exec_command should serialize");
++    let parameters = &tool["parameters"];
++    assert_eq!(
++        parameters,
++        &json!({
++            "type": "object",
++            "properties": {
++                "cmd": {"type": "string", "description": "Shell command to execute."},
++                "workdir": {
++                    "type": "string",
++                    "description": "Working directory for the command. Defaults to the turn cwd."
++                },
++                "shell": {
++                    "type": "string",
++                    "description": "Shell binary to launch. Defaults to the user's default shell."
++                },
++                "timeout_ms": {
++                    "type": "number",
++                    "description": "Maximum command runtime. Defaults to 10000 ms."
++                },
++                "max_output_tokens": {
++                    "type": "number",
++                    "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
++                },
++                "login": {
++                    "type": "boolean",
++                    "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
++                },
++                "sandbox_permissions": {
++                    "type": "string",
++                    "enum": ["use_default", "require_escalated"],
++                    "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution."
++                },
++                "justification": {
++                    "type": "string",
++                    "description": "User-facing approval question for `require_escalated`; omit otherwise."
++                },
++                "prefix_rule": {
++                    "type": "array",
++                    "items": {"type": "string"},
++                    "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"]."
++                }
++            },
++            "required": ["cmd"],
++            "additionalProperties": false
++        })
++    );
++    for parameter in ["timeout_ms", "max_output_tokens"] {
++        assert_ne!(parameters["properties"][parameter]["type"], "integer");
++    }
++}
+diff --git a/codex-rs/core/tests/suite/current_time_reminder.rs b/codex-rs/core/tests/suite/current_time_reminder.rs
+index 89f94d842d921f6c69c562704eea70f61347e82a..57421cc01e95899e0e39f77de0523b5eec0b8058 100644
+--- a/codex-rs/core/tests/suite/current_time_reminder.rs
++++ b/codex-rs/core/tests/suite/current_time_reminder.rs
+@@ -1197,7 +1197,7 @@ async fn sleep_tool_uses_configured_time_provider() -> Result<()> {
+         .expect("sleep tool should be exposed");
+     assert_eq!(
+         sleep_tool["parameters"]["properties"]["duration_ms"]["type"],
+-        "integer"
++        "number"
+     );
+     assert!(
+         requests[1]
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_active_environment_selection.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_active_environment_selection.snap
+index 4c52b8d8e3ffe39043323fa5fd34c1cd0952fa2f..a2677a2da0816cc89a8a00c62fee68f40387dde5 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_active_environment_selection.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_active_environment_selection.snap
+@@ -6,15 +6,15 @@ Scenario: Astra starts in one workspace, switches for the next step of the activ
+ 
+ ## Window 1
+ -- request 1 (turn) --
+-00:additional_tools/developer (3; hash=4ef58a4950e47ab0):
++00:additional_tools/developer (3; hash=b1e101cdca5088a0):
+         - namespace/functions; hash=dead25325ac79c67
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_question_and_answer.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_question_and_answer.snap
+index f49ffc9206f25071e1590d22374df09191116d60..72d9cd49bc61cd0d706874ac811ad8030a111d1c 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_question_and_answer.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_question_and_answer.snap
+@@ -7,15 +7,15 @@ Scenario: Astra uses the catalog question schema to ask who a launch update is f
+ 
+ ## Window 1
+ -- request 1 (request) --
+-00:additional_tools/developer (3; hash=1dccb46d3672bb8a):
++00:additional_tools/developer (3; hash=9922060cb05f2122):
+         - namespace/functions; hash=f1de44f63c977f3d
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_code_mode_call_timing.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_code_mode_call_timing.snap
+index c881f4a7abbb3a230ac041c7bff20cd75e52c2b2..4b234d314a1937d026dc16553fb8178c846581d8 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_code_mode_call_timing.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_code_mode_call_timing.snap
+@@ -6,15 +6,15 @@ Scenario: Astra receives host and handler timings on completed and failed code-m
+ 
+ ## Window 1
+ -- request 1 (turn) --
+-00:additional_tools/developer (3; hash=b86806a715ed4a1a):
++00:additional_tools/developer (3; hash=32be5470c6e39932):
+         - namespace/functions; hash=e7db0a45c4ec3157
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_disabled_executor_skills.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_disabled_executor_skills.snap
+index d5ff4bbf44eda47a71933f02ce9df592a99924df..cd1f3aa3b0f97e955f51d29850d27d505070e802 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_disabled_executor_skills.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_disabled_executor_skills.snap
+@@ -16,15 +16,15 @@ Settings:
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+ -- request 1 (request) --
+-00:additional_tools/developer (3; hash=dd1d2ca0867142e5):
++00:additional_tools/developer (3; hash=61ac4d92c828cbf9):
+         - namespace/functions; hash=99a630cff25563aa
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_interrupts_response.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_interrupts_response.snap
+index 5edf4d018ffe1d96bca2386efd50a759227294e1..695d5098f1ccaa8979f620f95be3a41f8ba38b13 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_interrupts_response.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_interrupts_response.snap
+@@ -6,15 +6,15 @@ Scenario: Astra receives new user input after its unfinished response is interru
+ 
+ ## Window 1
+ -- request 1 (request) --
+-00:additional_tools/developer (3; hash=b86806a715ed4a1a):
++00:additional_tools/developer (3; hash=32be5470c6e39932):
+         - namespace/functions; hash=e7db0a45c4ec3157
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_yields_code_mode_cell.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_yields_code_mode_cell.snap
+index 0b3b41ff7e276d43863169c548c958dd21f2f4ad..4334c834d1bfd25d26367d483f6afeebaa0e39cc 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_yields_code_mode_cell.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_yields_code_mode_cell.snap
+@@ -6,15 +6,15 @@ Scenario: Astra continues after new user input yields a running code cell, then
+ 
+ ## Window 1
+ -- request 1 (turn) --
+-00:additional_tools/developer (3; hash=e79a3ffedf8af637):
++00:additional_tools/developer (3; hash=07af97f334a32933):
+         - namespace/functions; hash=a0b6a7ae1ecf9f28
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_kickoff_remote_compaction_windows.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_kickoff_remote_compaction_windows.snap
+index 3d2590e2f431717514ae016e8497638b70a6c373..c91996548321606c3261488cabe19ed889f92fc6 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_kickoff_remote_compaction_windows.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_kickoff_remote_compaction_windows.snap
+@@ -16,15 +16,15 @@ Settings:
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+ -- request 1 (turn) --
+-00:additional_tools/developer (3; hash=b86806a715ed4a1a):
++00:additional_tools/developer (3; hash=32be5470c6e39932):
+         - namespace/functions; hash=e7db0a45c4ec3157
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+@@ -187,15 +187,15 @@ Settings:
+ ## Window 2 (after request 3: input diverged at item 02)
+ Settings: same as window 1
+ -- request 4 (turn) --
+-00:additional_tools/developer (3; hash=b86806a715ed4a1a):
++00:additional_tools/developer (3; hash=32be5470c6e39932):
+         - namespace/functions; hash=e7db0a45c4ec3157
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh.snap
+index deb77545d980597af8f83bfa1842c6baf362cc09..4b95c9557b12c34e5e5587de8cebc2ac6e396399 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh.snap
+@@ -16,15 +16,15 @@ Settings:
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+ -- request 1 (turn) --
+-00:additional_tools/developer (3; hash=b86806a715ed4a1a):
++00:additional_tools/developer (3; hash=32be5470c6e39932):
+         - namespace/functions; hash=e7db0a45c4ec3157
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+@@ -110,15 +110,15 @@ Settings:
+ ## Window 2 (after request 2: input diverged at item 00)
+ Settings: same as window 1
+ -- request 3 (turn) --
+-00:additional_tools/developer (3; hash=de6ef886d26827e0):
++00:additional_tools/developer (3; hash=4327e247f74ba810):
+         - namespace/functions; hash=8c17932a39355f2d
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_settings_release_check_tool_shapes.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_settings_release_check_tool_shapes.snap
+index 7cb8c4cd54e480036004b0f13a8d8c9219b9e606..483030104479ac54a65aaba1a7185af12c0f17d1 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_settings_release_check_tool_shapes.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_settings_release_check_tool_shapes.snap
+@@ -16,15 +16,15 @@ Settings:
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+ -- request 1 (turn) --
+-00:additional_tools/developer (3; hash=de6ef886d26827e0):
++00:additional_tools/developer (3; hash=4327e247f74ba810):
+         - namespace/functions; hash=8c17932a39355f2d
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages.snap
+index 4caaa6b160a3f834a41667f2b8eb9e08ff56c0ed..ac08dca9ce3c9d652228cc097583736760fd85f5 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages.snap
+@@ -32,14 +32,14 @@ Settings:
+   stream: true
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+-  tools (7; hash=baea97e37ba080b9):
++  tools (7; hash=884bfb8fc9050f65):
+     - custom/exec: Catalog exec instructions. Default yield: 1234 ms. `image(imageUrlOrItem: string | { image_url: s...; hash=a49b91fd82908e18
+     - function/wait: Catalog wait instructions: resume the yielded cell.; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=67bc0f04da3505b3
+     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
+     - function/request_user_input_async: Ask the user one or more questions during ongoing work. Use this tool only to request missing inf...; args=[questions]; hash=d6d74f33db330162
+-    - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++    - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+       - function/sleep
+-    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+       - function/followup_task
+       - function/interrupt_agent
+       - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_checkpoint_migration.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_checkpoint_migration.snap
+index c1cb6c6a837f4f3cee84d68193dfeda528e292e9..a7f777fb03a3a1c93c005ff2472fca2012680350 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_checkpoint_migration.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_checkpoint_migration.snap
+@@ -16,9 +16,9 @@ Settings:
+   stream: true
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+-  tools (7; hash=2adf283a724754e7):
+-    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=dfe772f5e9bb7ce9
+-    - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=e28e872d42db0083
++  tools (7; hash=c7eaf521f176989a):
++    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
++    - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
+     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=7c8f464569dbaa9c
+     - custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
+     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_extra_policy__extra_policy_reaches_guardian_review.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_extra_policy__extra_policy_reaches_guardian_review.snap
+index f947014de761859040b9bb71e59095852ca4dda8..98fdd407b51c749539eea808554fda1e9c805d96 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_extra_policy__extra_policy_reaches_guardian_review.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_extra_policy__extra_policy_reaches_guardian_review.snap
+@@ -32,9 +32,9 @@ Settings:
+   stream: true
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+-  tools (7; hash=d7a351140a5b2b97):
+-    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=dfe772f5e9bb7ce9
+-    - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=e28e872d42db0083
++  tools (7; hash=9ca29162272b7d54):
++    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
++    - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
+     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
+     - custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
+     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_resource_messages__mcp_resource_messages.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_resource_messages__mcp_resource_messages.snap
+index cd04a9c606efe4231ae58cffd2ada3e4a132f3eb..828a74f9fe391ab636a0064cc40e7119675dd730 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_resource_messages__mcp_resource_messages.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_resource_messages__mcp_resource_messages.snap
+@@ -32,14 +32,14 @@ Settings:
+   stream: true
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+-  tools (7; hash=01e70985890749a0):
++  tools (7; hash=de6aceb7b0185d08):
+     - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=50ea9b7f60e145b5
+     - function/wait: Waits on a yielded `exec` cell and returns new output or completion. - Use `wait` only after `exe...; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=6692d8f6c55be489
+     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
+     - function/request_user_input_async: Ask the user one or more questions during ongoing work. Use this tool only to request missing inf...; args=[questions]; hash=d6d74f33db330162
+-    - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++    - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+       - function/sleep
+-    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++    - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+       - function/followup_task
+       - function/interrupt_agent
+       - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_catalog_parameters.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_catalog_parameters.snap
+index b27cb62e08c456791ad9d22211bf366cd1038ea1..dbf411d8aa7e07ac490547196067479eed6cc596 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_catalog_parameters.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_catalog_parameters.snap
+@@ -16,15 +16,15 @@ Settings:
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+ -- request 1 (turn) --
+-00:additional_tools/developer (3; hash=47009506e533e27e):
++00:additional_tools/developer (3; hash=48937f38e1083468):
+         - namespace/functions; hash=e7db0a45c4ec3157
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=aaa6e58ac0c13b1f
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=e7005987945a10f0
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_before_budgeting.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_before_budgeting.snap
+index ed09d6b33dca77e93b6850595c9ddc20eecc00d5..4a1c05002d50711e3b0e4d305e5ddfba38b7905a 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_before_budgeting.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_before_budgeting.snap
+@@ -16,15 +16,15 @@ Settings:
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+ -- request 1 (turn) --
+-00:additional_tools/developer (3; hash=fbd9ddf654d2854c):
++00:additional_tools/developer (3; hash=c803bbbd445f67cc):
+         - namespace/functions; hash=48b2ce07cd26a39b
+           - custom/exec
+           - function/wait
+           - function/request_user_input
+           - function/request_user_input_async
+-        - namespace/clock: Tools for reading and waiting on time.; hash=9bb57c9cf15a03d4
++        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+           - function/sleep
+-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa3407ba7e35263b
++        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fd994b11525da73c
+           - function/followup_task
+           - function/interrupt_agent
+           - function/list_agents
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__subagent_browser_auth.snap b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__subagent_browser_auth.snap
+index 69fc653f1b428d7a381a3a5153dd4c74fb94c0f1..2700ea2efa1f6baa46e0ea3b7a649068bf48c066 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__subagent_browser_auth.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__scenarios__subagent_browser_auth.snap
+@@ -16,9 +16,9 @@ Settings:
+   stream: true
+   text: {"verbosity":"low"}
+   tool_choice: "auto"
+-  tools (10; hash=e2c1e1e989c523c7):
+-    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=dfe772f5e9bb7ce9
+-    - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=e28e872d42db0083
++  tools (10; hash=1d541727c70b02b8):
++    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
++    - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
+     - function/list_mcp_resources: Lists resources provided by MCP servers. Resources allow servers to share data that provides cont...; args=[cursor, server]; hash=6792edaff13561bd
+     - function/list_mcp_resource_templates: Lists resource templates provided by MCP servers. Parameterized resource templates allow servers ...; args=[cursor, server]; hash=60f17c90ef7a4ebb
+     - function/read_mcp_resource: Read a specific resource from an MCP server given the server name and resource URI.; args=[server, uri]; hash=24246896b39008ae
+diff --git a/codex-rs/core/tests/suite/snapshots/all__suite__skills_extension__cloud_skills_across_executor_readiness.snap b/codex-rs/core/tests/suite/snapshots/all__suite__skills_extension__cloud_skills_across_executor_readiness.snap
+index 064e34aff2e93f014dbea32c1b3b3a23a292f8f4..d15989f51048deedcee75398dee7e28f98dd1614 100644
+--- a/codex-rs/core/tests/suite/snapshots/all__suite__skills_extension__cloud_skills_across_executor_readiness.snap
++++ b/codex-rs/core/tests/suite/snapshots/all__suite__skills_extension__cloud_skills_across_executor_readiness.snap
+@@ -44,9 +44,9 @@ Settings:
+ 
+ ## Window 2 (after request 1)
+ Settings: relative to window 1
+-  tools (9; hash=666c250ee50f8813):
+-    + function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=dfe772f5e9bb7ce9
+-    + function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=e28e872d42db0083
++  tools (9; hash=1df9146cc32e8188):
++    + function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
++    + function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
+     + custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
+     + function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
+ -- request 2 (turn) --
+diff --git a/codex-rs/core/tests/suite/unified_exec.rs b/codex-rs/core/tests/suite/unified_exec.rs
+index 520af27fe92f6cbb1d2435486c2c6e8c45d87904..681beca47608c52d6800c8fd6b2fc49a0519921c 100644
+--- a/codex-rs/core/tests/suite/unified_exec.rs
++++ b/codex-rs/core/tests/suite/unified_exec.rs
+@@ -2086,7 +2086,7 @@ async fn one_shot_exec_command_accepts_integral_decimal_timeout_and_rejects_frac
+         .expect("one-shot exec_command should be exposed");
+     assert_eq!(
+         exec_tool["parameters"]["properties"]["timeout_ms"]["type"],
+-        "integer"
++        "number"
+     );
+     assert!(
+         exec_tool["parameters"]["properties"]
+diff --git a/codex-rs/ext/goal/tests/goal_extension_backend.rs b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+index b1c3ec0362112ba60bd970d420e0a945597882d3..92f6709739c28d54f044cbb95ab51293f367538c 100644
+--- a/codex-rs/ext/goal/tests/goal_extension_backend.rs
++++ b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+@@ -1,6 +1,9 @@
+ #![recursion_limit = "256"]
+ #![allow(clippy::expect_used)]
+ 
++#[path = "goal_extension_backend/reserved_tool_schema_tests.rs"]
++mod reserved_tool_schema_tests;
++
+ use codex_utils_absolute_path::test_support::PathExt;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+diff --git a/codex-rs/ext/goal/tests/goal_extension_backend/reserved_tool_schema_tests.rs b/codex-rs/ext/goal/tests/goal_extension_backend/reserved_tool_schema_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..51434052589d47f77122cf570d3db65ca3a9d9eb
+--- /dev/null
++++ b/codex-rs/ext/goal/tests/goal_extension_backend/reserved_tool_schema_tests.rs
+@@ -0,0 +1,38 @@
++use super::installed_tools;
++use super::test_runtime;
++use super::test_thread_id;
++use super::tool_by_name;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++
++// Wire-contract pin against upstream 0462dcc: the server rejects reserved tool
++// schema drift. Testing static values is intentional here; changes require a
++// deliberate wire-contract decision, not a snapshot refresh. Unlike waiting
++// tools, create_goal already advertised token_budget as integer upstream.
++#[tokio::test]
++async fn create_goal_reserved_parameters_match_upstream_wire_contract() -> anyhow::Result<()> {
++    let runtime = test_runtime().await?;
++    let tools = installed_tools(runtime, test_thread_id()?).await;
++    let tool = serde_json::to_value(tool_by_name(&tools, "create_goal").spec())?;
++    let parameters = &tool["parameters"];
++    assert_eq!(
++        parameters,
++        &json!({
++            "type": "object",
++            "properties": {
++                "objective": {
++                    "type": "string",
++                    "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."
++                },
++                "token_budget": {
++                    "type": "integer",
++                    "description": "Positive token budget for the new goal. Omit unless explicitly requested."
++                }
++            },
++            "required": ["objective"],
++            "additionalProperties": false
++        })
++    );
++    assert_ne!(parameters["properties"]["token_budget"]["type"], "number");
++    Ok(())
++}

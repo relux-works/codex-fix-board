@@ -1,0 +1,121 @@
+{
+  "head": "e063784b0d6eb97e9a4f4761e4f0fbd01969396a",
+  "files": [
+    {
+      "path": "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+      "sha256": "2562812621dfdef6e3b0efe2dcd69d90a31cba017dfdfc8b29adc16c94f622bd"
+    },
+    {
+      "path": "codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs",
+      "sha256": "17f384b77c1ea3b4debbf0f61d579592e17f23760e6fa191e28a53090616717e"
+    },
+    {
+      "path": "codex-rs/core/src/tools/handlers/shell_spec.rs",
+      "sha256": "f1b50b65548437f831251c635ff53514473d02f1e986994be000665e6ca72624"
+    },
+    {
+      "path": "codex-rs/core/src/tools/handlers/shell_spec_tests.rs",
+      "sha256": "3c69375dd50a53dc9fa5119d2a807b9aeb04a559e19080aacca7f7c2791041fc"
+    },
+    {
+      "path": "codex-rs/core/src/tools/handlers/sleep.rs",
+      "sha256": "8fe97d4f410aae471fa623862395cf2f74e01d82e30489984c56bb335f4dbadc"
+    },
+    {
+      "path": "codex-rs/core/src/tools/handlers/sleep_tests.rs",
+      "sha256": "fb0cb466b298e8c7451f7fedff0a754b46f5553e4a8ab93f4a20d7e0fcbd67dd"
+    },
+    {
+      "path": "codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs",
+      "sha256": "41d064fe6d7c4a84fc98b9b37ecf4db1186f7d8a5d1f7a436e7db661da5b930a"
+    },
+    {
+      "path": "codex-rs/core/src/tools/handlers/unified_exec/exec_command_tests.rs",
+      "sha256": "24c3d34d2cd4351382d3b4aa5b5a2d4787ea7b3199fce7252c715c2281a7900f"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/current_time_reminder.rs",
+      "sha256": "e2cf907fa48cad22e874396daccdebd5910cc672dce772f8bfc282b53dd6e8d3"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_active_environment_selection.snap",
+      "sha256": "84ac6d412b0a1bccf6847b8da36aec6abc48594750c953d99a7ab27af97bad4e"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_async_question_and_answer.snap",
+      "sha256": "c75ccab6549454370f048008b84ec988971bc2c7e9a094f9439c904de0204ab2"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_code_mode_call_timing.snap",
+      "sha256": "a37212dd8608311e1bf06e15b53e07bfebd303e3fdf6a3cb402eb4b271047c6c"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_disabled_executor_skills.snap",
+      "sha256": "32632ab53ac41902cffa9c185432b75d9954f8166dba9d752d0ec46300aec318"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_interrupts_response.snap",
+      "sha256": "7f2ebb8f866ed76b0db8bbaa7fd876490caf2514bcb57be75ece2d91410c5887"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_input_yields_code_mode_cell.snap",
+      "sha256": "0a5abbade4ac2b69ea38fffadd80e951476bce10811603b3fb76eff6b5947050"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_kickoff_remote_compaction_windows.snap",
+      "sha256": "80cd07c5a023136db8744e4898fd226b17dc2d9ed0ee21ada180b7281d644654"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_plugin_refresh.snap",
+      "sha256": "41bcd77a21188d2d438e468bc92dc0784b36a932f916fb90f8717b32de4b95bb"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__astra_settings_release_check_tool_shapes.snap",
+      "sha256": "eb4deb6a8b20a01b29e406508ebea28aadbd202a59084c12210876b60027c9b3"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__code_mode_catalog_messages.snap",
+      "sha256": "1bd1c5617e2c3eac9ccc63c76d95fdf93145f561ae18be1f13d69dcae4b466cf"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_checkpoint_migration.snap",
+      "sha256": "f5f215720c7e0142bd1ac02dcda7ed46168d70c6940e3fe7fe87365ba6351919"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__guardian_extra_policy__extra_policy_reaches_guardian_review.snap",
+      "sha256": "37572d8a8616d343e7cfc3d78db06c01b7c54be44bea4fa3e416260a031bd683"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_resource_messages__mcp_resource_messages.snap",
+      "sha256": "9f0d3048026db924cf817b57f64e3ddc34d868930787fa3e701083e879ca6824"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__multi_agent_catalog_parameters.snap",
+      "sha256": "c38b4caf3be6527bc0726cdc1f35345c79496f0733183052792a679dd2b5bbd8"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__skill_catalog_dedup__dedup_before_budgeting.snap",
+      "sha256": "57451bf8619546ded4328db843870eb709573c554acae82e1520faefd1088a98"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__scenarios__subagent_browser_auth.snap",
+      "sha256": "f06eb36977ce5c4a1ca97d1144bbe908e72d4d1382800c072931cfa2ecb01482"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/snapshots/all__suite__skills_extension__cloud_skills_across_executor_readiness.snap",
+      "sha256": "e641e5503903a4292087b10852af0d02eba574932a1f8a49b730008306bcdd69"
+    },
+    {
+      "path": "codex-rs/core/tests/suite/unified_exec.rs",
+      "sha256": "da786f9dfa568d917fdff0c00c12e7a1beaeec3ffbc86e00d6c801707dbf5126"
+    },
+    {
+      "path": "codex-rs/ext/goal/tests/goal_extension_backend.rs",
+      "sha256": "64a12b2437154348d59ba47df7c687a27f167dbf17db391205e8cb00e8696dac"
+    },
+    {
+      "path": "codex-rs/ext/goal/tests/goal_extension_backend/reserved_tool_schema_tests.rs",
+      "sha256": "aed262637ecd04d370c1b242519eed037445fa69fe040c3bc13fe3c9db14c6fb"
+    }
+  ]
+}
